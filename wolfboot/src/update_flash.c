@@ -20,6 +20,9 @@
 #include "spi_flash.h"
 #include "target.h"
 #include "wolfboot/wolfboot.h"
+#if defined(WOLFBOOT_SECURE_APP)
+#include "wolfboot/secure_handoff.h"
+#endif
 
 #include "delta.h"
 #include "printf.h"
@@ -226,6 +229,18 @@ void RAMFUNCTION wolfBoot_check_self_update(void)
             wolfBoot_erase_partition(PART_UPDATE);
             return;
         }
+#ifdef WOLFBOOT_SELF_UPDATE_MONOLITHIC
+        /* Payload installs at ARCH_FLASH_OFFSET and may spill into the BOOT
+         * partition, but must never reach BOOT's last sector (reserved for
+         * the state trailer) or the UPDATE partition staging it */
+        if (update.fw_size > (uint32_t)(WOLFBOOT_PARTITION_BOOT_ADDRESS -
+                ARCH_FLASH_OFFSET) + WOLFBOOT_PARTITION_SIZE -
+                WOLFBOOT_SECTOR_SIZE) {
+            wolfBoot_printf("Self update image too large: %u\n",
+                (unsigned int)update.fw_size);
+            return;
+        }
+#endif
         if (wolfBoot_verify_integrity(&update) < 0) {
 #ifdef WOLFBOOT_PERSIST_FAILURE_STATUS
             wolfBoot_record_verify_failure(WOLFBOOT_FAILURE_PHASE_SELF_UPDATE,
@@ -269,6 +284,9 @@ static int RAMFUNCTION wolfBoot_copy_sector(struct wolfBoot_image *src,
     wolfBoot_printf("Copy sector %d (part %d->%d)\n",
         sector, src->part, dst->part);
 
+    /* Kick the watchdog once per sector copy (no-op unless -DWATCHDOG) */
+    wolfBoot_watchdog_feed();
+
     if (src->part == PART_SWAP)
         src_sector_offset = 0;
     if (dst->part == PART_SWAP)
@@ -299,22 +317,37 @@ static int RAMFUNCTION wolfBoot_copy_sector(struct wolfBoot_image *src,
 #define BUFFER_DECLARED
         static uint8_t buffer[FLASHBUFFER_SIZE] XALIGNED(4);
 #endif
-        wb_flash_erase(dst, dst_sector_offset, WOLFBOOT_SECTOR_SIZE);
+        if (wb_flash_erase(dst, dst_sector_offset, WOLFBOOT_SECTOR_SIZE) < 0) {
+            ret = -1;
+            goto out;
+        }
         while (pos < WOLFBOOT_SECTOR_SIZE)  {
           if (src_sector_offset + pos <
               (src->fw_size + IMAGE_HEADER_SIZE + FLASHBUFFER_SIZE)) {
               /* bypass decryption, copy encrypted data into swap if its external */
               if (dst->part == PART_SWAP && SWAP_EXT) {
-                  ext_flash_read((uintptr_t)(src->hdr) + src_sector_offset + pos,
-                                 (void *)buffer, FLASHBUFFER_SIZE);
+                  if (ext_flash_read((uintptr_t)(src->hdr) + src_sector_offset +
+                                       pos,
+                                 (void *)buffer, FLASHBUFFER_SIZE)
+                          != FLASHBUFFER_SIZE) {
+                      ret = -1;
+                      goto out;
+                  }
               } else {
-                  ext_flash_check_read((uintptr_t)(src->hdr) + src_sector_offset +
-                                         pos,
-                                     (void *)buffer, FLASHBUFFER_SIZE);
+                  if (ext_flash_check_read((uintptr_t)(src->hdr) +
+                                         src_sector_offset + pos,
+                                     (void *)buffer, FLASHBUFFER_SIZE)
+                          != FLASHBUFFER_SIZE) {
+                      ret = -1;
+                      goto out;
+                  }
               }
 
-              wb_flash_write(dst, dst_sector_offset + pos, buffer,
-                  FLASHBUFFER_SIZE);
+              if (wb_flash_write(dst, dst_sector_offset + pos, buffer,
+                  FLASHBUFFER_SIZE) < 0) {
+                  ret = -1;
+                  goto out;
+              }
             }
             pos += FLASHBUFFER_SIZE;
         }
@@ -322,19 +355,24 @@ static int RAMFUNCTION wolfBoot_copy_sector(struct wolfBoot_image *src,
         goto out;
     }
 #endif
-    wb_flash_erase(dst, dst_sector_offset, WOLFBOOT_SECTOR_SIZE);
+    if (wb_flash_erase(dst, dst_sector_offset, WOLFBOOT_SECTOR_SIZE) < 0) {
+        ret = -1;
+        goto out;
+    }
     while (pos < WOLFBOOT_SECTOR_SIZE) {
         if (src_sector_offset + pos < (src->fw_size + IMAGE_HEADER_SIZE +
             FLASHBUFFER_SIZE))  {
             uint8_t *orig = (uint8_t*)(src->hdr + src_sector_offset + pos);
-            wb_flash_write(dst, dst_sector_offset + pos, orig, FLASHBUFFER_SIZE);
+            if (wb_flash_write(dst, dst_sector_offset + pos, orig,
+                    FLASHBUFFER_SIZE) < 0) {
+                ret = -1;
+                goto out;
+            }
         }
         pos += FLASHBUFFER_SIZE;
     }
     ret = pos;
-#if defined(EXT_FLASH) || defined(EXT_ENCRYPTED)
 out:
-#endif
 #ifdef EXT_ENCRYPTED
     wolfBoot_zeroize(key, sizeof(key));
     wolfBoot_zeroize(nonce, sizeof(nonce));
@@ -481,6 +519,8 @@ static int RAMFUNCTION wolfBoot_swap_and_final_erase(int resume)
     if ((resume == 1) && (swapDone == 0) &&
         (updateState != IMG_STATE_FINAL_FLAGS)
     ) {
+        /* Keep the invariant that every exit scrubs the staging buffer */
+        wolfBoot_zeroize(tmpBuffer, sizeof(tmpBuffer));
         return -1;
     }
 
@@ -494,7 +534,16 @@ static int RAMFUNCTION wolfBoot_swap_and_final_erase(int resume)
     if (updateState != IMG_STATE_FINAL_FLAGS) {
         /* First, backup the staging sector (sector at tmpBootPos) into swap partition */
         /* This sector will be modified with the magic trailer, so we need to preserve it */
-        wolfBoot_backup_last_boot_sector(tmpBootPos / WOLFBOOT_SECTOR_SIZE);
+        ret = wolfBoot_backup_last_boot_sector(
+            tmpBootPos / WOLFBOOT_SECTOR_SIZE);
+        if (ret < 0) {
+#ifdef EXT_FLASH
+            ext_flash_lock();
+#endif
+            hal_flash_lock();
+            wolfBoot_zeroize(tmpBuffer, sizeof(tmpBuffer));
+            return ret;
+        }
         wolfBoot_printf("Copied boot sector to swap\n");
         /* Mark update as being in final swap phase to allow resumption if power fails */
         wolfBoot_set_partition_state(PART_UPDATE, IMG_STATE_FINAL_FLAGS);
@@ -521,13 +570,8 @@ static int RAMFUNCTION wolfBoot_swap_and_final_erase(int resume)
     }
 #endif
     /* Erase the last sector(s) of boot partition (where partition state is stored) */
-    wb_flash_erase(boot, WOLFBOOT_PARTITION_SIZE - eraseLen, eraseLen);
-
-#ifdef EXT_ENCRYPTED
-    /* Initialize encryption with the saved key */
-    ret = wolfBoot_set_encrypt_key((uint8_t*)tmpBuffer,
-        (uint8_t*)&tmpBuffer[ENCRYPT_KEY_SIZE / sizeof(uint32_t)]);
-    if (ret != 0) {
+    ret = wb_flash_erase(boot, WOLFBOOT_PARTITION_SIZE - eraseLen, eraseLen);
+    if (ret < 0) {
 #ifdef EXT_FLASH
         ext_flash_lock();
 #endif
@@ -535,13 +579,37 @@ static int RAMFUNCTION wolfBoot_swap_and_final_erase(int resume)
         wolfBoot_zeroize(tmpBuffer, sizeof(tmpBuffer));
         return ret;
     }
-    /* wolfBoot_set_encrypt_key calls hal_flash_unlock, need to unlock again */
+
+#ifdef EXT_ENCRYPTED
+    /* Initialize encryption with the saved key. The default backend
+     * manages the internal flash lock itself around the key write (it ends
+     * with the flash locked), so call it with the flash locked and re-unlock
+     * afterwards for the remaining writes. */
+    hal_flash_lock();
+    ret = wolfBoot_set_encrypt_key((uint8_t*)tmpBuffer,
+        (uint8_t*)&tmpBuffer[ENCRYPT_KEY_SIZE / sizeof(uint32_t)]);
+    if (ret != 0) {
+#ifdef EXT_FLASH
+        ext_flash_lock();
+#endif
+        wolfBoot_zeroize(tmpBuffer, sizeof(tmpBuffer));
+        return ret;
+    }
     hal_flash_unlock();
 #endif
     /* Restore the original contents of the staging sector (with the magic trailer if encrypted) */
     if (tmpBootPos < boot->fw_size + IMAGE_HEADER_SIZE) {
         wolfBoot_printf("Restoring last boot sector from swap\n");
-        wolfBoot_copy_sector(swap, boot, tmpBootPos / WOLFBOOT_SECTOR_SIZE);
+        ret = wolfBoot_copy_sector(swap, boot,
+            tmpBootPos / WOLFBOOT_SECTOR_SIZE);
+        if (ret < 0) {
+#ifdef EXT_FLASH
+            ext_flash_lock();
+#endif
+            hal_flash_lock();
+            wolfBoot_zeroize(tmpBuffer, sizeof(tmpBuffer));
+            return ret;
+        }
     }
     else {
         wb_flash_erase(boot, tmpBootPos, WOLFBOOT_SECTOR_SIZE);
@@ -560,7 +628,6 @@ static int RAMFUNCTION wolfBoot_swap_and_final_erase(int resume)
     hal_flash_lock();
 
     wolfBoot_zeroize(tmpBuffer, sizeof(tmpBuffer));
-    (void)ret;
     return 0;
 }
 #ifdef __CCRX__
@@ -572,6 +639,13 @@ static int RAMFUNCTION wolfBoot_swap_and_final_erase(int resume)
 
     #ifndef DELTA_BLOCK_SIZE
     #   define DELTA_BLOCK_SIZE 1024
+    #endif
+
+    /* The per-sector fill loop advances in DELTA_BLOCK_SIZE steps, so a
+     * sector that is not a multiple of the block size would be written
+     * past the one-sector SWAP partition and misalign the resume path. */
+    #if (WOLFBOOT_SECTOR_SIZE % DELTA_BLOCK_SIZE) != 0
+    #error "Delta update: WOLFBOOT_SECTOR_SIZE % DELTA_BLOCK_SIZE != 0"
     #endif
 
 static inline uint32_t wb_delta_im2n(uint32_t val)
@@ -592,6 +666,7 @@ static int wolfBoot_delta_update(struct wolfBoot_image *boot,
 {
     int sector = 0;
     int ret;
+    int copy_ret;
     uint8_t flag;
     uint8_t delta_blk[DELTA_BLOCK_SIZE];
     uint32_t *img_offset;
@@ -697,9 +772,11 @@ static int wolfBoot_delta_update(struct wolfBoot_image *boot,
                 cur_v, delta_base_v);
             ret = -1;
         } else if (!resume && delta_base_hash &&
-                wolfBoot_hardened_CT_compare(base_hash, delta_base_hash,
-                    base_hash_sz) != 0) {
-            /* Wrong base image digest, cannot apply delta patch */
+                ((base_hash == NULL) ||
+                 (base_hash_sz != WOLFBOOT_SHA_DIGEST_SIZE) ||
+                 (wolfBoot_hardened_CT_compare(base_hash, delta_base_hash,
+                    WOLFBOOT_SHA_DIGEST_SIZE) != 0))) {
+            /* Wrong or missing base image digest, cannot apply delta patch */
             wolfBoot_printf("Delta Base hash mismatch\n");
             ret = -1;
         } else {
@@ -762,7 +839,11 @@ static int wolfBoot_delta_update(struct wolfBoot_image *boot,
             }
         }
         if (flag == SECT_FLAG_SWAPPING) {
-           wolfBoot_copy_sector(swap, boot, sector);
+           copy_ret = wolfBoot_copy_sector(swap, boot, sector);
+           if (copy_ret < 0) {
+               ret = -1;
+               goto out;
+           }
            flag = SECT_FLAG_UPDATED;
            if (((sector + 1) * WOLFBOOT_SECTOR_SIZE) < WOLFBOOT_PARTITION_SIZE)
                wolfBoot_set_update_sector_flag(sector, flag);
@@ -872,7 +953,7 @@ static void RAMFUNCTION wolfBoot_record_verify_failure(uint8_t phase,
         cause = WOLFBOOT_FAILURE_CAUSE_HASH;
     else
         cause = WOLFBOOT_FAILURE_CAUSE_SIGNATURE;
-    version = img->hdr_ok ? wolfBoot_get_blob_version(img->hdr) : 0;
+    version = img->hdr_ok ? wolfBoot_get_image_version(part) : 0;
     wolfBoot_record_failure(phase, cause, part, version);
 }
 #endif
@@ -895,15 +976,26 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
     uint16_t update_type;
     uint32_t fw_size;
     uint32_t size;
+#ifdef DISABLE_BACKUP
+    int eraseLen = (WOLFBOOT_SECTOR_SIZE
+#ifdef NVM_FLASH_WRITEONCE /* need to erase the redundant sector too */
+        * 2
+#endif
+    );
+#endif
 #if defined(DELTA_UPDATES)
     int inverse = 0;
 #endif
     int fallback_image = 0;
 #ifndef DISABLE_BACKUP
     int rollback_needed = 0;
+#ifdef CUSTOM_PARTITION_TRAILER
+    (void)rollback_needed;
+#endif
     int bootStateRet = -1;
     uint8_t bootState = 0;
 #endif
+    int copy_ret = 0;
 #if defined(DISABLE_BACKUP) && defined(EXT_ENCRYPTED)
     uint8_t key[ENCRYPT_KEY_SIZE];
     uint8_t nonce[ENCRYPT_NONCE_SIZE];
@@ -985,7 +1077,7 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
                 update_type, HDR_IMG_TYPE_AUTH);
             return -1;
         }
-        if (update.fw_size > MAX_UPDATE_SIZE - 1) {
+        if (update.fw_size > MAX_UPDATE_SIZE) {
             wolfBoot_printf("Invalid update size %u\n", update.fw_size);
             return -1;
         }
@@ -1110,7 +1202,9 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
         switch (flag) {
             case SECT_FLAG_NEW:
                flag = SECT_FLAG_SWAPPING;
-               wolfBoot_copy_sector(&update, &swap, sector);
+               copy_ret = wolfBoot_copy_sector(&update, &swap, sector);
+               if (copy_ret < 0)
+                   break;
                if (((sector + 1) * sector_size) < WOLFBOOT_PARTITION_SIZE)
                    wolfBoot_set_update_sector_flag(sector, flag);
                 /* FALL THROUGH */
@@ -1130,11 +1224,13 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
                      */
                     int prev_iv = wolfBoot_enable_fallback_iv(1);
 #endif
-                    wolfBoot_copy_sector(&boot, &update, sector);
+                    copy_ret = wolfBoot_copy_sector(&boot, &update, sector);
 #ifdef EXT_ENCRYPTED
                     wolfBoot_enable_fallback_iv(prev_iv);
 #endif
                 }
+                if (copy_ret < 0)
+                    break;
                 if (((sector + 1) * sector_size) < WOLFBOOT_PARTITION_SIZE)
                     wolfBoot_set_update_sector_flag(sector, flag);
                 /* FALL THROUGH */
@@ -1143,7 +1239,9 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
                 if (size > sector_size)
                     size = sector_size;
                 flag = SECT_FLAG_UPDATED;
-                wolfBoot_copy_sector(&swap, &boot, sector);
+                copy_ret = wolfBoot_copy_sector(&swap, &boot, sector);
+                if (copy_ret < 0)
+                    break;
                 if (((sector + 1) * sector_size) < WOLFBOOT_PARTITION_SIZE)
                     wolfBoot_set_update_sector_flag(sector, flag);
                 break;
@@ -1151,6 +1249,20 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
                 /* FALL THROUGH */
             default:
                 break;
+        }
+        if (copy_ret < 0) {
+            /* A flash operation failed: do not advance any further, the
+             * sector flags still describe the last completed step so the
+             * swap can be resumed from there. */
+            wolfBoot_printf("Sector %d copy failed, aborting swap\n", sector);
+#ifdef EXT_FLASH
+            ext_flash_lock();
+#endif
+            hal_flash_lock();
+#ifdef EXT_ENCRYPTED
+            wolfBoot_enable_fallback_iv(0);
+#endif
+            return -1;
         }
         sector++;
 
@@ -1203,6 +1315,7 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
     ) {
         wb_flash_erase(&boot, sector * sector_size, sector_size);
         wb_flash_erase(&update, sector * sector_size, sector_size);
+        wolfBoot_watchdog_feed();
         sector++;
     }
 #endif /* WOLFBOOT_FLASH_MULTI_SECTOR_ERASE */
@@ -1244,12 +1357,16 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
 #else /* DISABLE_BACKUP */
 #ifdef WOLFBOOT_ELF_FLASH_SCATTER
     unsigned long entry;
-    void*         base = (void*)WOLFBOOT_PARTITION_BOOT_ADDRESS;
     wolfBoot_printf("ELF Scattered image digest check\n");
     if (wolfBoot_check_flash_image_elf(PART_BOOT, &entry) < 0) {
         wolfBoot_printf("ELF Scattered image digest check: failed. Restoring "
                         "scattered image...\n");
-        wolfBoot_load_flash_image_elf(PART_BOOT, &entry, PART_IS_EXT(boot));
+        if (wolfBoot_load_flash_image_elf(PART_BOOT, &entry,
+                                          PART_IS_EXT(&boot)) < 0) {
+            wolfBoot_printf(
+                "ELF: [UPDATE] ERROR: could not restore scattered image\n");
+            wolfBoot_panic();
+        }
         if (wolfBoot_check_flash_image_elf(PART_BOOT, &entry) < 0) {
             wolfBoot_printf(
                 "Fatal: Could not verify digest after scattering. Panic().\n");
@@ -1275,7 +1392,21 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
     /* Directly copy the content of the UPDATE partition into the BOOT
      * partition. */
     while ((sector * sector_size) < total_size) {
-        wolfBoot_copy_sector(&update, &boot, sector);
+        copy_ret = wolfBoot_copy_sector(&update, &boot, sector);
+        if (copy_ret < 0) {
+            /* Never confirm a boot image that was not fully written. */
+            wolfBoot_printf("Sector %d copy failed, aborting swap\n", sector);
+#ifdef EXT_FLASH
+            ext_flash_lock();
+#endif
+            hal_flash_lock();
+#ifdef EXT_ENCRYPTED
+            wolfBoot_zeroize(key, sizeof(key));
+            wolfBoot_zeroize(nonce, sizeof(nonce));
+            wolfBoot_enable_fallback_iv(0);
+#endif
+            return -1;
+        }
         sector++;
     }
     /* erase remainder of partition */
@@ -1291,6 +1422,17 @@ static int RAMFUNCTION wolfBoot_update(int fallback_allowed)
 
 
     wolfBoot_set_partition_state(PART_BOOT, IMG_STATE_SUCCESS);
+
+    /* Consume the update: erase the update partition's trailer sector(s),
+     * as the swap path does, so the next boot does not re-run
+     * wolfBoot_update(0) on the same image (a wasted verification, and a
+     * full BOOT re-flash on every boot with ALLOW_DOWNGRADE). Erasing, not
+     * programming IMG_STATE_NEW: NOR can only clear bits, so a raw write of
+     * 0xFF over UPDATING is a no-op. Best effort: in setups where the
+     * bootloader cannot write the update partition - the reason
+     * DISABLE_BACKUP exists - the application owns the update partition and
+     * must clear the state itself. */
+    wb_flash_erase(&update, WOLFBOOT_PARTITION_SIZE - eraseLen, eraseLen);
 
     #ifdef EXT_FLASH
     ext_flash_lock();
@@ -1393,7 +1535,11 @@ int wolfBoot_unlock_disk(void)
         /* TODO: Unlock disk */
 
 
-        /* Extend a PCR from the mask to prevent future unsealing */
+        /* Extend a PCR from the mask to prevent future unsealing.
+         * Non-sim only: extending on the simulator would lock the
+         * PCR and block future unseals (eb2978ab). The function is
+         * ARCH_SIM-only today, so the block is inert until the
+         * unlock path is ported. */
     #if !defined(ARCH_SIM) && !defined(WOLFBOOT_NO_UNSEAL_PCR_EXTEND)
         {
         uint32_t pcrMask;
@@ -1425,12 +1571,42 @@ int wolfBoot_unlock_disk(void)
 #ifdef __CCRX__
 #pragma section FRAM
 #endif
+#if defined(MMU) || defined(WOLFBOOT_FDT)
+/* No device tree here, but hooks.h advertises the accessor for every
+ * MMU/WOLFBOOT_FDT build, so a conforming hook must still link. */
+void* wolfBoot_get_dts_address(void)
+{
+    return NULL;
+}
+#endif
+
+#if defined(WOLFBOOT_SECURE_APP)
+static int wolfBoot_prepare_secure_handoff(
+    const struct wolfBoot_image* boot)
+{
+    volatile wolfBoot_secure_handoff_t* handoff =
+        (volatile wolfBoot_secure_handoff_t*)
+            WOLFBOOT_SECURE_HANDOFF_ADDRESS;
+    uint32_t lifecycle = WOLFBOOT_SECURE_HANDOFF_LIFECYCLE_UNKNOWN;
+
+    if ((boot == NULL) || (boot->sha_hash == NULL)) {
+        return -1;
+    }
+
+    if (hal_attestation_get_lifecycle(&lifecycle) != 0) {
+        lifecycle = WOLFBOOT_SECURE_HANDOFF_LIFECYCLE_UNKNOWN;
+    }
+    return wolfBoot_secure_handoff_build(handoff, boot->sha_hash,
+        wolfBoot_get_blob_version(boot->hdr), lifecycle);
+}
+#endif
+
 void RAMFUNCTION wolfBoot_start(void)
 {
     int bootRet;
 #ifndef WOLFBOOT_SELF_UPDATE_MONOLITHIC
     int updateRet;
-#ifndef DISABLE_BACKUP
+#if !defined(DISABLE_BACKUP) && !defined(CUSTOM_PARTITION_TRAILER)
     int resumedFinalErase;
 #endif
     uint8_t bootState;
@@ -1632,6 +1808,11 @@ void RAMFUNCTION wolfBoot_start(void)
         wolfBoot_panic();
     }
 #endif
+#ifdef WOLFBOOT_HOOK_PREBOOT
+    /* Before hal_prepare_boot(), so a hook still has the MMU and caches as
+     * wolfBoot set them up. */
+    wolfBoot_hook_preboot(&boot);
+#endif
     hal_prepare_boot();
 
 #ifdef WOLFBOOT_HOOK_BOOT
@@ -1640,6 +1821,11 @@ void RAMFUNCTION wolfBoot_start(void)
 #ifndef WOLFBOOT_SKIP_BOOT_VERIFY
     PART_SANITY_CHECK(&boot);
     FW_BASE_SANITY_CHECK(&boot);
+#endif
+#if defined(WOLFBOOT_SECURE_APP)
+    if (wolfBoot_prepare_secure_handoff(&boot) != 0) {
+        wolfBoot_panic();
+    }
 #endif
     do_boot((void *)boot.fw_base);
 }

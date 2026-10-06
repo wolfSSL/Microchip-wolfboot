@@ -12,14 +12,32 @@ MAINTAINERCLEANFILES+= $(ASYNC_FILES)
 
 EXTRA_DIST += wolfcrypt/src/misc.c
 EXTRA_DIST += wolfcrypt/src/asn_orig.c
+EXTRA_DIST += wolfcrypt/src/asn_tsp.c
 EXTRA_DIST += wolfcrypt/src/evp.c
 EXTRA_DIST += wolfcrypt/src/evp_pk.c
 EXTRA_DIST += wolfcrypt/src/asm.c
 EXTRA_DIST += wolfcrypt/src/aes_asm.asm
+EXTRA_DIST += wolfcrypt/src/aes_x86_64_asm.asm
 EXTRA_DIST += wolfcrypt/src/aes_gcm_asm.asm
+EXTRA_DIST += wolfcrypt/src/aes_gcm_x86_asm.asm
 EXTRA_DIST += wolfcrypt/src/aes_xts_asm.asm
+EXTRA_DIST += wolfcrypt/src/aes_xts_x86_asm.asm
 EXTRA_DIST += wolfcrypt/src/chacha_asm.asm
 EXTRA_DIST += wolfcrypt/src/poly1305_asm.asm
+EXTRA_DIST += wolfcrypt/src/fe_x25519_asm.asm
+EXTRA_DIST += wolfcrypt/src/sha256_asm.asm
+EXTRA_DIST += wolfcrypt/src/sha512_asm.asm
+EXTRA_DIST += wolfcrypt/src/sha3_asm.asm
+EXTRA_DIST += wolfcrypt/src/wc_mlkem_asm.asm
+EXTRA_DIST += wolfcrypt/src/wc_mldsa_asm.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-aes-asm.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-chacha-asm.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-curve25519.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-mlkem-asm.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-poly1305-asm.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-sha256-asm.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-sha3-asm.asm
+EXTRA_DIST += wolfcrypt/src/port/arm/armv8-sha512-asm.asm
 EXTRA_DIST += wolfcrypt/src/wc_dsp.c
 EXTRA_DIST += wolfcrypt/src/sp_dsp32.c
 EXTRA_DIST += wolfcrypt/src/sp_x86_64_asm.asm
@@ -63,6 +81,8 @@ EXTRA_DIST += wolfcrypt/src/port/ti/ti-aes.c \
               wolfcrypt/src/port/ti/ti-des3.c \
               wolfcrypt/src/port/ti/ti-hash.c \
               wolfcrypt/src/port/ti/ti-ccm.c \
+              wolfcrypt/src/port/ti/ti-c2000-aes.c \
+              wolfcrypt/src/port/ti/ti-c2000-entropy.c \
               wolfcrypt/src/port/pic32/pic32mz-crypt.c \
               wolfcrypt/src/port/nrf51.c \
               wolfcrypt/src/port/aria/aria-crypt.c \
@@ -78,6 +98,18 @@ EXTRA_DIST += wolfcrypt/src/port/ti/ti-aes.c \
               wolfcrypt/src/port/xilinx/xil-aesgcm.c \
               wolfcrypt/src/port/xilinx/xil-versal-glue.c \
               wolfcrypt/src/port/xilinx/xil-versal-trng.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/README.md \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_cipher.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_cmac.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_cryptocb.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_ecc.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_ecdh.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_ecies.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_hash.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_hmac.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_rng.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_rsa.c \
+              wolfcrypt/src/port/xilinx/versal_gen2_asu/asu_util.c \
               wolfcrypt/src/port/caam/caam_aes.c \
               wolfcrypt/src/port/caam/caam_driver.c \
               wolfcrypt/src/port/caam/caam_error.c \
@@ -105,6 +137,9 @@ EXTRA_DIST += wolfcrypt/src/port/ti/ti-aes.c \
               wolfcrypt/src/port/st/README.md \
               wolfcrypt/src/port/st/STM32MP13.md \
 			  wolfcrypt/src/port/st/STM32MP25.md \
+              wolfcrypt/src/port/realtek/rtl8735b.c \
+              wolfcrypt/src/port/realtek/rtl8735b_shim.h \
+              wolfcrypt/src/port/realtek/README.md \
               wolfcrypt/src/port/tropicsquare/tropic01.c \
               wolfcrypt/src/port/tropicsquare/README.md \
               wolfcrypt/src/port/af_alg/afalg_aes.c \
@@ -151,7 +186,6 @@ EXTRA_DIST += wolfcrypt/src/port/ti/ti-aes.c \
               wolfcrypt/src/port/Renesas/README.md \
               wolfcrypt/src/port/cypress/README.md \
               wolfcrypt/src/port/cypress/psoc6_crypto.c \
-              wolfcrypt/src/port/liboqs/liboqs.c \
               wolfcrypt/src/port/maxim/max3266x.c \
               wolfcrypt/src/ASN_TEMPLATE.md \
               wolfcrypt/src/port/rpi_pico/pico.c \
@@ -174,6 +208,7 @@ $(ASYNC_FILES):
 
 if BUILD_CRYPTOCB
 src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/cryptocb.c
+src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/wc_keystore.c
 endif
 
 if BUILD_PKCS11
@@ -218,6 +253,11 @@ if BUILD_IOTSAFE
 src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/port/iotsafe/iotsafe.c
 endif
 
+if BUILD_VAULTIC
+src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/port/sealsq/vaultic.c
+endif
+EXTRA_DIST += wolfcrypt/src/port/sealsq/README.md
+
 
 if BUILD_CAAM
 src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/port/caam/wolfcaam_init.c
@@ -242,6 +282,10 @@ endif
 
 if BUILD_TROPIC01
 src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/port/tropicsquare/tropic01.c
+endif
+
+if BUILD_RTL8735B
+src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/port/realtek/rtl8735b.c
 endif
 
 if BUILD_PSA

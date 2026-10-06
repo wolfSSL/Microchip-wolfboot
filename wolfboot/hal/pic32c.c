@@ -213,7 +213,7 @@ int pic32_flash_write(uint32_t address, const uint8_t *data, int len)
             _addr = pic32_addr_dqword_align(address);
             /* Setup an aligned buffer with the following rules:
              * - For addresses outside the writing range: 0xFF (no change)
-             * - For addresses inside the writing range: data | !current_data
+             * - For addresses inside the writing range: data | ~current_data
              *
              * This approach ensures we only flip bits from 1 to 0 when writing
              * without an erase operation. When the address is aligned and length
@@ -283,7 +283,7 @@ static void pic32_fcw_pfswap_set(int sw)
     uint32_t reg;
 
     reg = FCW_SWAP;
-    reg &= FCW_SWAP_PFSWAP;
+    reg &= ~FCW_SWAP_PFSWAP;
     if (sw)
         reg |= FCW_SWAP_PFSWAP;
     FCW_KEY = FCW_UNLOCK_SWAPKEY;

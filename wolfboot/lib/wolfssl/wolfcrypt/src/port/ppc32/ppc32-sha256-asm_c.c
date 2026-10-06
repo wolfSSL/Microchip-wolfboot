@@ -15,7 +15,10 @@
  *       ../wolfssl/wolfcrypt/src/port/ppc32/ppc32-sha256-asm.c
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_PPC32_SHA256_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 
 #ifdef WOLFSSL_PPC32_ASM
@@ -3639,6 +3642,8 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         /* Start of 16 rounds */
         "\n"
     "L_SHA256_transform_len_start_%=:\n\t"
+        "mfctr   %[len]\n\t"
+        "cmpwi   7, %[len], 1\n\t"
         /* Round 0 */
         "rotlwi  0, 11, 26\n\t"
         "rotlwi  %[len], 11, 21\n\t"
@@ -3665,9 +3670,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 8\n\t"
         "add     15, 15, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_0_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_0_%=\n\t"
         /* Calc new W[0] */
         "rotlwi  0, 17, 25\n\t"
         "rotlwi  %[len], 17, 14\n\t"
@@ -3710,9 +3713,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 7\n\t"
         "add     14, 14, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_1_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_1_%=\n\t"
         /* Calc new W[1] */
         "rotlwi  0, 18, 25\n\t"
         "rotlwi  %[len], 18, 14\n\t"
@@ -3755,9 +3756,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 15\n\t"
         "add     12, 12, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_2_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_2_%=\n\t"
         /* Calc new W[2] */
         "rotlwi  0, 19, 25\n\t"
         "rotlwi  %[len], 19, 14\n\t"
@@ -3800,9 +3799,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 14\n\t"
         "add     11, 11, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_3_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_3_%=\n\t"
         /* Calc new W[3] */
         "rotlwi  0, 20, 25\n\t"
         "rotlwi  %[len], 20, 14\n\t"
@@ -3845,9 +3842,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 12\n\t"
         "add     10, 10, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_4_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_4_%=\n\t"
         /* Calc new W[4] */
         "rotlwi  0, 21, 25\n\t"
         "rotlwi  %[len], 21, 14\n\t"
@@ -3890,9 +3885,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 11\n\t"
         "add     9, 9, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_5_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_5_%=\n\t"
         /* Calc new W[5] */
         "rotlwi  0, 22, 25\n\t"
         "rotlwi  %[len], 22, 14\n\t"
@@ -3935,9 +3928,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 10\n\t"
         "add     8, 8, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_6_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_6_%=\n\t"
         /* Calc new W[6] */
         "rotlwi  0, 23, 25\n\t"
         "rotlwi  %[len], 23, 14\n\t"
@@ -3980,9 +3971,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 9\n\t"
         "add     7, 7, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_7_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_7_%=\n\t"
         /* Calc new W[7] */
         "rotlwi  0, 24, 25\n\t"
         "rotlwi  %[len], 24, 14\n\t"
@@ -4025,9 +4014,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 8\n\t"
         "add     15, 15, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_8_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_8_%=\n\t"
         /* Calc new W[8] */
         "rotlwi  0, 25, 25\n\t"
         "rotlwi  %[len], 25, 14\n\t"
@@ -4070,9 +4057,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 7\n\t"
         "add     14, 14, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_9_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_9_%=\n\t"
         /* Calc new W[9] */
         "rotlwi  0, 26, 25\n\t"
         "rotlwi  %[len], 26, 14\n\t"
@@ -4115,9 +4100,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 15\n\t"
         "add     12, 12, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_10_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_10_%=\n\t"
         /* Calc new W[10] */
         "rotlwi  0, 27, 25\n\t"
         "rotlwi  %[len], 27, 14\n\t"
@@ -4160,9 +4143,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 14\n\t"
         "add     11, 11, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_11_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_11_%=\n\t"
         /* Calc new W[11] */
         "rotlwi  0, 28, 25\n\t"
         "rotlwi  %[len], 28, 14\n\t"
@@ -4205,9 +4186,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 12\n\t"
         "add     10, 10, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_12_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_12_%=\n\t"
         /* Calc new W[12] */
         "rotlwi  0, 29, 25\n\t"
         "rotlwi  %[len], 29, 14\n\t"
@@ -4250,9 +4229,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 11\n\t"
         "add     9, 9, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_13_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_13_%=\n\t"
         /* Calc new W[13] */
         "rotlwi  0, 30, 25\n\t"
         "rotlwi  %[len], 30, 14\n\t"
@@ -4295,9 +4272,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 10\n\t"
         "add     8, 8, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_14_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_14_%=\n\t"
         /* Calc new W[14] */
         "rotlwi  0, 31, 25\n\t"
         "rotlwi  %[len], 31, 14\n\t"
@@ -4340,9 +4315,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     0, 0, %[len]\n\t"
         "xor     0, 0, 9\n\t"
         "add     7, 7, 0\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   0, %[len], 1\n\t"
-        "beq     0, L_SHA256_transform_len_after_blk_15_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_15_%=\n\t"
         /* Calc new W[15] */
         "rotlwi  0, 16, 25\n\t"
         "rotlwi  %[len], 16, 14\n\t"
@@ -6883,6 +6856,8 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         /* Start of 16 rounds */
         "\n"
     "L_SHA256_transform_len_start_%=:\n\t"
+        "mfctr   %[len]\n\t"
+        "cmpwi   7, %[len], 1\n\t"
         /* Round 0 */
         "rotlwi  %[sha256], 9, 26\n\t"
         "rotlwi  %[len], 9, 21\n\t"
@@ -6909,9 +6884,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], %[data]\n\t"
         "add     12, 12, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_0_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_0_%=\n\t"
         /* Calc new W[0] */
         "rotlwi  %[sha256], 15, 25\n\t"
         "rotlwi  %[len], 15, 14\n\t"
@@ -6954,9 +6927,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 0\n\t"
         "add     11, 11, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_1_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_1_%=\n\t"
         /* Calc new W[1] */
         "rotlwi  %[sha256], 16, 25\n\t"
         "rotlwi  %[len], 16, 14\n\t"
@@ -6999,9 +6970,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 12\n\t"
         "add     10, 10, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_2_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_2_%=\n\t"
         /* Calc new W[2] */
         "rotlwi  %[sha256], 17, 25\n\t"
         "rotlwi  %[len], 17, 14\n\t"
@@ -7044,9 +7013,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 11\n\t"
         "add     9, 9, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_3_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_3_%=\n\t"
         /* Calc new W[3] */
         "rotlwi  %[sha256], 18, 25\n\t"
         "rotlwi  %[len], 18, 14\n\t"
@@ -7089,9 +7056,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 10\n\t"
         "add     8, 8, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_4_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_4_%=\n\t"
         /* Calc new W[4] */
         "rotlwi  %[sha256], 19, 25\n\t"
         "rotlwi  %[len], 19, 14\n\t"
@@ -7134,9 +7099,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 9\n\t"
         "add     7, 7, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_5_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_5_%=\n\t"
         /* Calc new W[5] */
         "rotlwi  %[sha256], 20, 25\n\t"
         "rotlwi  %[len], 20, 14\n\t"
@@ -7179,9 +7142,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 8\n\t"
         "add     %[data], %[data], %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_6_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_6_%=\n\t"
         /* Calc new W[6] */
         "rotlwi  %[sha256], 21, 25\n\t"
         "rotlwi  %[len], 21, 14\n\t"
@@ -7224,9 +7185,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 7\n\t"
         "add     0, 0, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_7_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_7_%=\n\t"
         /* Calc new W[7] */
         "rotlwi  %[sha256], 22, 25\n\t"
         "rotlwi  %[len], 22, 14\n\t"
@@ -7269,9 +7228,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], %[data]\n\t"
         "add     12, 12, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_8_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_8_%=\n\t"
         /* Calc new W[8] */
         "rotlwi  %[sha256], 23, 25\n\t"
         "rotlwi  %[len], 23, 14\n\t"
@@ -7314,9 +7271,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 0\n\t"
         "add     11, 11, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_9_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_9_%=\n\t"
         /* Calc new W[9] */
         "rotlwi  %[sha256], 24, 25\n\t"
         "rotlwi  %[len], 24, 14\n\t"
@@ -7359,9 +7314,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 12\n\t"
         "add     10, 10, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_10_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_10_%=\n\t"
         /* Calc new W[10] */
         "rotlwi  %[sha256], 25, 25\n\t"
         "rotlwi  %[len], 25, 14\n\t"
@@ -7404,9 +7357,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 11\n\t"
         "add     9, 9, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_11_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_11_%=\n\t"
         /* Calc new W[11] */
         "rotlwi  %[sha256], 26, 25\n\t"
         "rotlwi  %[len], 26, 14\n\t"
@@ -7449,9 +7400,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 10\n\t"
         "add     8, 8, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_12_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_12_%=\n\t"
         /* Calc new W[12] */
         "rotlwi  %[sha256], 27, 25\n\t"
         "rotlwi  %[len], 27, 14\n\t"
@@ -7494,9 +7443,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 9\n\t"
         "add     7, 7, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_13_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_13_%=\n\t"
         /* Calc new W[13] */
         "rotlwi  %[sha256], 28, 25\n\t"
         "rotlwi  %[len], 28, 14\n\t"
@@ -7539,9 +7486,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 8\n\t"
         "add     %[data], %[data], %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_14_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_14_%=\n\t"
         /* Calc new W[14] */
         "rotlwi  %[sha256], 29, 25\n\t"
         "rotlwi  %[len], 29, 14\n\t"
@@ -7584,9 +7529,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len(wc_Sha256* sha256,
         "and     %[sha256], %[sha256], %[len]\n\t"
         "xor     %[sha256], %[sha256], 7\n\t"
         "add     0, 0, %[sha256]\n\t"
-        "mfctr   %[len]\n\t"
-        "cmpwi   %[sha256], %[len], 1\n\t"
-        "beq     %[sha256], L_SHA256_transform_len_after_blk_15_%=\n\t"
+        "beq     7, L_SHA256_transform_len_after_blk_15_%=\n\t"
         /* Calc new W[15] */
         "rotlwi  %[sha256], 14, 25\n\t"
         "rotlwi  %[len], 14, 14\n\t"

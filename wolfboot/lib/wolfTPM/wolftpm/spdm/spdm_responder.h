@@ -1,8 +1,8 @@
 /* spdm_responder.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -38,6 +38,11 @@ typedef int (*WOLFSPDM_RESP_TPM_CB)(void* userCtx,
 
 WOLFTPM_API int wolfSPDM_RespInit(WOLFSPDM_RESP_CTX* ctx);
 WOLFTPM_API void wolfSPDM_RespFree(WOLFSPDM_RESP_CTX* ctx);
+
+/* The tunnel buffers stay at WOLFSPDM_MAX_MSG_SIZE: the secured path
+ * (encrypt, transport and requester buffers) is capped there too, so a
+ * larger TPM response could not be delivered even if staged here. */
+#define WOLFSPDM_MAX_TPM_MSG_SIZE WOLFSPDM_MAX_MSG_SIZE
 
 /* RESP_CTX embeds the requester CTX + four MAX_MSG_SIZE working buffers
  * (4 * 4096) + identity/PSK material + tpm callback + flags. Static buffer

@@ -21,6 +21,8 @@
 #include <string.h>
 
 #include <wolfpsa/psa/crypto.h>
+#include <wolfpsa/psa_engine.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
 
 static int expect_status(const char *label, psa_status_t status,
                          psa_status_t expected)
@@ -474,6 +476,571 @@ static int test_size_macros(void)
     return fail;
 }
 
+/* Case 9: a key whose lifetime names a storage location this build does not
+ * implement (for example a secure element or vendor location) must be rejected
+ * rather than silently written to plaintext local storage. Covers both the
+ * import and generate entry points. */
+static int test_unsupported_lifetime_location(void)
+{
+    /* A non-local vendor / secure-element storage location. */
+    psa_key_location_t se_location =
+        (psa_key_location_t)(PSA_KEY_LOCATION_VENDOR_FLAG | 0x01u);
+    psa_key_lifetime_t se_lifetime =
+        PSA_KEY_LIFETIME_FROM_PERSISTENCE_AND_LOCATION(
+            PSA_KEY_PERSISTENCE_DEFAULT, se_location);
+    static const uint8_t aes_key[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+    };
+    psa_key_attributes_t attrs = psa_key_attributes_init();
+    psa_key_id_t key = 0;
+    psa_status_t st;
+
+    psa_set_key_type(&attrs, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&attrs, 128);
+    psa_set_key_usage_flags(&attrs,
+                            PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&attrs, PSA_ALG_GCM);
+    psa_set_key_lifetime(&attrs, se_lifetime);
+
+    /* Import path */
+    st = psa_import_key(&attrs, aes_key, sizeof(aes_key), &key);
+    if (st == PSA_SUCCESS) {
+        (void)psa_destroy_key(key);
+    }
+    if (expect_status("import_key unsupported location", st,
+                      PSA_ERROR_NOT_SUPPORTED) != 0) {
+        return 1;
+    }
+
+    /* Generate path (funnels through psa_import_key) */
+    key = 0;
+    st = psa_generate_key(&attrs, &key);
+    if (st == PSA_SUCCESS) {
+        (void)psa_destroy_key(key);
+    }
+    if (expect_status("generate_key unsupported location", st,
+                      PSA_ERROR_NOT_SUPPORTED) != 0) {
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Case 10: deterministic ECDSA (RFC 6979) must produce identical signatures
+ * for the same key and hash, and those signatures must verify. This exercises
+ * the deterministic nonce setup on the sign path; a randomized ECDSA nonce
+ * (deterministic setup deleted or disabled) yields two different signatures
+ * and fails the identical-signature assertion. */
+static int test_deterministic_ecdsa(void)
+{
+    psa_algorithm_t alg = PSA_ALG_DETERMINISTIC_ECDSA(PSA_ALG_SHA_256);
+    psa_key_attributes_t attrs = psa_key_attributes_init();
+    psa_key_id_t key = 0;
+    static const uint8_t hash[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+    uint8_t sig1[PSA_SIGNATURE_MAX_SIZE];
+    uint8_t sig2[PSA_SIGNATURE_MAX_SIZE];
+    size_t sig1_len = 0;
+    size_t sig2_len = 0;
+    psa_status_t st;
+
+    psa_set_key_type(&attrs,
+                     PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attrs, 256);
+    psa_set_key_usage_flags(&attrs,
+                            PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_VERIFY_HASH);
+    psa_set_key_algorithm(&attrs, alg);
+
+    st = psa_generate_key(&attrs, &key);
+    if (expect_status("det_ecdsa: generate", st, PSA_SUCCESS) != 0)
+        return 1;
+
+    st = psa_sign_hash(key, alg, hash, sizeof(hash), sig1, sizeof(sig1),
+                       &sig1_len);
+    if (st == PSA_ERROR_NOT_SUPPORTED) {
+        printf("SKIP test_deterministic_ecdsa (deterministic ECDSA not"
+               " supported by this build)\n");
+        (void)psa_destroy_key(key);
+        return 0;
+    }
+    if (expect_status("det_ecdsa: sign #1", st, PSA_SUCCESS) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    st = psa_sign_hash(key, alg, hash, sizeof(hash), sig2, sizeof(sig2),
+                       &sig2_len);
+    if (expect_status("det_ecdsa: sign #2", st, PSA_SUCCESS) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    if (sig1_len != sig2_len || memcmp(sig1, sig2, sig1_len) != 0) {
+        printf("FAIL det_ecdsa: signatures differ, deterministic nonce not"
+               " applied\n");
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    st = psa_verify_hash(key, alg, hash, sizeof(hash), sig1, sig1_len);
+    if (expect_status("det_ecdsa: verify", st, PSA_SUCCESS) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    (void)psa_destroy_key(key);
+    printf("PASS: deterministic ECDSA identical signatures\n");
+    return 0;
+}
+
+/* Case 11: multipart ChaCha20-Poly1305 with a shortened tag must be rejected
+ * at setup with PSA_ERROR_NOT_SUPPORTED. Truncated Poly1305 tags are not
+ * implemented, so a shortened-tag algorithm must not be accepted and then fail
+ * the encrypt/decrypt roundtrip. */
+static int test_chacha20_poly1305_shortened_tag(void)
+{
+    psa_algorithm_t alg =
+        PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CHACHA20_POLY1305, 8);
+    static const uint8_t key_bytes[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+    static const uint8_t nonce[12] = { 0 };
+    static const uint8_t pt[16] = {
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+    psa_key_attributes_t attrs = psa_key_attributes_init();
+    psa_key_id_t key = 0;
+    psa_aead_operation_t op = PSA_AEAD_OPERATION_INIT;
+    uint8_t ct[sizeof(pt) + 16];
+    size_t ct_len = 0;
+    psa_status_t st;
+
+    psa_set_key_type(&attrs, PSA_KEY_TYPE_CHACHA20);
+    psa_set_key_bits(&attrs, 256u);
+    psa_set_key_usage_flags(&attrs,
+                            PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+    /* Bind the key policy to the shortened-tag algorithm so the key-policy
+     * check passes and setup reaches the tag-length validation. */
+    psa_set_key_algorithm(&attrs, alg);
+
+    st = psa_import_key(&attrs, key_bytes, sizeof(key_bytes), &key);
+    if (st == PSA_ERROR_NOT_SUPPORTED) {
+        printf("SKIP chacha20_poly1305_shortened_tag (not supported by this"
+               " build)\n");
+        return 0;
+    }
+    if (expect_status("chacha short-tag import", st, PSA_SUCCESS) != 0)
+        return 1;
+
+    /* Multipart setup must reject the shortened tag. */
+    st = psa_aead_encrypt_setup(&op, key, alg);
+    if (expect_status("chacha short-tag encrypt_setup", st,
+                      PSA_ERROR_NOT_SUPPORTED) != 0) {
+        (void)psa_aead_abort(&op);
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+    (void)psa_aead_abort(&op);
+
+    /* One-shot path (routes through setup) must reject it too. */
+    ct_len = 0;
+    st = psa_aead_encrypt(key, alg, nonce, sizeof(nonce), NULL, 0,
+                          pt, sizeof(pt), ct, sizeof(ct), &ct_len);
+    if (expect_status("chacha short-tag encrypt", st,
+                      PSA_ERROR_NOT_SUPPORTED) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    (void)psa_destroy_key(key);
+    printf("PASS: ChaCha20-Poly1305 shortened tag rejected\n");
+    return 0;
+}
+
+/* Case 12: an undersized RSA signature buffer must be reported as
+ * PSA_ERROR_BUFFER_TOO_SMALL, not PSA_ERROR_GENERIC_ERROR. wc_RsaSSL_Sign
+ * returns RSA_BUFFER_E when the output buffer is smaller than the modulus, and
+ * the error translator must map that to BUFFER_TOO_SMALL so callers can retry
+ * with a larger buffer. */
+static int test_rsa_sign_buffer_too_small(void)
+{
+    psa_algorithm_t alg = PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256);
+    static const uint8_t hash[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+    psa_key_attributes_t attrs = psa_key_attributes_init();
+    psa_key_id_t key = 0;
+    uint8_t sig[16]; /* far smaller than a 2048-bit (256-byte) signature */
+    size_t sig_len = 0;
+    psa_status_t st;
+
+    psa_set_key_type(&attrs, PSA_KEY_TYPE_RSA_KEY_PAIR);
+    psa_set_key_bits(&attrs, 2048u);
+    psa_set_key_usage_flags(&attrs, PSA_KEY_USAGE_SIGN_HASH);
+    psa_set_key_algorithm(&attrs, alg);
+
+    st = psa_generate_key(&attrs, &key);
+    if (st == PSA_ERROR_NOT_SUPPORTED) {
+        printf("SKIP rsa_sign_buffer_too_small (RSA not supported by this"
+               " build)\n");
+        return 0;
+    }
+    if (expect_status("rsa buffer-too-small: generate", st, PSA_SUCCESS) != 0)
+        return 1;
+
+    st = psa_sign_hash(key, alg, hash, sizeof(hash), sig, sizeof(sig),
+                       &sig_len);
+    if (expect_status("rsa sign undersized buffer", st,
+                      PSA_ERROR_BUFFER_TOO_SMALL) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    (void)psa_destroy_key(key);
+    printf("PASS: RSA sign undersized buffer -> BUFFER_TOO_SMALL\n");
+    return 0;
+}
+
+/* Case 13: GCM nonce-length error codes. GCM (SP 800-38D) accepts any
+ * non-empty nonce; a zero-length nonce is invalid for the algorithm
+ * (INVALID_ARGUMENT), while non-empty lengths outside the supported 12-24 byte
+ * range are valid for GCM but not supported by this implementation
+ * (NOT_SUPPORTED). A 12-byte nonce is accepted. */
+static int test_gcm_nonce_lengths(void)
+{
+    static const uint8_t key_bytes[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+    };
+    static const uint8_t nonce[25] = { 0 };
+    static const uint8_t pt[16] = {
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+    psa_key_attributes_t attrs = psa_key_attributes_init();
+    psa_key_id_t key = 0;
+    uint8_t ct[sizeof(pt) + 16];
+    uint8_t ptout[sizeof(pt)];
+    size_t ct_len = 0;
+    size_t pt_len = 0;
+    psa_status_t st;
+
+    psa_set_key_type(&attrs, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&attrs, 128u);
+    psa_set_key_usage_flags(&attrs,
+                            PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&attrs, PSA_ALG_GCM);
+
+    st = psa_import_key(&attrs, key_bytes, sizeof(key_bytes), &key);
+    if (st == PSA_ERROR_NOT_SUPPORTED) {
+        printf("SKIP gcm_nonce_lengths (GCM not supported by this build)\n");
+        return 0;
+    }
+    if (expect_status("gcm nonce import", st, PSA_SUCCESS) != 0)
+        return 1;
+
+    /* 0 bytes: invalid for GCM */
+    st = psa_aead_encrypt(key, PSA_ALG_GCM, nonce, 0, NULL, 0,
+                          pt, sizeof(pt), ct, sizeof(ct), &ct_len);
+    if (expect_status("gcm nonce 0", st, PSA_ERROR_INVALID_ARGUMENT) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    /* 8 bytes: valid GCM nonce, unsupported here */
+    st = psa_aead_encrypt(key, PSA_ALG_GCM, nonce, 8, NULL, 0,
+                          pt, sizeof(pt), ct, sizeof(ct), &ct_len);
+    if (expect_status("gcm nonce 8", st, PSA_ERROR_NOT_SUPPORTED) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    /* 25 bytes: valid GCM nonce, exceeds supported max */
+    st = psa_aead_encrypt(key, PSA_ALG_GCM, nonce, 25, NULL, 0,
+                          pt, sizeof(pt), ct, sizeof(ct), &ct_len);
+    if (expect_status("gcm nonce 25", st, PSA_ERROR_NOT_SUPPORTED) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    /* 12 bytes: supported (lower boundary) */
+    st = psa_aead_encrypt(key, PSA_ALG_GCM, nonce, 12, NULL, 0,
+                          pt, sizeof(pt), ct, sizeof(ct), &ct_len);
+    if (expect_status("gcm nonce 12", st, PSA_SUCCESS) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    /* 24 bytes: supported (upper boundary, PSA_AEAD_NONCE_MAX_SIZE) */
+    st = psa_aead_encrypt(key, PSA_ALG_GCM, nonce, 24, NULL, 0,
+                          pt, sizeof(pt), ct, sizeof(ct), &ct_len);
+    if (expect_status("gcm nonce 24", st, PSA_SUCCESS) != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    /* The decrypt direction reaches the same nonce validation. ct holds the
+     * 24-byte-nonce ciphertext from above; only the nonce length is exercised
+     * here, so the tag never verifies. */
+    st = psa_aead_decrypt(key, PSA_ALG_GCM, nonce, 0, NULL, 0,
+                          ct, ct_len, ptout, sizeof(ptout), &pt_len);
+    if (expect_status("gcm decrypt nonce 0", st, PSA_ERROR_INVALID_ARGUMENT)
+            != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    st = psa_aead_decrypt(key, PSA_ALG_GCM, nonce, 8, NULL, 0,
+                          ct, ct_len, ptout, sizeof(ptout), &pt_len);
+    if (expect_status("gcm decrypt nonce 8", st, PSA_ERROR_NOT_SUPPORTED)
+            != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    st = psa_aead_decrypt(key, PSA_ALG_GCM, nonce, 25, NULL, 0,
+                          ct, ct_len, ptout, sizeof(ptout), &pt_len);
+    if (expect_status("gcm decrypt nonce 25", st, PSA_ERROR_NOT_SUPPORTED)
+            != 0) {
+        (void)psa_destroy_key(key);
+        return 1;
+    }
+
+    (void)psa_destroy_key(key);
+    printf("PASS: GCM nonce length handling\n");
+
+    return 0;
+}
+
+/* psa_purge_key(): a live key purges to PSA_SUCCESS, an absent one to
+ * PSA_ERROR_INVALID_HANDLE (wolfPSA keeps no purgeable persistent-key cache). */
+static int test_purge_key(void)
+{
+    psa_key_attributes_t a = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t k = PSA_KEY_ID_NULL;
+    const uint8_t key[16] = { 0 };
+    psa_status_t st;
+
+    psa_set_key_usage_flags(&a, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&a, PSA_ALG_GCM);
+    psa_set_key_type(&a, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&a, 128);
+
+    if (psa_import_key(&a, key, sizeof(key), &k) != PSA_SUCCESS) {
+        printf("FAIL psa_purge_key import\n");
+        return 1;
+    }
+    st = psa_purge_key(k);
+    if (st != PSA_SUCCESS) {
+        printf("FAIL psa_purge_key(live) status=%d\n", (int)st);
+        return 1;
+    }
+    if (psa_destroy_key(k) != PSA_SUCCESS) {
+        printf("FAIL psa_purge_key destroy\n");
+        return 1;
+    }
+    st = psa_purge_key(k);
+    if (st != PSA_ERROR_INVALID_HANDLE) {
+        printf("FAIL psa_purge_key(absent) status=%d expected=%d\n",
+               (int)st, (int)PSA_ERROR_INVALID_HANDLE);
+        return 1;
+    }
+    return 0;
+}
+
+/* psa_get_key_attributes() must return the key id for a volatile key too, not
+ * only for persistent keys: the auto-assigned volatile id has to round-trip,
+ * and stamping it must not flip the reported lifetime to persistent. */
+static int test_volatile_key_id_roundtrip(void)
+{
+    psa_key_attributes_t a = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_attributes_t got = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t k = PSA_KEY_ID_NULL;
+    const uint8_t key[16] = { 0 };
+    psa_status_t st;
+
+    psa_set_key_usage_flags(&a, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&a, PSA_ALG_GCM);
+    psa_set_key_type(&a, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&a, 128);
+    /* Volatile: the caller sets no id, so the implementation assigns one. */
+
+    if (psa_import_key(&a, key, sizeof(key), &k) != PSA_SUCCESS) {
+        printf("FAIL volatile id import\n");
+        return 1;
+    }
+    st = psa_get_key_attributes(k, &got);
+    if (st != PSA_SUCCESS) {
+        (void)psa_destroy_key(k);
+        printf("FAIL volatile id get_attributes status=%d\n", (int)st);
+        return 1;
+    }
+    if (psa_get_key_id(&got) != k) {
+        (void)psa_destroy_key(k);
+        printf("FAIL volatile id mismatch got=%u expected=%u\n",
+               (unsigned)psa_get_key_id(&got), (unsigned)k);
+        return 1;
+    }
+    if (!PSA_KEY_LIFETIME_IS_VOLATILE(psa_get_key_lifetime(&got))) {
+        (void)psa_destroy_key(k);
+        printf("FAIL volatile id lifetime no longer volatile\n");
+        return 1;
+    }
+    (void)psa_destroy_key(k);
+    return 0;
+}
+
+/* psa_get_key_attributes() output must stay usable as a key-creation template.
+ * The reported id is meaningless for a volatile key, so the creation calls have
+ * to ignore it instead of treating it as a caller-requested id. */
+static int test_volatile_attributes_reuse(void)
+{
+    psa_key_attributes_t a = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_attributes_t got = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t src = PSA_KEY_ID_NULL;
+    psa_key_id_t imported = PSA_KEY_ID_NULL;
+    psa_key_id_t copied = PSA_KEY_ID_NULL;
+    psa_key_id_t generated = PSA_KEY_ID_NULL;
+    const uint8_t key[16] = { 0 };
+    psa_status_t st;
+    int ret = 0;
+
+    psa_set_key_usage_flags(&a, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT |
+                                PSA_KEY_USAGE_COPY);
+    psa_set_key_algorithm(&a, PSA_ALG_GCM);
+    psa_set_key_type(&a, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&a, 128);
+
+    st = psa_import_key(&a, key, sizeof(key), &src);
+    if (st != PSA_SUCCESS) {
+        printf("FAIL attributes reuse source import status=%d\n", (int)st);
+        return 1;
+    }
+
+    st = psa_get_key_attributes(src, &got);
+    if (st != PSA_SUCCESS) {
+        printf("FAIL attributes reuse get_attributes status=%d\n", (int)st);
+        ret = 1;
+    }
+
+    if (ret == 0) {
+        st = psa_import_key(&got, key, sizeof(key), &imported);
+        if (st != PSA_SUCCESS) {
+            printf("FAIL attributes reuse import status=%d\n", (int)st);
+            ret = 1;
+        }
+        else if (imported == src) {
+            printf("FAIL attributes reuse import reused source id\n");
+            ret = 1;
+        }
+    }
+
+    if (ret == 0) {
+        st = psa_copy_key(src, &got, &copied);
+        if (st != PSA_SUCCESS) {
+            printf("FAIL attributes reuse copy status=%d\n", (int)st);
+            ret = 1;
+        }
+        else if (copied == src) {
+            printf("FAIL attributes reuse copy reused source id\n");
+            ret = 1;
+        }
+    }
+
+    if (ret == 0) {
+        st = psa_generate_key(&got, &generated);
+        if (st != PSA_SUCCESS) {
+            printf("FAIL attributes reuse generate status=%d\n", (int)st);
+            ret = 1;
+        }
+        else if (generated == src) {
+            printf("FAIL attributes reuse generate reused source id\n");
+            ret = 1;
+        }
+    }
+
+    if (generated != PSA_KEY_ID_NULL)
+        (void)psa_destroy_key(generated);
+    if (copied != PSA_KEY_ID_NULL)
+        (void)psa_destroy_key(copied);
+    if (imported != PSA_KEY_ID_NULL)
+        (void)psa_destroy_key(imported);
+    (void)psa_destroy_key(src);
+    return ret;
+}
+
+/* Case 17: the default devId setter agrees with how the library was built.
+ * INVALID_DEVID and WOLFPSA_DEVID_DEFAULT ask for no offload and must always
+ * be accepted; a real devId is only meaningful when the dispatch was compiled
+ * in. Which of those two the library does is not decided here: this TU is
+ * compiled without user_settings.h, so its own WOLF_CRYPTO_CB is unrelated
+ * to the flags libwolfpsa was built with, and test/Makefile already builds a
+ * sibling archive with the callbacks on. So accept either answer and assert
+ * the invariant that holds in both: the setter's verdict and the getter's
+ * report agree. */
+static int test_default_devid_setter(void)
+{
+    int ret = 0;
+    int st;
+
+    st = wolfPSA_SetDefaultDevID(INVALID_DEVID);
+    if (st != 0) {
+        printf("FAIL devid setter rejected INVALID_DEVID ret=%d\n", st);
+        ret = 1;
+    }
+
+    if (ret == 0 && wolfPSA_GetDefaultDevID() != INVALID_DEVID) {
+        printf("FAIL devid getter did not report the forced local devId\n");
+        ret = 1;
+    }
+
+    if (ret == 0) {
+        st = wolfPSA_SetDefaultDevID(7);
+        if (st == 0) {
+            /* Accepted: the library dispatches, so it has to use the value. */
+            if (wolfPSA_GetDefaultDevID() != 7) {
+                printf("FAIL accepted devId was not reported back\n");
+                ret = 1;
+            }
+        }
+        else if (st == WC_NO_ERR_TRACE(NOT_COMPILED_IN)) {
+            /* Refused: no dispatch was compiled in, so nothing may change. */
+            if (wolfPSA_GetDefaultDevID() != INVALID_DEVID) {
+                printf("FAIL rejected devId still changed the default\n");
+                ret = 1;
+            }
+        }
+        else {
+            printf("FAIL devid setter returned neither success nor"
+                   " NOT_COMPILED_IN ret=%d\n", st);
+            ret = 1;
+        }
+    }
+
+    /* Hand the choice back to wolfCrypt, so this case leaves the process in
+     * the state it found it in. */
+    st = wolfPSA_SetDefaultDevID(WOLFPSA_DEVID_DEFAULT);
+    if (st != 0) {
+        printf("FAIL devid setter rejected WOLFPSA_DEVID_DEFAULT ret=%d\n",
+               st);
+        ret = 1;
+    }
+
+    return ret;
+}
+
 int main(void)
 {
     psa_status_t st;
@@ -514,6 +1081,42 @@ int main(void)
 
     /* Case 8: size macro runtime checks */
     if (test_size_macros() != 0)
+        return 1;
+
+    /* Case 9: unsupported key lifetime location rejected */
+    if (test_unsupported_lifetime_location() != 0)
+        return 1;
+
+    /* Case 10: deterministic ECDSA identical-signature check */
+    if (test_deterministic_ecdsa() != 0)
+        return 1;
+
+    /* Case 11: ChaCha20-Poly1305 shortened tag rejected at setup */
+    if (test_chacha20_poly1305_shortened_tag() != 0)
+        return 1;
+
+    /* Case 12: undersized RSA signature buffer -> BUFFER_TOO_SMALL */
+    if (test_rsa_sign_buffer_too_small() != 0)
+        return 1;
+
+    /* Case 13: GCM nonce-length error codes */
+    if (test_gcm_nonce_lengths() != 0)
+        return 1;
+
+    /* Case 14: psa_purge_key live + absent */
+    if (test_purge_key() != 0)
+        return 1;
+
+    /* Case 15: volatile key id round-trips through psa_get_key_attributes */
+    if (test_volatile_key_id_roundtrip() != 0)
+        return 1;
+
+    /* Case 16: those attributes still work as a key-creation template */
+    if (test_volatile_attributes_reuse() != 0)
+        return 1;
+
+    /* Case 17: the default devId setter agrees with the build */
+    if (test_default_devid_setter() != 0)
         return 1;
 
     printf("PSA 1.4 misc test: OK\n");

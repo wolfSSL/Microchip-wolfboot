@@ -7,11 +7,11 @@ Portable TPM 2.0 project designed for embedded use.
 
 * This implementation provides all TPM 2.0 API's in compliance with the specification.
 * Wrappers provided to simplify Key Generation/Loading, RSA encrypt/decrypt, ECC sign/verify, ECDH, NV, Hashing/HACM, AES, Sealing/Unsealing, Attestation, PCR Extend/Quote and Secure Root of Trust.
-* Any TPM 2.0 compliant module is supported. Tested modules include Infineon SLB9670, SLB9672, SLB9673, STMicroelectronics ST33KTPM2XSPI, ST33KTPM2I, ST33TPHF2XSPI, ST33TPHF2XI2C, Microchip ATTPM20, Nations Technologies/NSING Z32H330, NS350, and Nuvoton NPCT650, NPCT750.
+* Any TPM 2.0 compliant module is supported. Tested modules include Infineon SLB9670, SLB9672, SLB9673, STMicroelectronics ST33KTPM2XSPI, ST33KTPM2I, ST33TPHF2XSPI, ST33TPHF2XI2C, Microchip ATTPM20, Nations Technologies/NSING Z32H330, NS350, Nuvoton NPCT650, NPCT750, and SealSQ QVault TPM (first TPM with post-quantum ML-DSA/ML-KEM in silicon).
 * wolfTPM uses the TPM Interface Specification (TIS) to communicate either over SPI, or using a memory mapped I/O range.
 * On Linux, wolfTPM auto-detects between the kernel TPM driver (`/dev/tpmX`) and direct SPI access at runtime - a simple `./configure && make` works with either interface.
 * wolfTPM can also use the Linux TPM kernel interface (`/dev/tpmX`) to talk with any physical TPM on SPI, I2C and even LPC bus.
-* Platform support for Raspberry Pi (Linux), MMIO, STM32 with CubeMX, Atmel ASF, Xilinx, QNX Infineon TriCore and Barebox.
+* Platform support for Raspberry Pi (Linux), MMIO, STM32 with CubeMX, Atmel ASF, Xilinx, QNX, Infineon TriCore, wolfHAL and Barebox.
 * The design allows for easy portability to different platforms:
     * Native C code designed for embedded use.
     * Single IO callback for hardware SPI interface.
@@ -58,7 +58,7 @@ Features:
 * TIS register-level transport over shared memory or SPI/I2C for bare-metal integration
 * HAL abstractions for IO transport and NV storage portability
 * File-based or custom NV storage via HAL callbacks
-* Compile-time algorithm and feature selection (e.g., `NO_RSA`, `FWTPM_NO_NV`)
+* Compile-time algorithm and per-command-group feature selection (e.g., `NO_RSA`, `FWTPM_NO_NV`, and independent per-command-group gates you pick and choose to shrink the fTPM footprint)
 * `WOLFTPM_SMALL_STACK` support for constrained environments
 
 See [docs/FWTPM.md](docs/FWTPM.md) for build instructions, configuration, and API reference.
@@ -78,9 +78,12 @@ Supported algorithms:
 | Hash-ML-DSA (pre-hash signing) | FIPS 204 | ML-DSA-44 / 65 / 87 with caller hash |
 | ML-KEM (key encapsulation) | FIPS 203 | ML-KEM-512 / 768 / 1024 |
 
-The examples run against the in-tree fwTPM server. No shipping hardware
-TPM firmware implements v1.85 PQC yet; upgrade paths for discrete chips
-are forward-compatible — the same wrapper API targets both.
+wolfTPM **officially supports the SealSQ QVault TPM**, the first shipping TPM 2.0
+with these v1.85 PQC algorithms in silicon. Build for it with `--enable-sealsq
+--enable-pqc`. The same examples and wrapper API also run against the in-tree
+fwTPM server for CI or when no hardware is present. See the
+[TPM2 Benchmarks](#tpm2-benchmarks) section for measured ML-DSA / ML-KEM
+performance on the QVault TPM.
 
 ### Building
 
@@ -144,9 +147,10 @@ make check
 ```
 
 See [examples/pqc/README.md](examples/pqc/README.md) for per-example
-details (`pqc_mssim_e2e`, `mlkem_encap`) and PQC options on the
-general-purpose `keygen`/`keyload` tools (`-mldsa`, `-hash_mldsa`,
-`-mlkem`).
+details — the `pqc_ctrl` control center (every PQC operation plus board
+control in one CLI, with `pqc_ctrl.sh` running the full command set),
+`pqc_mssim_e2e`, `mlkem_encap`, and PQC options on the general-purpose
+`keygen`/`keyload` tools (`-mldsa`, `-hash_mldsa`, `-mlkem`).
 
 For the fwTPM server's PQC internals — the eight v1.85 commands,
 primary-key derivation, buffer constants, and spec-interpretation
@@ -223,6 +227,7 @@ There are HAL examples in `hal` directory for:
 * Infineon TriCore
 * Linux
 * STM32 CubeMX
+* wolfHAL
 * Xilinx
 
 We also support an advanced IO option (`--enable-advio`/`WOLFTPM_ADV_IO`), which adds the register and read/write flag as parameter to the IO callback. This is required for I2C support.
@@ -237,6 +242,8 @@ Tested with:
 * Microchip ATTPM20 module
 * Nuvoton NPCT65X or NPCT75x TPM2.0 modules
 * Nations Technologies Z32H330 or NS350 TPM 2.0 modules
+* SealSQ QVault TPM 2.0 module (SPI, post-quantum ML-DSA / ML-KEM)
+* NVIDIA Jetson Orin (Tegra234) firmware TPM - a TPM 2.0 running as an OP-TEE trusted application, reached through the Linux kernel driver rather than a bus. See [docs/DEVTPM.md](docs/DEVTPM.md#nvidia-jetson-orin-tegra234-firmware-tpm).
 
 #### Device Identification
 
@@ -260,6 +267,10 @@ STMicro ST33TPHF2XSPI
 TPM2: Caps 0x1a7e2882, Did 0x0000, Vid 0x104a, Rid 0x4e
 Mfg STM  (2), Vendor , Fw 74.8 (1151341959), FIPS 140-2 1, CC-EAL4 0
 
+STMicro ST33TPHF2XSPI (newer firmware line)
+TPM2: Caps 0x30000415, Did 0x0000, Vid 0x104a, Rid 0x4e
+Mfg STM  (2), Vendor , Fw 1.258 (0x0), FIPS 140-2 1, CC-EAL4 0
+
 STMicro ST33TPHF2XI2C
 TPM2: Caps 0x1a7e2882, Did 0x0000, Vid 0x104a, Rid 0x4e
 Mfg STM  (2), Vendor , Fw 74.9 (1151341959), FIPS 140-2 1, CC-EAL4 0
@@ -267,6 +278,14 @@ Mfg STM  (2), Vendor , Fw 74.9 (1151341959), FIPS 140-2 1, CC-EAL4 0
 Microchip ATTPM20
 TPM2: Caps 0x30000695, Did 0x3205, Vid 0x1114, Rid 0x 1
 Mfg MCHP (3), Vendor , Fw 512.20481 (0), FIPS 140-2 0, CC-EAL4 0
+
+Note: early ST33TPHF2X 1.x firmware reports `TPM_PT_VENDOR_STRING_1..4` as
+binary rather than text, so the `Vendor` field prints empty; later 1.x firmware
+reports ASCII such as `ST33TPHF2XSPI`. The firmware major version identifies the line
+instead: 1.x and 2.x are ST33TPHF2X (SPI and I2C firmware respectively), 9.x is
+ST33KTPM2X and 10.x is ST33KTPM2A. See
+[examples/firmware/README.md](examples/firmware/README.md) for how this selects
+the firmware update format and command codes.
 
 Nations Technologies Inc. Z32H330 TPM 2.0 module
 Mfg NTZ (0), Vendor Z32H330, Fw 7.51 (419631892), FIPS 140-2 0, CC-EAL4 0
@@ -281,6 +300,15 @@ Mfg NTC (0), Vendor rlsNPCT , Fw 1.3 (65536), FIPS 140-2 0, CC-EAL4 0
 Nuvoton NPCT750 TPM2.0
 TPM2: Caps 0x30000697, Did 0x00fc, Vid 0x1050, Rid 0x 1
 Mfg NTC (0), Vendor NPCT75x"!!4rls, Fw 7.2 (131072), FIPS 140-2 1, CC-EAL4 0
+
+SealSQ QVault TPM 2.0
+TPM2: Caps 0x30000797, Did 0x0083, Vid 0x2406, Rid 0x 3
+Mfg SEAL (6), Vendor QVault TPM, Fw 2.1 (0x3010303), FIPS 140-3, CC-EAL4 0
+
+NVIDIA Jetson Orin (Tegra234) OP-TEE firmware TPM, via /dev/tpmrm0
+Mfg MSFT (7), Vendor SSE fTPM, Fw 8216.1808 (0x105300), FIPS 140-2, CC-EAL4 0
+
+There is no `Caps/Did/Vid/Rid` line above because those values come from TIS bus registers, which a firmware TPM does not have. The entry was captured with `--enable-autodetect`, where `wolfTPM2_Init_ex` returns as soon as the kernel device opens, so the debug line is never reached; an `--enable-devtpm` build still prints it, reading all zeros. `Fw 8216.1808` is `TPM_PT_FIRMWARE_VERSION_1` = `0x20180710`, which this implementation uses to carry a build date (2018-07-10) rather than a version number. Spec revision is 1.62, and all four PCR banks (SHA-1, SHA-256, SHA-384, SHA-512) are allocated with PCRs 0-23.
 
 ## Building
 
@@ -329,6 +357,9 @@ make install
                         this flag adds no compile-time macro but disables the auto-enabled swTPM/fwTPM defaults. (default: not set)
 --enable-i2c            Enable I2C TPM Support (default: disabled, requires advio) - WOLFTPM_I2C
 --enable-mmio           Enable built-in MMIO callbacks (default: disabled) - WOLFTPM_MMIO
+--enable-wolfhal        Enable wolfHAL IO callbacks (default: disabled) - WOLFTPM_WOLFHAL
+                        Requires the wolfHAL headers and an application provided board.h.
+                        See hal/README.md for the required BOARD_* definitions.
 --enable-checkwaitstate Enable TIS / SPI Check Wait State support (default: depends on chip) - WOLFTPM_CHECK_WAIT_STATE
 --enable-smallstack     Enable options to reduce stack usage
 --enable-tislock        Enable Linux Named Semaphore for locking access to SPI device for concurrent access between processes - WOLFTPM_TIS_LOCK
@@ -342,6 +373,7 @@ make install
 --enable-microchip      Enable Microchip ATTPM20 Support (default: disabled) - WOLFTPM_MICROCHIP
 --enable-nuvoton        Enable Nuvoton NPCT65x/NPCT75x Support (default: disabled) - WOLFTPM_NUVOTON
 --enable-nations        Enable Nations Technology NS350 Support (default: disabled) - WOLFTPM_NATIONS
+--enable-sealsq         Enable SealSQ QVault post-quantum TPM Support (default: disabled) - WOLFTPM_SEALSQ
 
 --enable-devtpm         Enable using Linux kernel driver for /dev/tpmX (default: disabled) - WOLFTPM_LINUX_DEV
                         Note: With autodetect (default) this is no longer required on Linux;
@@ -365,6 +397,10 @@ TLS_BENCH_MODE          Enables TLS benchmarking mode.
 NO_TPM_BENCH            Disables the TPM benchmarking example.
 WOLFTPM_MAX_RETRIES     Default number of times a command is transparently resubmitted when the TPM returns TPM_RC_RETRY (momentarily busy, e.g. persisting the daUsed flag on first auth use of an externally provisioned non-noDA AIK/SUDI key). Disabled by default (0); opt in with TPM2_SetCommandRetries() at runtime or -DWOLFTPM_MAX_RETRIES=N at build time. wolfTPM's own key templates set noDA and never trigger it.
 WOLFTPM_NO_RETRY        Compiles out the TPM_RC_RETRY auto-resubmit handling entirely; TPM_RC_RETRY is returned to the caller for manual handling.
+WOLFTPM_LOCALITY_DEFAULT  Default TIS locality requested at startup (default 0). Runtime override via wolfTPM2_SetLocality() on SPI/memory-mapped and swtpm transports. The I2C HAL addresses only locality 0 (the TIS locality lives in address bits 12+, which the 8-bit I2C register address cannot carry), so a non-zero wolfTPM2_SetLocality() on I2C returns NOT_COMPILED_IN rather than silently operating at locality 0.
+WOLFTPM_TIS_RESET_STALE_LOCALITY  At startup, release any other active locality so the default can be granted - recovers a wedge left when a prior session did not return to locality 0. Off by default; single-master buses only, since on a shared bus it could clear a locality another master holds (or use the nRST reset HAL to recover).
+WOLFTPM_LOCALITY_TIMEOUT_TRIES  Poll attempts when requesting a locality at runtime (default 1000). Kept small so a locality that cannot be granted fails fast.
+WOLFTPM_RESET_LINE      nRST GPIO line number for the optional reset HAL; set via --enable-hal-reset=LINE and driven with TPM2_IoCb_Reset() (see hal/README.md).
 ```
 
 Note: For the I2C support on Raspberry Pi you may need to enable I2C. Here are the steps:
@@ -400,6 +436,8 @@ make
 ```
 
 Note: The `--enable-firmware` option enables firmware upgrade support for ST33 TPMs. This adds the `st33_fw_update` example tool for performing firmware updates.
+
+Raspberry Pi wiring: ST33KTPM2X SPI is on `/dev/spidev0.0` with `nRST` (active low) on GPIO24 (pin 18); Nuvoton uses GPIO4. Optionally drive nRST from code with `--enable-hal-reset` and `TPM2_IoCb_Reset()` (see `hal/README.md`).
 
 ### Building Microchip ATTPM20
 
@@ -443,23 +481,25 @@ idf.py build
 
 ### Building for "/dev/tpmX"
 
-**Auto-detection (recommended):** On Linux, a default `./configure && make` will automatically try `/dev/tpmrm0` then `/dev/tpm0` at runtime. If the kernel driver is available it will be used; otherwise wolfTPM falls back to direct SPI access. No special configure options are needed.
+**Auto-detection (recommended):** `--enable-autodetect` tries `/dev/tpmrm0` then `/dev/tpm0` at runtime. If the kernel driver is available it will be used; otherwise wolfTPM falls back to direct SPI access.
 
 ```bash
 ./autogen.sh
-./configure
+./configure --enable-autodetect
 make
 ```
 
-Previously, using the kernel TPM driver required the `--enable-devtpm` flag. This is no longer necessary with autodetect (enabled by default). You can still use `--enable-devtpm` to force kernel-driver-only mode, which disables SPI fallback.
+**Important:** on Linux `x86_64` and `aarch64`, a bare `./configure` does *not* reach `/dev/tpmX`. On those hosts the software TPMs (swTPM and fwTPM) are auto-enabled so that `make check` works without hardware, and defining `WOLFTPM_SWTPM` suppresses the kernel-device autodetect path. The resulting build talks to a simulator on TCP port 2321, not to your TPM. Selecting any hardware path explicitly - `--enable-autodetect`, `--enable-devtpm`, or any `--enable-<vendor>` - turns the software defaults back off. This matters on single-board machines with a firmware TPM, such as the NVIDIA Jetson Orin, where the kernel device is the only transport.
 
-To specify a different `/dev/tpmX` device use `CFLAGS="-DTPM2_LINUX_DEV=/dev/tpm1"`
+Use `--enable-devtpm` to force kernel-driver-only mode, which disables the SPI fallback:
 
 ```bash
 ./autogen.sh
 ./configure --enable-devtpm
 make
 ```
+
+To specify a different `/dev/tpmX` device use `CFLAGS='-DTPM2_LINUX_DEV="/dev/tpm1"'` - the inner quotes are required, since the macro is used directly as a C string literal. To pin the resource manager and never fall back to the raw device, build with `-DWOLFTPM_USE_TPMRM`.
 
 The `TPM2_Init` or `wolfTPM2_Init` calls should use NULL for the HAL IO callback argument. The default HAL IO `TPM2_IoCb` maps to a macro specifying NULL (`#define TPM2_IoCb NULL`) in tpm_io.h for the devtpm option.
 
@@ -484,6 +524,8 @@ KERNEL=="tpm[0-9]*", TAG+="systemd", MODE="0660", GROUP="wolftpm"
 ```
 
 4) Reboot or reload rules: `sudo udevadm control -R`
+
+For the resource manager (`/dev/tpmrm0`) versus the raw device, which operations the kernel refuses, and firmware-TPM platforms such as the NVIDIA Jetson Orin, see [docs/DEVTPM.md](docs/DEVTPM.md).
 
 
 ### Building for SWTPM
@@ -582,6 +624,32 @@ ECC      256 key gen        5 ops took 1.157 sec, avg 231.350 ms,   4.322 ops/se
 ECDSA    256 sign          15 ops took 1.033 sec, avg 68.865 ms,   14.521 ops/sec
 ECDSA    256 verify         9 ops took 1.022 sec, avg 113.539 ms,   8.808 ops/sec
 ECDHE    256 agree          5 ops took 1.161 sec, avg 232.144 ms,   4.308 ops/sec
+```
+
+Run on the SealSQ QVault post-quantum TPM (ML-DSA / ML-KEM) on a Raspberry Pi 5
+over SPI. These are the first post-quantum TPM benchmarks measured on
+shipping-class silicon:
+
+```
+./examples/bench/bench
+TPM2 Benchmark using Wrapper API's
+RNG                 10 KB took 1.061 seconds,    9.428 KB/s
+AES-256-CBC-enc     57 KB took 1.000 seconds,   56.994 KB/s
+SHA256              43 KB took 1.012 seconds,   42.470 KB/s
+SHA384              43 KB took 1.024 seconds,   41.984 KB/s
+RSA     2048 key gen        3 ops took 20.536 sec, avg 6845.188 ms,  0.146 ops/sec
+RSA     2048 Public        71 ops took 1.015 sec, avg 14.289 ms,   69.985 ops/sec
+RSA     2048 Private        7 ops took 1.154 sec, avg 164.827 ms,   6.067 ops/sec
+ECC      256 key gen        4 ops took 1.170 sec, avg 292.538 ms,   3.418 ops/sec
+ECDSA    256 sign          14 ops took 1.019 sec, avg 72.781 ms,   13.740 ops/sec
+ECDSA    256 verify        17 ops took 1.031 sec, avg 60.661 ms,   16.485 ops/sec
+ECDHE    256 agree          5 ops took 1.030 sec, avg 206.022 ms,   4.854 ops/sec
+ML-DSA    65 key gen        8 ops took 16.357 sec, avg 2044.679 ms,  0.489 ops/sec
+ML-DSA    65 sign           2 ops took 1.162 sec, avg 581.025 ms,   1.721 ops/sec
+ML-DSA    65 verify         7 ops took 1.142 sec, avg 163.118 ms,   6.131 ops/sec
+ML-KEM   768 key gen       19 ops took 15.216 sec, avg 800.819 ms,   1.249 ops/sec
+ML-KEM   768 encap          5 ops took 1.059 sec, avg 211.777 ms,   4.722 ops/sec
+ML-KEM   768 decap          3 ops took 1.276 sec, avg 425.471 ms,   2.350 ops/sec
 ```
 
 Run on Infineon OPTIGA SLB9672 at 43MHz:
@@ -867,6 +935,53 @@ ECDSA    256 verify        26 ops took 1.018 sec, avg 39.164 ms, 25.533 ops/sec
 ECDHE    256 agree         35 ops took 1.029 sec, avg 29.402 ms, 34.011 ops/sec
 ```
 
+Run on the NVIDIA Jetson Orin (Tegra234) OP-TEE firmware TPM, via `/dev/tpmrm0`.
+Jetson Linux R36.4.4, kernel 5.15.148-tegra, `MAXN_SUPER` power mode with all six
+Cortex-A78AE cores at 1728 MHz:
+
+```
+./examples/bench/bench
+TPM2 Benchmark using Wrapper API's
+	Use Parameter Encryption: NULL
+Loading SRK: Storage 0x81000200 (282 bytes)
+RNG                563 KB took 1.001 seconds,  562.277 KB/s
+AES-128-CBC-enc      3 MB took 1.000 seconds,    2.798 MB/s
+AES-128-CBC-dec      3 MB took 1.000 seconds,    2.780 MB/s
+AES-256-CBC-enc      3 MB took 1.000 seconds,    2.898 MB/s
+AES-256-CBC-dec      3 MB took 1.000 seconds,    2.888 MB/s
+AES-128-CTR-enc      3 MB took 1.000 seconds,    2.910 MB/s
+AES-128-CTR-dec      3 MB took 1.000 seconds,    2.762 MB/s
+AES-256-CTR-enc      3 MB took 1.000 seconds,    2.764 MB/s
+AES-256-CTR-dec      3 MB took 1.000 seconds,    2.730 MB/s
+AES-128-CFB-enc      3 MB took 1.000 seconds,    2.752 MB/s
+AES-128-CFB-dec      3 MB took 1.000 seconds,    2.688 MB/s
+AES-256-CFB-enc      3 MB took 1.000 seconds,    2.881 MB/s
+AES-256-CFB-dec      3 MB took 1.000 seconds,    2.830 MB/s
+SHA1                 2 MB took 1.000 seconds,    1.521 MB/s
+SHA256               2 MB took 1.000 seconds,    1.572 MB/s
+SHA384               2 MB took 1.000 seconds,    1.554 MB/s
+SHA512               2 MB took 1.000 seconds,    1.569 MB/s
+RSA     2048 key gen       21 ops took 15.465 sec, avg 736.433 ms, 1.358 ops/sec
+RSA     2048 Public      1145 ops took 1.001 sec, avg 0.874 ms, 1144.407 ops/sec
+RSA     2048 Private       85 ops took 1.012 sec, avg 11.900 ms, 84.033 ops/sec
+RSA     2048 Pub  OAEP   1086 ops took 1.000 sec, avg 0.921 ms, 1085.719 ops/sec
+RSA     2048 Priv OAEP     84 ops took 1.002 sec, avg 11.934 ms, 83.793 ops/sec
+ECC      256 key gen        9 ops took 1.081 sec, avg 120.163 ms, 8.322 ops/sec
+ECDSA    256 sign          23 ops took 1.038 sec, avg 45.139 ms, 22.154 ops/sec
+ECDSA    256 verify        32 ops took 1.016 sec, avg 31.737 ms, 31.509 ops/sec
+ECDHE    256 agree         12 ops took 1.076 sec, avg 89.632 ms, 11.157 ops/sec
+```
+
+Unlike the discrete parts above, every operation the benchmark exercises is
+supported, and the throughput figures are one to two orders of magnitude higher.
+That is a property of where the TPM runs rather than of the TPM itself: the
+firmware TPM executes on an application core with no serial bus in the path,
+whereas a discrete part is a small microcontroller reached over SPI or I2C. The
+comparison is useful for capacity planning, not as a security ranking - the
+discrete parts are separate silicon with their own tamper boundary, while the
+firmware TPM shares the SoC with the software it attests. See
+[docs/DEVTPM.md](docs/DEVTPM.md#nvidia-jetson-orin-tegra234-firmware-tpm).
+
 ### TPM2 Native Tests
 
 ```
@@ -1123,6 +1238,50 @@ See `./examples/endorsement/get_ek_certs`.
 * Update to v1.59 of specification (adding CertifyX509).
 * Inner wrap support for SensitiveToPrivate.
 * Add support for IRQ (interrupt line)
+
+## SBOM / EU CRA Compliance
+
+wolfTPM generates a Software Bill of Materials (SBOM) in CycloneDX 1.6 and
+SPDX 2.3 formats to support compliance with the EU Cyber Resilience Act (CRA).
+The SBOM records the configured build options (from `wolftpm/options.h`),
+hashes the built `libwolftpm` library artifact (shared or static; ELF, Mach-O,
+or PE), and (with a sufficiently new `gen-sbom`) lists wolfSSL as a dependency
+so vulnerability scanners can associate wolfSSL advisories with a wolfTPM
+deployment. Output is reproducible: set `SOURCE_DATE_EPOCH` (or build from a git
+checkout, which uses the last commit time) and repeated runs are byte-identical.
+
+```sh
+make sbom WOLFSSL_DIR=/path/to/wolfssl
+```
+
+Requires `python3` and `pyspdxtools` (`pip install spdx-tools`). `WOLFSSL_DIR`
+must point to a wolfssl source tree containing `scripts/gen-sbom` (branch
+`feat/sbom-embedded`, or `master` once wolfSSL/wolfssl#10343 merges).
+
+Output: `wolftpm-<version>.cdx.json`, `wolftpm-<version>.spdx.json`, `wolftpm-<version>.spdx`
+
+Optional overrides:
+
+- `SBOM_LICENSE_OVERRIDE` - SPDX expression to use instead of the licence
+  parsed from `COPYING` (e.g. `LicenseRef-wolfSSL-Commercial` for commercial
+  licensees). Defaults to `GPL-3.0-or-later` (the per-file header licence).
+- `SBOM_LICENSE_TEXT` - path to the licence text for any `LicenseRef-*` used in
+  `SBOM_LICENSE_OVERRIDE` (required by SPDX 2.3).
+- `SBOM_WOLFSSL_VERSION` - version recorded for the wolfSSL dependency;
+  auto-detected from `WOLFSSL_DIR/wolfssl/version.h` (or wolfSSL's `pkg-config`
+  entry) when unset.
+
+```sh
+make install-sbom    # installs to $(datadir)/doc/wolftpm/
+make uninstall-sbom
+```
+
+Note: recording wolfSSL as a dependency and emitting wolfTPM-specific project
+URLs require the `gen-sbom` from wolfSSL/wolfssl#10343. Against an older
+`gen-sbom`, `make sbom` still succeeds and produces a valid SBOM, but omits the
+wolfSSL dependency entry and inherits wolfSSL's project URLs.
+
+For further CRA guidance see [wolfssl/doc/CRA.md](https://github.com/wolfSSL/wolfssl/blob/master/doc/CRA.md).
 
 ## Support
 

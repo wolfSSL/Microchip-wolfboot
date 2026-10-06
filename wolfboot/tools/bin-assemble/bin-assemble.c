@@ -57,7 +57,7 @@ int binentry_address_compare(const void* a, const void* b)
     }
 }
 
-#ifdef _WIN32
+#ifdef _MSC_VER
 /*  'strerror' has been explicitly marked deprecated */
 static const char* win_strerror(int err, char* buf, size_t bufsz) {
     if (strerror_s(buf, bufsz, err) != 0) {
@@ -68,7 +68,7 @@ static const char* win_strerror(int err, char* buf, size_t bufsz) {
 #endif
 
 int main(int argc, const char* argv[]) {
-#ifdef _WIN32
+#ifdef _MSC_VER
     char errbuf[128] = { 0 };
     errno_t fe;
 #endif
@@ -112,7 +112,7 @@ int main(int argc, const char* argv[]) {
         entries[i].fname = argv[2 * i + 3];
 
         if (stat(entries[i].fname, &st)) {
-#ifdef _WIN32
+#ifdef _MSC_VER
             fprintf(stderr, "unable to stat %s: %s\n",
                 entries[i].fname, win_strerror(errno, errbuf, sizeof errbuf));
 #else
@@ -151,7 +151,7 @@ int main(int argc, const char* argv[]) {
     }
 
     // TODO: consider handling stdout "-"
-#ifdef _WIN32
+#ifdef _MSC_VER
     fe = fopen_s(&fo, outname, "wb");
     if (fo == NULL || fe != 0) {
         fprintf(stderr, "opening %s failed %s\n",
@@ -169,7 +169,7 @@ int main(int argc, const char* argv[]) {
     cur_add = entries[0].address;
     for (i=0; i<num_entries; i++) {
         size_t fillSz = entries[i].address - cur_add;
-#ifdef _WIN32
+#ifdef _MSC_VER
         fe = fopen_s(&fi, entries[i].fname, "rb");
         if (fi == NULL || fe != 0) {
             fprintf(stderr, "opening %s failed %s\n",

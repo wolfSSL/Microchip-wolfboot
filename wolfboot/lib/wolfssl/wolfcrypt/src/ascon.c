@@ -256,9 +256,9 @@ int wc_AsconHash256_Final(wc_AsconHash256* a, byte* hash)
         hash += ASCON_HASH256_RATE;
     }
 
-    /* Clear state as soon as possible */
+    /* Clear state as soon as possible, then reset for reuse */
     wc_AsconHash256_Clear(a);
-    return 0;
+    return wc_AsconHash256_Init(a);
 }
 
 /* AsconAEAD API */
@@ -428,11 +428,10 @@ int wc_AsconAEAD128_EncryptFinal(wc_AsconAEAD128* a, byte* tag)
 
     XMEMCPY(tag, &a->state.s64[3], ASCON_AEAD128_TAG_SZ);
 
-    /* Clear state as soon as possible */
+    /* Clear state as soon as possible, then reset for reuse */
     wc_AsconAEAD128_Clear(a);
 
-    return 0;
-
+    return wc_AsconAEAD128_Init(a);
 }
 
 
@@ -448,6 +447,13 @@ int wc_AsconAEAD128_DecryptUpdate(wc_AsconAEAD128* a, byte* out,
         a->op = ASCON_AEAD128_DECRYPT;
     else if (a->op != ASCON_AEAD128_DECRYPT)
         return BAD_STATE_E;
+
+    /* Nothing to process. The argument check above deliberately permits
+     * in == NULL when inSz == 0, so return here before the XMEMCPY() calls
+     * below would pass a NULL source pointer (undefined behavior, flagged by
+     * -fsanitize=undefined). Mirrors wc_AsconHash256_Update()/SetAD(). */
+    if (inSz == 0)
+        return 0;
 
     /* Process leftover block */
     if (a->lastBlkSz != 0) {
@@ -485,6 +491,7 @@ int wc_AsconAEAD128_DecryptUpdate(wc_AsconAEAD128* a, byte* out,
 int wc_AsconAEAD128_DecryptFinal(wc_AsconAEAD128* a, const byte* tag)
 {
     int ret = 0;
+    int initRet;
 
     if (a == NULL || tag == NULL)
         return BAD_FUNC_ARG;
@@ -508,8 +515,11 @@ int wc_AsconAEAD128_DecryptFinal(wc_AsconAEAD128* a, const byte* tag)
         ret = ASCON_AUTH_E;
     }
 
-    /* Clear state as soon as possible */
+    /* Clear state as soon as possible, then reset for reuse */
     wc_AsconAEAD128_Clear(a);
+    initRet = wc_AsconAEAD128_Init(a);
+    if (ret == 0)
+        ret = initRet;
 
     return ret;
 }

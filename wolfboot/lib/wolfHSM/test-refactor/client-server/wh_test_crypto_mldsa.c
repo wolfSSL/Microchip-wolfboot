@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -48,7 +48,7 @@
 
 static int _whTest_CryptoMlDsaClient(whClientContext* ctx)
 {
-    int      devId = WH_DEV_ID;
+    int      devId = WH_CLIENT_DEVID(ctx);
     int      ret   = 0;
     MlDsaKey key[1];
 
@@ -166,7 +166,7 @@ static int _whTest_CryptoMlDsaClient(whClientContext* ctx)
  * wh_Client_MlDsaExportPublicKey returns a public-only key struct. */
 static int _whTest_CryptoMlDsaExportPublicKey(whClientContext* ctx)
 {
-    int      devId = WH_DEV_ID;
+    int      devId = WH_CLIENT_DEVID(ctx);
     int      ret   = 0;
     MlDsaKey pub[1] = {0};
     whKeyId  keyId  = WH_KEYID_ERASED;
@@ -228,10 +228,108 @@ static int _whTest_CryptoMlDsaExportPublicKey(whClientContext* ctx)
     return ret;
 }
 
+#ifdef WOLFSSL_MLDSA_PUBLIC_KEY
+/* One keygen call caches the private key and returns the public key. Verify
+ * the returned public key byte-matches wh_Client_MlDsaExportPublicKey and that
+ * it verifies a signature made by the cached private key. */
+static int _whTest_CryptoMlDsaCacheKeyAndExportPublic(whClientContext* ctx)
+{
+    int      devId = WH_CLIENT_DEVID(ctx);
+    int      ret   = 0;
+    MlDsaKey genPub[1] = {0};
+    MlDsaKey refPub[1] = {0};
+    whKeyId  keyId     = WH_KEYID_ERASED;
+    byte     msg[]     = "ML-DSA cache-export-public message";
+    byte     sig[DILITHIUM_MAX_SIG_SIZE];
+    word32   sigLen    = sizeof(sig);
+    int      verified  = 0;
+    byte     genDer[DILITHIUM_MAX_PUB_KEY_DER_SIZE];
+    byte     refDer[DILITHIUM_MAX_PUB_KEY_DER_SIZE];
+    int      genDerSz  = 0;
+    int      refDerSz  = 0;
+
+    ret = wc_MlDsaKey_Init(genPub, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wc_MlDsaKey_SetParams(genPub, WC_ML_DSA_44);
+    }
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed to init/setparams ML-DSA key %d\n", ret);
+        return ret;
+    }
+
+    ret = wh_Client_MlDsaMakeCacheKeyAndExportPublic(
+        ctx, 0, WC_ML_DSA_44, &keyId,
+        WH_NVM_FLAGS_USAGE_SIGN | WH_NVM_FLAGS_USAGE_VERIFY, 0, NULL, genPub);
+    if (ret != 0) {
+        WH_ERROR_PRINT("MlDsaMakeCacheKeyAndExportPublic failed %d\n", ret);
+    }
+
+    /* Cross-check against a separate public export of the same keyId. */
+    if (ret == 0) {
+        ret = wc_MlDsaKey_Init(refPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wc_MlDsaKey_SetParams(refPub, WC_ML_DSA_44);
+        }
+        if (ret == 0) {
+            ret = wh_Client_MlDsaExportPublicKey(ctx, keyId, refPub, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("wh_Client_MlDsaExportPublicKey failed %d\n",
+                               ret);
+            }
+            else {
+                genDerSz = wc_MlDsaKey_PublicKeyToDer(genPub, genDer,
+                                                      sizeof(genDer), 1);
+                refDerSz = wc_MlDsaKey_PublicKeyToDer(refPub, refDer,
+                                                      sizeof(refDer), 1);
+                if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+                    (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+                    WH_ERROR_PRINT("keygen pubkey mismatch vs export\n");
+                    ret = -1;
+                }
+            }
+            wc_MlDsaKey_Free(refPub);
+        }
+    }
+
+    /* Sign on the server using genPub directly as the HSM private-key handle
+     * (no separate key object), then verify with its exported public key. */
+    if (ret == 0) {
+        ret = wh_Client_MlDsaSign(ctx, msg, sizeof(msg), sig, &sigLen, genPub,
+                                  NULL, 0, WC_HASH_TYPE_NONE);
+        if (ret != 0) {
+            WH_ERROR_PRINT("HSM ML-DSA sign failed %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ret = wh_Client_MlDsaVerify(ctx, sig, sigLen, msg, sizeof(msg),
+                                    &verified, genPub, NULL, 0,
+                                    WC_HASH_TYPE_NONE);
+        if ((ret != 0) || (verified != 1)) {
+            WH_ERROR_PRINT("verify with keygen pub failed ret=%d verify=%d\n",
+                           ret, verified);
+            if (ret == 0) {
+                ret = -1;
+            }
+        }
+    }
+
+    wc_MlDsaKey_Free(genPub);
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ML-DSA CACHE-AND-EXPORT-PUBLIC DEVID=0x%X SUCCESS\n",
+                      devId);
+    }
+    return ret;
+}
+#endif /* WOLFSSL_MLDSA_PUBLIC_KEY */
+
 #ifdef WOLFHSM_CFG_DMA
 static int _whTest_CryptoMlDsaDmaClient(whClientContext* ctx)
 {
-    int      devId = WH_DEV_ID_DMA;
+    int      devId = WH_CLIENT_DEVID(ctx);
     int      ret   = 0;
     MlDsaKey key[1];
     MlDsaKey imported_key[1];
@@ -434,7 +532,7 @@ static int _whTest_CryptoMlDsaDmaClient(whClientContext* ctx)
  * public-only key. */
 static int _whTest_CryptoMlDsaExportPublicKeyDma(whClientContext* ctx)
 {
-    int      devId = WH_DEV_ID;
+    int      devId = WH_CLIENT_DEVID(ctx);
     int      ret   = 0;
     MlDsaKey pub[1] = {0};
     whKeyId  keyId  = WH_KEYID_ERASED;
@@ -497,6 +595,106 @@ static int _whTest_CryptoMlDsaExportPublicKeyDma(whClientContext* ctx)
     }
     return ret;
 }
+
+#ifdef WOLFSSL_MLDSA_PUBLIC_KEY
+/* DMA variant: one keygen call caches the private key and streams the public
+ * key back through the client's DMA buffer. Verify it byte-matches
+ * wh_Client_MlDsaExportPublicKeyDma and that it verifies an HSM signature. */
+static int _whTest_CryptoMlDsaCacheKeyAndExportPublicDma(whClientContext* ctx)
+{
+    int      devId = WH_CLIENT_DEVID(ctx);
+    int      ret   = 0;
+    MlDsaKey genPub[1] = {0};
+    MlDsaKey refPub[1] = {0};
+    whKeyId  keyId     = WH_KEYID_ERASED;
+    byte     msg[]     = "ML-DSA DMA cache-export-public message";
+    byte     sig[DILITHIUM_MAX_SIG_SIZE];
+    word32   sigLen    = sizeof(sig);
+    int      verified  = 0;
+    byte     genDer[DILITHIUM_MAX_PUB_KEY_DER_SIZE];
+    byte     refDer[DILITHIUM_MAX_PUB_KEY_DER_SIZE];
+    int      genDerSz  = 0;
+    int      refDerSz  = 0;
+
+    ret = wc_MlDsaKey_Init(genPub, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wc_MlDsaKey_SetParams(genPub, WC_ML_DSA_44);
+    }
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed to init/setparams ML-DSA key %d\n", ret);
+        return ret;
+    }
+
+    ret = wh_Client_MlDsaMakeCacheKeyDma(
+        ctx, WC_ML_DSA_44, &keyId,
+        WH_NVM_FLAGS_USAGE_SIGN | WH_NVM_FLAGS_USAGE_VERIFY, 0, NULL, genPub);
+    if (ret != 0) {
+        WH_ERROR_PRINT("MlDsaMakeCacheKeyDma failed %d\n", ret);
+    }
+
+    /* Cross-check against a separate public export of the same keyId. */
+    if (ret == 0) {
+        ret = wc_MlDsaKey_Init(refPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wc_MlDsaKey_SetParams(refPub, WC_ML_DSA_44);
+        }
+        if (ret == 0) {
+            ret = wh_Client_MlDsaExportPublicKeyDma(ctx, keyId, refPub, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("wh_Client_MlDsaExportPublicKeyDma failed %d\n",
+                               ret);
+            }
+            else {
+                genDerSz = wc_MlDsaKey_PublicKeyToDer(genPub, genDer,
+                                                      sizeof(genDer), 1);
+                refDerSz = wc_MlDsaKey_PublicKeyToDer(refPub, refDer,
+                                                      sizeof(refDer), 1);
+                if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+                    (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+                    WH_ERROR_PRINT("keygen pubkey (DMA) mismatch vs export\n");
+                    ret = -1;
+                }
+            }
+            wc_MlDsaKey_Free(refPub);
+        }
+    }
+
+    /* Sign on the server (DMA) using genPub directly as the HSM private-key
+     * handle (no separate key object), then verify with its exported public
+     * key. */
+    if (ret == 0) {
+        ret = wh_Client_MlDsaSignDma(ctx, msg, sizeof(msg), sig, &sigLen,
+                                     genPub, NULL, 0, WC_HASH_TYPE_NONE);
+        if (ret != 0) {
+            WH_ERROR_PRINT("HSM ML-DSA DMA sign failed %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ret = wh_Client_MlDsaVerifyDma(ctx, sig, sigLen, msg, sizeof(msg),
+                                       &verified, genPub, NULL, 0,
+                                       WC_HASH_TYPE_NONE);
+        if ((ret != 0) || (verified != 1)) {
+            WH_ERROR_PRINT(
+                "DMA verify with keygen pub failed ret=%d verify=%d\n", ret,
+                verified);
+            if (ret == 0) {
+                ret = -1;
+            }
+        }
+    }
+
+    wc_MlDsaKey_Free(genPub);
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ML-DSA CACHE-AND-EXPORT-PUBLIC DMA DEVID=0x%X SUCCESS\n",
+                      devId);
+    }
+    return ret;
+}
+#endif /* WOLFSSL_MLDSA_PUBLIC_KEY */
 #endif /* WOLFHSM_CFG_DMA */
 
 #endif /* !WOLFSSL_DILITHIUM_NO_VERIFY && !WOLFSSL_DILITHIUM_NO_SIGN && \
@@ -507,7 +705,7 @@ static int _whTest_CryptoMlDsaExportPublicKeyDma(whClientContext* ctx)
     defined(WOLFHSM_CFG_DMA)
 static int _whTest_CryptoMlDsaVerifyOnlyDma(whClientContext* ctx)
 {
-    int devId = WH_DEV_ID_DMA;
+    int devId = WH_CLIENT_DEVID(ctx);
 
     /* Vectors from wolfCrypt test vectors, but decoupled for isolated usage */
     const byte ml_dsa_44_pub_key[] = {
@@ -874,10 +1072,15 @@ static int _whTest_CryptoMlDsaVerifyOnlyDma(whClientContext* ctx)
     whNvmId  keyId    = WH_KEYID_ERASED;
     int      evictKey = 0;
 
+    /* DMA-only test: prefer DMA dispatch so the wolfCrypt verify below routes
+     * through the DMA path. */
+    (void)wh_Client_SetDmaMode(ctx, 1);
+
     /* Initialize keys */
     ret = wc_MlDsaKey_Init(key, NULL, devId);
     if (ret != 0) {
         WH_ERROR_PRINT("Failed to initialize ML-DSA key: %d\n", ret);
+        (void)wh_Client_SetDmaMode(ctx, 0);
         return ret;
     }
     else {
@@ -901,14 +1104,12 @@ static int _whTest_CryptoMlDsaVerifyOnlyDma(whClientContext* ctx)
             WH_ERROR_PRINT("Failed to import ML-DSA public key: %d\n", ret);
         }
     }
-    /* Import the key into wolfHSM via the wolfCrypt structure */
+    /* Import the key into wolfHSM via the wolfCrypt structure. This is the
+     * DMA-only verify test, so always import via the DMA path. The key must
+     * carry the verify usage flag, which the DMA verify handler enforces. */
     if (ret == 0) {
-        if (devId == WH_DEV_ID_DMA) {
-            ret = wh_Client_MlDsaImportKeyDma(ctx, key, &keyId, 0, 0, NULL);
-        }
-        else {
-            ret = wh_Client_MlDsaImportKey(ctx, key, &keyId, 0, 0, NULL);
-        }
+        ret = wh_Client_MlDsaImportKeyDma(ctx, key, &keyId,
+                                          WH_NVM_FLAGS_USAGE_VERIFY, 0, NULL);
         if (ret == WH_ERROR_OK) {
             evictKey = 1;
         }
@@ -947,6 +1148,8 @@ static int _whTest_CryptoMlDsaVerifyOnlyDma(whClientContext* ctx)
         WH_TEST_PRINT("ML-DSA VERIFY ONLY: SUCCESS\n");
     }
 
+    /* Restore the standard (non-DMA) dispatch mode */
+    (void)wh_Client_SetDmaMode(ctx, 0);
     return ret;
 }
 #endif /* !defined(WOLFSSL_DILITHIUM_NO_VERIFY) && \
@@ -959,9 +1162,9 @@ static int _whTest_CryptoMlDsaVerifyOnlyDma(whClientContext* ctx)
 /*
  * ML-DSA exercised through the plain wolfCrypt API (wc_MlDsaKey_MakeKey /
  * SignCtx / VerifyCtx), which dispatches through the cryptocb. PQC keygen/
- * sign/verify is handled by both the normal and DMA cryptocbs, so the entry
- * point loops this over every devId. Complements the wh_Client_MlDsa*
- * direct-API tests above.
+ * sign/verify is handled by both the standard and DMA dispatch paths, so the
+ * entry point loops this over every dispatch mode. Complements the
+ * wh_Client_MlDsa* direct-API tests above.
  */
 static int whTest_CryptoMlDsaWolfCryptImpl(whClientContext* ctx, int devId)
 {
@@ -974,9 +1177,7 @@ static int whTest_CryptoMlDsaWolfCryptImpl(whClientContext* ctx, int devId)
     byte     sig[DILITHIUM_MAX_SIG_SIZE];
     word32   sigSz = sizeof(sig);
 
-    (void)ctx;
-
-    ret = wc_InitRng_ex(rng, NULL, WH_DEV_ID);
+    ret = wc_InitRng_ex(rng, NULL, WH_CLIENT_DEVID(ctx));
     if (ret != 0) {
         WH_ERROR_PRINT("Failed to wc_InitRng_ex %d\n", ret);
         return ret;
@@ -1056,7 +1257,7 @@ static int whTest_CryptoMlDsaWolfCryptImpl(whClientContext* ctx, int devId)
  * WH_ERROR_BUFFER_SIZE and report a required length greater than the buffer. */
 static int _whTest_CryptoMlDsaBufferTooSmall(whClientContext* ctx)
 {
-    int        devId = WH_DEV_ID;
+    int        devId = WH_CLIENT_DEVID(ctx);
     int        ret;
     MlDsaKey   key[1];
     const byte msg[]                            = "ml-dsa buf size test";
@@ -1116,16 +1317,31 @@ int whTest_Crypto_MlDsa(whClientContext* ctx)
 #if !defined(WOLFSSL_DILITHIUM_NO_VERIFY) && \
     !defined(WOLFSSL_DILITHIUM_NO_SIGN) &&   \
     !defined(WOLFSSL_DILITHIUM_NO_MAKE_KEY) && !defined(WOLFSSL_NO_ML_DSA_44)
+    int i;
+
     /* Plain wolfCrypt-API ML-DSA dispatches through the cryptocb; PQC is
-     * handled by both the normal and DMA cryptocbs, so loop over every devId.
-     * The wh_Client_MlDsa* direct-API tests below run on their own devIds. */
-    WH_TEST_FOREACH_DEVID(whTest_CryptoMlDsaWolfCryptImpl(ctx, devId));
+     * handled by both the standard and DMA dispatch paths, so loop over every
+     * dispatch mode. The wh_Client_MlDsa* direct-API tests below manage the
+     * dispatch mode themselves. */
+    for (i = 0; i < WH_TEST_DMA_MODE_CNT; i++) {
+        (void)wh_Client_SetDmaMode(ctx, i);
+        WH_TEST_RETURN_ON_FAIL(
+            whTest_CryptoMlDsaWolfCryptImpl(ctx, WH_CLIENT_DEVID(ctx)));
+    }
+    (void)wh_Client_SetDmaMode(ctx, 0);
+
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoMlDsaClient(ctx));
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoMlDsaExportPublicKey(ctx));
+#ifdef WOLFSSL_MLDSA_PUBLIC_KEY
+    WH_TEST_RETURN_ON_FAIL(_whTest_CryptoMlDsaCacheKeyAndExportPublic(ctx));
+#endif
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoMlDsaBufferTooSmall(ctx));
 #ifdef WOLFHSM_CFG_DMA
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoMlDsaDmaClient(ctx));
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoMlDsaExportPublicKeyDma(ctx));
+#ifdef WOLFSSL_MLDSA_PUBLIC_KEY
+    WH_TEST_RETURN_ON_FAIL(_whTest_CryptoMlDsaCacheKeyAndExportPublicDma(ctx));
+#endif
 #endif
 #endif
 #if !defined(WOLFSSL_DILITHIUM_NO_VERIFY) && \

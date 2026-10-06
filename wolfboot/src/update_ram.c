@@ -20,6 +20,7 @@
 #include "printf.h"
 #include "wolfboot/wolfboot.h"
 #include <string.h>
+#include "encrypt.h"
 
 #ifdef WOLFBOOT_UBOOT_LEGACY
 #include "gpt.h" /* gpt_crc32_* helpers (reflected CRC-32, poly 0xEDB88320) */
@@ -31,9 +32,12 @@
 #ifdef WOLFBOOT_ELF
 #include "elf.h"
 #endif
+#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+#include "../hal/zynqmp_atf.h"
+#endif
 
 extern void hal_flash_dualbank_swap(void);
-extern int wolfBoot_get_dts_size(void *dts_addr);
+/* DTS helpers declared in include/image.h under (MMU || WOLFBOOT_FDT). */
 
 extern uint32_t kernel_load_addr;
 extern uint32_t dts_load_addr;
@@ -55,9 +59,12 @@ extern uint8_t _end[];  /* linker symbol: end of wolfBoot BSS */
 /* Function to load image from flash to ram */
 int wolfBoot_ramboot(struct wolfBoot_image *img, uint8_t *src, uint8_t *dst)
 {
-    int ret;
     uint32_t img_size;
+    uint32_t version;
     BENCHMARK_DECLARE();
+#if defined(EXT_FLASH) && defined(NO_XIP)
+    int ret;
+#endif
 
     /* read header into RAM */
     wolfBoot_printf("Loading header %d bytes from %p to %p\n",
@@ -73,8 +80,8 @@ int wolfBoot_ramboot(struct wolfBoot_image *img, uint8_t *src, uint8_t *dst)
 #endif
 
     /* check for valid header and version */
-    ret = wolfBoot_get_blob_version((uint8_t*)dst);
-    if (ret <= 0) {
+    version = wolfBoot_get_blob_version((uint8_t*)dst);
+    if (version == 0) {
         wolfBoot_printf("No valid image found at %p\n", src);
         return -1;
     }
@@ -104,12 +111,28 @@ int wolfBoot_ramboot(struct wolfBoot_image *img, uint8_t *src, uint8_t *dst)
 #endif
 
 #if defined(__WOLFBOOT) && defined(WOLFBOOT_LOAD_ADDRESS)
-    /* Runtime overlap check: ensure image destination does not overwrite
-     * wolfBoot's own code/data/bss in RAM. */
-    if ((uintptr_t)dst < (uintptr_t)_end) {
-        wolfBoot_printf("Error: image dest %p overlaps wolfBoot end %p\n",
-            dst, _end);
-        return -1;
+    /* Overlap check: the image destination must not overwrite wolfBoot's own
+     * code/data/bss (ends at _end). The image occupies [dst, dst+header+size]. */
+    {
+        uintptr_t wb_hi  = (uintptr_t)_end;
+        uintptr_t img_lo = (uintptr_t)dst;
+        uintptr_t img_hi = img_lo + (uintptr_t)IMAGE_HEADER_SIZE +
+                           (uintptr_t)img_size;
+#if defined(WOLFBOOT_ORIGIN)
+        /* wolfBoot spans [WOLFBOOT_ORIGIN, _end]; range-intersect so it holds
+         * whether wolfBoot is below or above the image -- e.g. ZynqMP FSBL runs
+         * from high OCM while the image loads to low DDR, where the plain
+         * "dst < _end" test gave a false positive. */
+        uintptr_t wb_lo = (uintptr_t)(WOLFBOOT_ORIGIN);
+#else
+        /* Without WOLFBOOT_ORIGIN, wb_lo=0 keeps the original low-addr guard. */
+        uintptr_t wb_lo = 0;
+#endif
+        if (ramboot_region_overlap(img_lo, img_hi, wb_lo, wb_hi)) {
+            wolfBoot_printf("Error: image %p-%p overlaps wolfBoot %p-%p\n",
+                (void*)img_lo, (void*)img_hi, (void*)wb_lo, (void*)wb_hi);
+            return -1;
+        }
     }
 #endif
 
@@ -120,8 +143,12 @@ int wolfBoot_ramboot(struct wolfBoot_image *img, uint8_t *src, uint8_t *dst)
 #if defined(EXT_FLASH) && defined(NO_XIP)
     ret = ext_flash_read((uintptr_t)src + IMAGE_HEADER_SIZE,
                                     dst + IMAGE_HEADER_SIZE, img_size);
-    if (ret < 0) {
-        wolfBoot_printf("Error reading image at %p\n", src);
+    /* Backends return the number of bytes read: a positive short read
+     * leaves a truncated image in the RAM load region, so require the
+     * full size. Check the signed error range before the unsigned
+     * comparison. */
+    if (ret < 0 || (uint32_t)ret != img_size) {
+        wolfBoot_printf("Error reading image at %p (ret %d)\n", src, ret);
         return -1;
     }
 #else
@@ -223,32 +250,73 @@ static int uboot_legacy_header_valid(const uint8_t *hdr, uint32_t total)
 }
 #endif /* WOLFBOOT_UBOOT_LEGACY */
 
+#if defined(MMU) || defined(WOLFBOOT_FDT)
+/* File scope so wolfBoot_get_dts_address() can hand it to a hook; exactly
+ * one update strategy object is linked per build. */
+static void* wolfboot_dts_addr = NULL;
+
+void* wolfBoot_get_dts_address(void)
+{
+    return wolfboot_dts_addr;
+}
+#endif
+
 void RAMFUNCTION wolfBoot_start(void)
 {
     int active = -1, ret = 0;
+    /* Candidates already tried this boot; a failed RAM image cannot be
+     * erased to invalidate it like the flash path does. */
+    int tried_boot = 0, tried_update = 0;
     struct wolfBoot_image os_image;
     BENCHMARK_DECLARE();
 #ifdef WOLFBOOT_UBOOT_LEGACY
     uint8_t *image_ptr;
+    /* uImage ih_ep, kept only when the entry point differs from the load
+     * address (see the do_boot() entry override below). */
+    uint32_t *uboot_entry = NULL;
+    /* Set when a later stage (ELF/FIT) re-derives the load address and so
+     * supplies its own entry point, which then wins over ih_ep. */
+    int stage_entry_override = 0;
 #endif
     uint32_t *load_address = NULL;
     uint32_t *source_address = NULL;
-#ifdef WOLFBOOT_FIXED_PARTITIONS
+#ifdef HAVE_PARTITION_TRAILERS
     uint8_t p_state;
 #endif
-#ifdef MMU
+#if defined(MMU) || defined(WOLFBOOT_FDT)
+    /* Passed to the 2-arg do_boot() below; NULL when there is no DTS (e.g.
+     * WOLFBOOT_FDT without MMU, booting a non-FIT image -> no fixup). */
     uint8_t *dts_addr = NULL;
-    uint32_t dts_size = 0;
 #endif
-#if !defined(ALLOW_DOWNGRADE) && defined(WOLFBOOT_FIXED_PARTITIONS)
-    uint32_t boot_v = wolfBoot_current_firmware_version();
-    uint32_t update_v = wolfBoot_update_firmware_version();
-    uint32_t max_v = (boot_v > update_v) ? boot_v : update_v;
-#endif /* !ALLOW_DOWNGRADE && WOLFBOOT_FIXED_PARTITIONS */
-
-    memset(&os_image, 0, sizeof(struct wolfBoot_image));
-
+#ifdef MMU
+    uint32_t dts_size = 0;
+    /* Validated view of the FIT staged at load_address. */
+    fdt_ctx  fit_ctx;
+    /* HDR_DEVICE_TREE_DIGEST snapshot, taken before the raw DTB is loaded. */
+    uint8_t  dts_digest[WOLFBOOT_SHA_DIGEST_SIZE];
+    uint8_t *dts_tlv = NULL;
+    uint16_t dts_tlv_len = 0;
+    int      dts_digest_present = 0; /* 0 absent, 1 valid, -1 malformed */
+#if defined(EXT_FLASH) && defined(WOLFBOOT_DTS_BOOT_ADDRESS)
+    /* FDT header peek (fdt_peek_size needs >= 40 bytes, 4-byte aligned) */
+    uint8_t  dts_hdr[64] __attribute__((aligned(4)));
+#endif
+#endif
+#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+    /* When wolfBoot is the FSBL, the boot FIT carries an "atf" (BL31)
+     * sub-image. If present, hand off to BL31 instead of jumping to the
+     * kernel directly. */
+    uintptr_t bl31_entry = 0;
+#endif
     for (;;) {
+        /* Each open needs fresh image state: wolfBoot_open_image_address()
+         * adopts load_address only when hdr is NULL, and the external
+         * header cache keeps the first image opened, so without this the
+         * fallback re-verifies the previous partition's header. */
+        memset(&os_image, 0, sizeof(struct wolfBoot_image));
+#ifdef EXT_FLASH
+        wolfBoot_invalidate_hdr_cache();
+#endif
     #if defined(WOLFBOOT_DUALBOOT) && defined(WOLFBOOT_FIXED_PARTITIONS)
         if (active < 0)
             active = wolfBoot_dualboot_candidate();
@@ -269,17 +337,6 @@ void RAMFUNCTION wolfBoot_start(void)
             wolfBoot_panic();
             break;
         }
-#if !defined(ALLOW_DOWNGRADE) && defined(WOLFBOOT_FIXED_PARTITIONS)
-        {
-            uint32_t active_v = (active == PART_UPDATE) ? update_v : boot_v;
-            if ((max_v > 0U) && (active_v < max_v)) {
-                wolfBoot_printf("Rollback to lower version not allowed\n");
-                wolfBoot_panic();
-                break;
-            }
-        }
-#endif /* !ALLOW_DOWNGRADE && WOLFBOOT_FIXED_PARTITIONS */
-
     #if defined(WOLFBOOT_DUALBOOT) && defined(WOLFBOOT_FIXED_PARTITIONS)
         wolfBoot_printf("Trying %s partition at %p\n",
                 active == PART_BOOT ? "Boot" : "Update", source_address);
@@ -358,12 +415,24 @@ backup_on_failure:
             wolfBoot_printf("Impossible recovery with fallback.\n");
             wolfBoot_panic();
             break;
-        } else {
-            /* Invalidate failing image and switch to the other partition */
-            active ^= 1;
-            wolfBoot_printf("Active is now: %d\n", active);
-            continue;
         }
+        if (active == PART_BOOT)
+            tried_boot = 1;
+        else
+            tried_update = 1;
+        if (tried_boot && tried_update) {
+            /* Both partitions were tried and both failed: the images that
+             * made fallback look possible are invalid, and nothing left to
+             * boot. */
+            wolfBoot_printf(
+                "Both images failed verification; no valid image to boot.\n");
+            wolfBoot_panic();
+            break;
+        }
+        /* Switch to the other partition */
+        active ^= 1;
+        wolfBoot_printf("Active is now: %d\n", active);
+        continue;
     }
 #ifdef UNIT_TEST
     if (wolfBoot_panicked != 0) {
@@ -377,7 +446,7 @@ backup_on_failure:
     /* First time we boot this update, set to TESTING to await
      * confirmation from the system
      */
-#ifdef WOLFBOOT_FIXED_PARTITIONS
+#ifdef HAVE_PARTITION_TRAILERS
     if ((wolfBoot_get_partition_state(active, &p_state) == 0) &&
         (p_state == IMG_STATE_UPDATING))
     {
@@ -442,14 +511,35 @@ backup_on_failure:
 
         if (ih_load != 0) {
             load_address = (uint32_t*)(uintptr_t)ih_load;
+#ifdef WOLFBOOT_USE_RAMBOOT
+            /* RAMBOOT already staged the payload at os_image.fw_base, and the
+             * generic copy-to-RAM memcpy below is compiled out under RAMBOOT.
+             * Relocate the payload to ih_load ourselves when the two differ,
+             * mirroring the non-RAMBOOT memcpy. memmove: both ranges are in
+             * RAM and may overlap. */
+            if ((uintptr_t)ih_load != (uintptr_t)os_image.fw_base) {
+                memmove((void*)(uintptr_t)ih_load, os_image.fw_base,
+                    os_image.fw_size);
+            }
+#endif
+            /* bootm relocates to ih_load but enters at ih_ep: kernels built
+             * with a preamble ahead of the entry point set the two to
+             * different addresses. Remember the entry point; ih_load remains
+             * the relocation destination. */
+            if ((ih_ep != 0) && (ih_ep != ih_load)) {
+                uboot_entry = (uint32_t*)(uintptr_t)ih_ep;
+            }
         } else {
             /* Linux PPC path: leave load_address alone, just advance it
              * past the header to match upstream behaviour. load_address is
-             * a uint32_t*, so advance by BYTES, not words. */
+             * a uint32_t*, so advance by BYTES, not words.
+             * ih_ep is deliberately ignored here: with ih_load == 0 there is
+             * no relocation destination to enter past, and upstream enters at
+             * the payload start. A uImage built with "mkimage -a 0 -e <ep>"
+             * is therefore entered at the header offset, not at ih_ep. */
             load_address = (uint32_t*)((uint8_t*)load_address +
                 UBOOT_IMG_HDR_SZ);
         }
-        (void)ih_ep; /* TODO: pass through to do_boot when ih_ep != ih_load */
     }
 #endif
 
@@ -467,7 +557,11 @@ backup_on_failure:
         os_image.fw_base, load_address, os_image.fw_size);
     ret = ext_flash_read((uintptr_t)os_image.fw_base, (uint8_t*)load_address,
         os_image.fw_size);
-    if (ret < 0){
+    /* Backends return the number of bytes read: a positive short read
+     * leaves a truncated image in RAM, so require the full size.
+     * ret is int, fw_size uint32_t: check the error range first and
+     * cast for the size comparison to keep -Wsign-compare quiet. */
+    if (ret < 0 || (uint32_t)ret != os_image.fw_size) {
         wolfBoot_printf("Error loading image at %p (ret %d)\n",
             os_image.fw_base, ret);
         return;
@@ -485,17 +579,44 @@ backup_on_failure:
             (uintptr_t*)&load_address, NULL) != 0){
         wolfBoot_printf("Invalid elf, falling back to raw binary\n");
     }
+#ifdef WOLFBOOT_UBOOT_LEGACY
+    else {
+        stage_entry_override = 1;
+    }
+#endif
 #endif
 
 #ifdef MMU
-    /* Is this a Flattened uImage Tree (FIT) image (FDT format) */
-    if (wolfBoot_get_dts_size(load_address) > 0) {
-        void* fit = (void*)load_address;
+    /* Snapshot the digest from the verified header before os_image can be
+     * reused for the DTS partition below. (FIT DTBs are covered by the FIT.) */
+    dts_tlv_len = wolfBoot_get_header(&os_image, HDR_DEVICE_TREE_DIGEST,
+        &dts_tlv);
+    if (dts_tlv_len != 0 && dts_tlv != NULL) {
+        if (dts_tlv_len == WOLFBOOT_SHA_DIGEST_SIZE) {
+            memcpy(dts_digest, dts_tlv, WOLFBOOT_SHA_DIGEST_SIZE);
+            dts_digest_present = 1; /* present and well-formed */
+        }
+        else {
+            /* A present-but-malformed digest TLV must not silently downgrade
+             * to an unauthenticated DTB boot; treat it as a hard failure. */
+            dts_digest_present = -1;
+        }
+    }
+
+    /* Is this a Flattened uImage Tree (FIT) image (FDT format)? The
+     * capacity handed to the parser is the number of verified bytes
+     * staged at load_address, so a FIT that overstates its own size is
+     * rejected here rather than read past. */
+    if (fdt_open(&fit_ctx, (void*)load_address, os_image.fw_size) == 0) {
+        fdt_ctx* fit = &fit_ctx;
         const char *kernel = NULL, *flat_dt = NULL, *ramdisk = NULL;
         const char *fpga = NULL;
+#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+        void *atf_load;
+#endif
 
-        wolfBoot_printf("Flattened uImage Tree: Version %d, Size %d\n",
-            fdt_version(fit), fdt_totalsize(fit));
+        wolfBoot_printf("Flattened uImage Tree: Size %d\n",
+            (int)fdt_size(fit));
 
         (void)fit_find_images(fit, &kernel, &flat_dt, &ramdisk, &fpga);
 #ifdef WOLFBOOT_FPGA_BITSTREAM
@@ -517,61 +638,155 @@ backup_on_failure:
                 wolfBoot_panic();
             }
             load_address = new_load;
+#ifdef WOLFBOOT_UBOOT_LEGACY
+            stage_entry_override = 1;
+#endif
         }
+#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+        /* Load BL31 (ARM Trusted Firmware) to its DDR exec address. Its entry
+         * point is the FIT `load`/`entry` address returned here. Optional: if
+         * absent, fall through to the normal direct boot. */
+        atf_load = fit_load_image(fit, "atf", NULL);
+        if (atf_load != NULL) {
+            bl31_entry = (uintptr_t)atf_load;
+            wolfBoot_printf("FIT: BL31 (atf) loaded at %p\n", atf_load);
+        }
+#endif
         if (flat_dt != NULL) {
-            uint8_t *dts_ptr = fit_load_image(fit, flat_dt, (int*)&dts_size);
-            if (dts_ptr != NULL && wolfBoot_get_dts_size(dts_ptr) >= 0) {
-                /* relocate to load DTS address */
+            int dt_len = 0;
+            uint8_t *dts_ptr = fit_load_image(fit, flat_dt, &dt_len);
+            /* Bound the parse by the sub-image's own declared length,
+             * not by the generic staging maximum: that is the tightest
+             * bound available here. */
+            int parsed = (dts_ptr != NULL && dt_len > 0)
+                ? wolfBoot_get_dts_size(dts_ptr, (uint32_t)dt_len) : -1;
+            if (dts_ptr != NULL &&
+                    parsed >= (int)WOLFBOOT_DTS_MIN_SIZE &&
+                    (uint32_t)parsed <= WOLFBOOT_DTS_MAX_SIZE) {
+                /* Relocate to the load DTS address. The copy length is
+                 * the parsed DTB size, clamped to WOLFBOOT_DTS_MAX_SIZE,
+                 * not the FIT-declared property length. The staging window
+                 * at WOLFBOOT_LOAD_DTS_ADDRESS must be at least that large
+                 * (or the bound must be overridden for the target). */
                 dts_addr = (uint8_t*)WOLFBOOT_LOAD_DTS_ADDRESS;
+                dts_size = (uint32_t)parsed;
                 wolfBoot_printf("Loading DTS: %p -> %p (%d bytes)\n",
                     dts_ptr, dts_addr, dts_size);
+                /* The FIT is signature-verified as a whole, so its DTB (and
+                 * the bootargs inside it) are authenticated. */
+                fdt_set_dtb_authenticated(1);
                 memcpy(dts_addr, dts_ptr, dts_size);
             }
         }
 #ifdef WOLFBOOT_FIT_RAMDISK
         if (ramdisk != NULL) {
-            (void)fit_load_ramdisk(fit, ramdisk, (void*)dts_addr);
+            fdt_ctx dts_ctx;
+            fdt_ctx* dts_for_initrd = NULL;
+
+            /* The relocated DTB sits in the staging window, so that is
+             * the capacity the initrd fixup may grow into. */
+            if (dts_addr != NULL &&
+                    fdt_open(&dts_ctx, dts_addr, WOLFBOOT_DTS_MAX_SIZE) == 0) {
+                dts_for_initrd = &dts_ctx;
+            }
+            (void)fit_load_ramdisk(fit, ramdisk, dts_for_initrd);
         }
 #else
         (void)ramdisk;
 #endif
     }
     else {
-    /* Load DTS to RAM */
-    #ifdef EXT_FLASH
-        if (PART_IS_EXT(&os_image) &&
-            wolfBoot_open_image(&os_image, PART_DTS_BOOT) >= 0) {
-            dts_addr = (uint8_t*)WOLFBOOT_LOAD_DTS_ADDRESS;
-            dts_size = (uint32_t)os_image.fw_size;
-
-            wolfBoot_printf("Loading DTS (size %lu) to RAM at %08lx\n",
-                (long unsigned int)dts_size, (long unsigned int)dts_addr);
-            ext_flash_check_read((uintptr_t)os_image.fw_base,
-                    (uint8_t*)dts_addr, dts_size);
+        /* Prefer the HAL's memory-mapped DTB (unchanged for XIP targets); fall
+         * back to external flash at WOLFBOOT_DTS_BOOT_ADDRESS when the HAL has
+         * no usable address (NULL, or a flash offset on NO_XIP targets). */
+        dts_addr = hal_get_dts_address();
+        if (dts_addr != NULL) {
+            ret = wolfBoot_get_dts_size(dts_addr, WOLFBOOT_DTS_MAX_SIZE);
+            if (ret < (int)WOLFBOOT_DTS_MIN_SIZE ||
+                    (uint32_t)ret > WOLFBOOT_DTS_MAX_SIZE) {
+                wolfBoot_printf("DTB parse/size check failed - ignoring\n");
+                dts_addr = NULL; /* never forward an unvalidated address */
+            }
+            else {
+                dts_size = (uint32_t)ret;
+                memcpy((void*)WOLFBOOT_LOAD_DTS_ADDRESS, dts_addr, dts_size);
+                dts_addr = (uint8_t*)WOLFBOOT_LOAD_DTS_ADDRESS;
+            }
         }
-        else
-    #endif /* EXT_FLASH */
-        {
-            dts_addr = hal_get_dts_address();
-            if (dts_addr) {
-                ret = wolfBoot_get_dts_size(dts_addr);
-                if (ret < 0) {
-                    wolfBoot_printf("Failed parsing DTB to load\n");
-                    /* Allow failure, continue booting */
+    #if defined(EXT_FLASH) && defined(WOLFBOOT_DTS_BOOT_ADDRESS)
+        if (dts_addr == NULL) {
+            /* Peek the FDT header for the size, clamp it, then read the body.
+             * Each ext_flash_read length is checked so a short/failed read
+             * never yields a partial or oversized tree. */
+            ret = ext_flash_read((uintptr_t)WOLFBOOT_DTS_BOOT_ADDRESS,
+                    dts_hdr, (int)sizeof(dts_hdr));
+            if (ret == (int)sizeof(dts_hdr)) {
+                uint32_t peeked = 0;
+                /* Only the header has been read so far; fdt_peek_size
+                 * validates just that much and reports the size to
+                 * fetch. The complete blob is validated below. */
+                ret = fdt_peek_size(dts_hdr, (uint32_t)sizeof(dts_hdr),
+                    &peeked);
+                if (ret == 0) {
+                    dts_size = peeked;
+                    if (ext_flash_read((uintptr_t)WOLFBOOT_DTS_BOOT_ADDRESS,
+                            (uint8_t*)WOLFBOOT_LOAD_DTS_ADDRESS, (int)dts_size)
+                            == (int)dts_size &&
+                            wolfBoot_get_dts_size(
+                                (void*)WOLFBOOT_LOAD_DTS_ADDRESS, dts_size)
+                                == (int)dts_size)
+                        dts_addr = (uint8_t*)WOLFBOOT_LOAD_DTS_ADDRESS;
+                    else
+                        dts_size = 0;
                 }
-                else {
-                    /* relocate DTS to RAM */
-                    uint8_t* dts_dst = (uint8_t*)WOLFBOOT_LOAD_DTS_ADDRESS;
-                    dts_size = (uint32_t)ret;
-                    wolfBoot_printf("Loading DTB (size %d) from %p to RAM at %p\n",
-                        dts_size, dts_addr, (void*)WOLFBOOT_LOAD_DTS_ADDRESS);
-                    memcpy(dts_dst, dts_addr, dts_size);
-                    dts_addr = dts_dst;
+            }
+        }
+    #endif /* EXT_FLASH && WOLFBOOT_DTS_BOOT_ADDRESS */
+
+        /* Authenticate the raw DTB before boot. dts_size == 0 with a non-NULL
+         * address (e.g. a zeroed fdt totalsize) is rejected. A bound digest is
+         * always enforced; a missing one only panics under
+         * WOLFBOOT_REQUIRE_SIGNED_DTB, so unsigned raw-DTB targets keep booting
+         * until they adopt 'sign --dts'. */
+        if (dts_addr != NULL) {
+            if (dts_size == 0) {
+                wolfBoot_printf("DTB has zero size - rejecting\n");
+                wolfBoot_panic();
+            }
+            if (dts_digest_present == 1) {
+                if (wolfBoot_verify_dts_digest(dts_digest, dts_addr, dts_size)
+                        != 0) {
+                    wolfBoot_printf("DTB digest mismatch - rejecting\n");
+                    wolfBoot_panic();
                 }
+                wolfBoot_printf("DTB digest verified\n");
+                fdt_set_dtb_authenticated(1);
+            }
+            else if (dts_digest_present < 0) {
+                wolfBoot_printf("Malformed DTB digest TLV - rejecting\n");
+                wolfBoot_panic();
+            }
+            else {
+            #ifdef WOLFBOOT_REQUIRE_SIGNED_DTB
+                wolfBoot_printf("No DTB digest - rejecting\n");
+                wolfBoot_panic();
+            #else
+                wolfBoot_printf("Warning: DTB not authenticated (sign --dts)\n");
+            #endif
             }
         }
     }
 #endif /* MMU */
+
+#ifdef WOLFBOOT_UBOOT_LEGACY
+    /* Enter the uImage at ih_ep. Skipped if a later stage (ELF/FIT) succeeded
+     * and re-derived the load address, since that stage provides its own
+     * entry point. Tracked with an explicit flag set on each stage's success
+     * path rather than by comparing load_address. */
+    if ((uboot_entry != NULL) && !stage_entry_override) {
+        load_address = uboot_entry;
+    }
+#endif
 
     wolfBoot_printf("Booting at %p\n", load_address);
 
@@ -581,11 +796,25 @@ backup_on_failure:
     (void)hal_hsm_server_cleanup();
 #endif
 
+#ifdef ENCRYPT_PKCS11
+    pkcs11_crypto_deinit();
+#endif
+
 #ifndef TZEN
     if (hal_flash_protect(WOLFBOOT_ORIGIN, BOOTLOADER_PARTITION_SIZE) < 0) {
         wolfBoot_printf("Error protecting bootloader flash region\n");
         wolfBoot_panic();
     }
+#endif
+#if defined(MMU) || defined(WOLFBOOT_FDT)
+    /* After every relocation/fallback/digest check, so a hook never sees
+     * an unvalidated blob. */
+    wolfboot_dts_addr = (void*)dts_addr;
+#endif
+#ifdef WOLFBOOT_HOOK_PREBOOT
+    /* Before hal_prepare_boot(), so a hook still has the MMU and caches as
+     * wolfBoot set them up. */
+    wolfBoot_hook_preboot(&os_image);
 #endif
     hal_prepare_boot();
 
@@ -595,7 +824,19 @@ backup_on_failure:
 #ifndef WOLFBOOT_SKIP_BOOT_VERIFY
     PART_SANITY_CHECK(&os_image);
 #endif
-#ifdef MMU
+#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+    if (bl31_entry != 0) {
+        /* Hand off to BL31 (resident EL3 monitor). BL31 starts the kernel
+         * (BL33) at EL2; the DTB is forwarded via PMU_GLOBAL scratch (see
+         * hal/zynqmp_atf.c). Does not return. */
+        wolfBoot_printf("Handing off to BL31 at %p (kernel %p)\n",
+            (void*)bl31_entry, (void*)load_address);
+        zynqmp_atf_handoff(bl31_entry, (uintptr_t)load_address,
+            (uintptr_t)dts_addr, ZYNQMP_ATF_EL2);
+    }
+#endif
+#if defined(MMU) || defined(WOLFBOOT_FDT)
+    /* Match the do_boot() signature condition in src/boot_riscv.c. */
     do_boot((uint32_t*)load_address,
             (uint32_t*)dts_addr);
 #else

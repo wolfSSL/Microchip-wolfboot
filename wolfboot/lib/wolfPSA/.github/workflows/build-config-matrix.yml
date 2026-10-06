@@ -6,11 +6,14 @@ on:
 
 jobs:
   build-config-matrix:
+    name: ${{ matrix.config.name }} / wolfSSL ${{ matrix.wolfssl-ref }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
+        # wolfSSL master plus the -stable tag wolfPSA is validated against.
+        wolfssl-ref: [ master, v5.9.4-stable ]
+        config:
           - name: baseline
             modifiers: ""
           - name: md5
@@ -30,17 +33,19 @@ jobs:
           - name: des3
             modifiers: "-WOLFSSL_DES3 -WOLFSSL_DES_ECB +NO_DES3"
           - name: aes-gcm
-            modifiers: "-HAVE_AESGCM"
+            modifiers: "-HAVE_AESGCM -WOLFSSL_AESGCM_STREAM"
           - name: aes-ccm
             modifiers: "-HAVE_AESCCM"
+          - name: aes-ecb
+            modifiers: "-HAVE_AES_ECB +WOLFPSA_NO_AES_BITSLICED +WOLFSSL_AES_TOUCH_LINES"
+          - name: aes-fast
+            modifiers: "+WOLFPSA_NO_AES_BITSLICED +WOLFPSA_AES_FAST"
           - name: aes-ctr
             modifiers: "-WOLFSSL_AES_COUNTER"
           - name: aes-cfb
             modifiers: "-WOLFSSL_AES_CFB"
           - name: aes-ofb
             modifiers: "-WOLFSSL_AES_OFB"
-          - name: aes-ecb
-            modifiers: "-HAVE_AES_ECB"
           - name: des-ecb
             modifiers: "-WOLFSSL_DES_ECB"
           - name: cmac
@@ -81,6 +86,12 @@ jobs:
             modifiers: "-WOLFSSL_SP_384 -HAVE_ECC384"
           - name: rsa-1024
             modifiers: "-WOLFSSL_SP_1024 -RSA_MIN_SIZE +RSA_MIN_SIZE=2048"
+          # wolfPSA's own sources only: the bundled wolfCrypt sources do not
+          # build under WC_NO_RNG (asn.c trips -Wnonnull), which is a wolfSSL
+          # issue outside this lane's scope.
+          - name: no-rng
+            modifiers: "+WC_NO_RNG +WC_BLINDING_NO_RNG_ACKNOWLEDGE_WEAKNESS"
+            target: psa-objects
 
     steps:
       - name: Check out wolfPSA
@@ -92,7 +103,9 @@ jobs:
           sudo apt-get install -y build-essential
 
       - name: Clone sibling wolfSSL
-        run: git clone --depth 1 https://github.com/wolfSSL/wolfssl ../wolfssl
+        run: git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} https://github.com/wolfSSL/wolfssl ../wolfssl
 
-      - name: Build ${{ matrix.name }}
-        run: ./build-test/build-variant.sh "${{ matrix.name }}" ${{ matrix.modifiers }}
+      - name: Build ${{ matrix.config.name }}
+        env:
+          BUILD_TARGET: ${{ matrix.config.target || 'libwolfpsa.a' }}
+        run: ./build-test/build-variant.sh "${{ matrix.config.name }}" ${{ matrix.config.modifiers }}

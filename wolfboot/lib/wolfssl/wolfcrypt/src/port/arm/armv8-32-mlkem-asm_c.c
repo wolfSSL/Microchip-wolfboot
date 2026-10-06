@@ -15,7 +15,10 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-mlkem-asm.c
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_32_MLKEM_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -8654,7 +8657,7 @@ WC_OMIT_FRAME_POINTER unsigned int mlkem_arm32_rej_uniform(sword16* p,
 }
 
 #endif /* WOLFSSL_HAVE_MLKEM */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #endif /* WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

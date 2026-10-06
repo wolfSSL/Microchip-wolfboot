@@ -1,8 +1,8 @@
 /* unseal.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -18,6 +18,21 @@
 #include <wolftpm/tpm2_wrap.h>
 
 #include <stdio.h>
+#if !defined(NO_FILESYSTEM) && !defined(NO_WRITE_TEMP_FILES) && \
+    !defined(WOLFTPM_CUSTOM_STDIO) && \
+    (defined(WOLFTPM2_NO_WOLFCRYPT) || defined(XFDOPEN)) && \
+    (defined(__linux__) || defined(__APPLE__) || defined(__unix__))
+    #define WOLFTPM_UNSEAL_POSIX_FILE_IO
+    #include <fcntl.h>
+    #include <sys/stat.h>
+    #include <unistd.h>
+    #ifndef XFDOPEN
+        #define XFDOPEN fdopen
+    #endif
+    #ifndef XCLOSE
+        #define XCLOSE close
+    #endif
+#endif
 
 #if !defined(WOLFTPM2_NO_WRAPPER) && !defined(NO_FILESYSTEM)
 
@@ -30,6 +45,66 @@
 /******************************************************************************/
 /* --- BEGIN TPM2.0 Unseal example --- */
 /******************************************************************************/
+
+#ifndef NO_WRITE_TEMP_FILES
+static XFILE openPrivateFileWrite(const char* filename)
+{
+#ifdef WOLFTPM_UNSEAL_POSIX_FILE_IO
+    int fd;
+    int openFlags;
+    struct stat fileStat;
+    #ifndef O_NOFOLLOW
+        struct stat pathStat;
+    #endif
+    XFILE fp;
+
+    openFlags = O_WRONLY | O_CREAT;
+    #ifdef O_CLOEXEC
+        openFlags |= O_CLOEXEC;
+    #endif
+    #ifdef O_NOFOLLOW
+        openFlags |= O_NOFOLLOW;
+    #endif
+
+    fd = open(filename, openFlags, S_IRUSR | S_IWUSR);
+    if (fd < 0)
+        return XBADFILE;
+
+    #ifndef O_NOFOLLOW
+        /* Confirm open() did not follow a link before changing the file. */
+        if (lstat(filename, &pathStat) != 0)
+            goto exit;
+    #endif
+
+    /* Validate before truncating so linked and special files stay untouched. */
+    if (fstat(fd, &fileStat) != 0 || !S_ISREG(fileStat.st_mode) ||
+            fileStat.st_uid != geteuid() || fileStat.st_nlink != 1)
+        goto exit;
+
+    #ifndef O_NOFOLLOW
+        if (!S_ISREG(pathStat.st_mode) ||
+                pathStat.st_dev != fileStat.st_dev ||
+                pathStat.st_ino != fileStat.st_ino)
+            goto exit;
+    #endif
+
+    if (fchmod(fd, S_IRUSR | S_IWUSR) != 0 || ftruncate(fd, 0) != 0)
+        goto exit;
+
+    fp = XFDOPEN(fd, "wb");
+    if (fp == XBADFILE)
+        goto exit;
+    return fp;
+
+exit:
+    (void)XCLOSE(fd);
+    return XBADFILE;
+#else
+    /* The custom filesystem controls creation permissions on this path. */
+    return XFOPEN(filename, "wb");
+#endif
+}
+#endif /* !NO_WRITE_TEMP_FILES */
 
 static void usage(void)
 {
@@ -157,15 +232,20 @@ int TPM2_Unseal_Example(void* userCtx, int argc, char *argv[])
 #if !defined(NO_FILESYSTEM) && !defined(NO_WRITE_TEMP_FILES)
     /* Output the unsealed data to a file */
     if (filename) {
-        fp = XFOPEN(filename, "wb");
-        if (fp != XBADFILE) {
-            len = XFWRITE(cmdOut_unseal.outData.buffer, 1, cmdOut_unseal.outData.size, fp);
-            XFCLOSE(fp);
+        fp = openPrivateFileWrite(filename);
+        if (fp == XBADFILE) {
+            printf("Error opening %s for writing.\n", filename);
+            rc = TPM_RC_FAILURE;
+            goto exit;
+        }
+        len = XFWRITE(cmdOut_unseal.outData.buffer, 1,
+            cmdOut_unseal.outData.size, fp);
+        XFCLOSE(fp);
 
-            if (len != cmdOut_unseal.outData.size) {
-                printf("Error while writing the unsealed data to a file.\n");
-                goto exit;
-            }
+        if (len != cmdOut_unseal.outData.size) {
+            printf("Error while writing the unsealed data to a file.\n");
+            rc = TPM_RC_FAILURE;
+            goto exit;
         }
         printf("Stored unsealed data to file = %s\n", filename);
     }

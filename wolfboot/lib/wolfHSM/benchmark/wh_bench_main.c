@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -72,12 +72,16 @@ int main(int argc, char** argv)
         }
     }
 
-#if defined(WOLFHSM_CFG_TEST_POSIX)
+#if defined(WOLFHSM_CFG_TEST_POSIX) && defined(WOLFHSM_CFG_ENABLE_SERVER)
     int ret = wh_Bench_ClientServer_Posix(transport, moduleIndex);
     if (ret != 0) {
         WH_BENCH_PRINTF("Memory transport benchmark failed: %d\n", ret);
         return ret;
     }
+#elif defined(WOLFHSM_CFG_TEST_POSIX)
+    WH_BENCH_PRINTF(
+        "Server support not enabled. Define WOLFHSM_CFG_ENABLE_SERVER "
+        "to enable.\n");
 #else
     WH_BENCH_PRINTF(
         "POSIX thread benchmarks not enabled. Define WOLFHSM_CFG_TEST_POSIX "

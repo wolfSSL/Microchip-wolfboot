@@ -1,8 +1,8 @@
 /* extend.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -38,14 +38,6 @@ static void usage(void)
     printf("* -nvindex=[handle] (default 0x%x)\n",
         TPM2_DEMO_NVRAM_EXTEND_INDEX);
     printf("* -aes/xor: Use Parameter Encryption\n");;
-}
-
-static int BuildPolicyCommandCode(TPMI_ALG_HASH hashAlg,
-    byte* digest, word32* digestSz, TPM_CC cc)
-{
-    word32 val = cpu_to_be32(cc);
-    return wolfTPM2_PolicyHash(hashAlg, digest, digestSz,
-        TPM_CC_PolicyCommandCode, (byte*)&val, sizeof(val));
 }
 
 static int PolicyOrApply(WOLFTPM2_DEV* dev, WOLFTPM2_SESSION* policySession,
@@ -151,7 +143,14 @@ int TPM2_NVRAM_Extend_Example(void* userCtx, int argc, char *argv[])
     /* Policy A: TPM2_PolicyCommandCode -> TPM_CC_NV_Read */
     /* 47ce3032d8bad1f3089cb0c09088de43501491d460402b90cd1b7fc0b68ca92f */
     policy[0] = &policyDigest[policyDigestSz];
-    BuildPolicyCommandCode(hashAlg, policy[0], &nvSize, TPM_CC_NV_Read);
+    /* nvSize is in/out: supply the room left in policyDigest as the capacity */
+    nvSize = (word32)sizeof(policyDigest) - policyDigestSz;
+    rc = wolfTPM2_PolicyCommandCodeMake(hashAlg, policy[0], &nvSize,
+        TPM_CC_NV_Read);
+    if (rc != TPM_RC_SUCCESS) {
+        printf("Building PolicyA failed!\n");
+        goto exit;
+    }
     printf("PolicyA: %d\n", nvSize);
     TPM2_PrintBin(policy[0], nvSize);
     policyDigestSz += nvSize;
@@ -159,7 +158,13 @@ int TPM2_NVRAM_Extend_Example(void* userCtx, int argc, char *argv[])
     /* Policy B: TPM2_PolicyCommandCode -> TPM_CC_NV_Extend */
     /* b6a2e7142ee56fd978047488483daa5b42b8dc4cc7ddcceddfb91793cf1ff1b7 */
     policy[1] = &policyDigest[policyDigestSz];
-    BuildPolicyCommandCode(hashAlg, policy[1], &nvSize, TPM_CC_NV_Extend);
+    nvSize = (word32)sizeof(policyDigest) - policyDigestSz;
+    rc = wolfTPM2_PolicyCommandCodeMake(hashAlg, policy[1], &nvSize,
+        TPM_CC_NV_Extend);
+    if (rc != TPM_RC_SUCCESS) {
+        printf("Building PolicyB failed!\n");
+        goto exit;
+    }
     printf("PolicyB: %d\n", nvSize);
     TPM2_PrintBin(policy[1], nvSize);
     policyDigestSz += nvSize;
@@ -167,7 +172,13 @@ int TPM2_NVRAM_Extend_Example(void* userCtx, int argc, char *argv[])
     /* Policy C: TPM2_PolicyCommandCode -> TPM_CC_PolicyNV */
     /* 203e4bd5d0448c9615cc13fa18e8d39222441cc40204d99a77262068dbd55a43 */
     policy[2] = &policyDigest[policyDigestSz];
-    BuildPolicyCommandCode(hashAlg, policy[2], &nvSize, TPM_CC_PolicyNV);
+    nvSize = (word32)sizeof(policyDigest) - policyDigestSz;
+    rc = wolfTPM2_PolicyCommandCodeMake(hashAlg, policy[2], &nvSize,
+        TPM_CC_PolicyNV);
+    if (rc != TPM_RC_SUCCESS) {
+        printf("Building PolicyC failed!\n");
+        goto exit;
+    }
     printf("PolicyC: %d\n", nvSize);
     TPM2_PrintBin(policy[2], nvSize);
     policyDigestSz += nvSize;

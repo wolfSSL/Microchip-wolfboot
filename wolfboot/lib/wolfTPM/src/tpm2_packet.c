@@ -1,8 +1,8 @@
 /* tpm2_packet.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -124,6 +124,7 @@ void TPM2_Packet_InitBuf(TPM2_Packet* packet, byte* buf, int size)
         packet->buf  = buf;
         packet->pos = TPM2_HEADER_SIZE; /* skip header (fill during finalize) */
         packet->size = size;
+        packet->overflow = 0;
     }
 }
 
@@ -140,6 +141,9 @@ void TPM2_Packet_AppendU8(TPM2_Packet* packet, UINT8 data)
         packet->buf[packet->pos] = data;
         packet->pos += sizeof(UINT8);
     }
+    else if (packet != NULL) {
+        packet->overflow = 1;
+    }
 }
 void TPM2_Packet_ParseU8(TPM2_Packet* packet, UINT8* data)
 {
@@ -148,6 +152,9 @@ void TPM2_Packet_ParseU8(TPM2_Packet* packet, UINT8* data)
         if (data)
             value = packet->buf[packet->pos];
         packet->pos += sizeof(UINT8);
+    }
+    else if (packet != NULL) {
+        packet->overflow = 1;
     }
     if (data)
         *data = value;
@@ -160,6 +167,9 @@ void TPM2_Packet_AppendU16(TPM2_Packet* packet, UINT16 data)
         XMEMCPY(&packet->buf[packet->pos], &data, sizeof(UINT16));
         packet->pos += sizeof(UINT16);
     }
+    else if (packet != NULL) {
+        packet->overflow = 1;
+    }
 }
 void TPM2_Packet_ParseU16(TPM2_Packet* packet, UINT16* data)
 {
@@ -168,6 +178,9 @@ void TPM2_Packet_ParseU16(TPM2_Packet* packet, UINT16* data)
         XMEMCPY(&value, &packet->buf[packet->pos], sizeof(UINT16));
         value = be16_to_cpu(value);
         packet->pos += sizeof(UINT16);
+    }
+    else if (packet != NULL) {
+        packet->overflow = 1;
     }
     if (data)
         *data = value;
@@ -180,6 +193,9 @@ void TPM2_Packet_AppendU32(TPM2_Packet* packet, UINT32 data)
         XMEMCPY(&packet->buf[packet->pos], &data, sizeof(UINT32));
         packet->pos += sizeof(UINT32);
     }
+    else if (packet != NULL) {
+        packet->overflow = 1;
+    }
 }
 void TPM2_Packet_ParseU32(TPM2_Packet* packet, UINT32* data)
 {
@@ -190,6 +206,9 @@ void TPM2_Packet_ParseU32(TPM2_Packet* packet, UINT32* data)
             value = be32_to_cpu(value);
         }
         packet->pos += sizeof(UINT32);
+    }
+    else if (packet != NULL) {
+        packet->overflow = 1;
     }
     if (data)
         *data = value;
@@ -202,6 +221,9 @@ void TPM2_Packet_AppendU64(TPM2_Packet* packet, UINT64 data)
         XMEMCPY(&packet->buf[packet->pos], &data, sizeof(UINT64));
         packet->pos += sizeof(UINT64);
     }
+    else if (packet != NULL) {
+        packet->overflow = 1;
+    }
 }
 void TPM2_Packet_ParseU64(TPM2_Packet* packet, UINT64* data)
 {
@@ -212,6 +234,9 @@ void TPM2_Packet_ParseU64(TPM2_Packet* packet, UINT64* data)
             value = be64_to_cpu(value);
         }
         packet->pos += sizeof(UINT64);
+    }
+    else if (packet != NULL) {
+        packet->overflow = 1;
     }
     if (data)
         *data = value;
@@ -224,6 +249,9 @@ void TPM2_Packet_AppendS32(TPM2_Packet* packet, INT32 data)
         XMEMCPY(&packet->buf[packet->pos], &data, sizeof(INT32));
         packet->pos += sizeof(INT32);
     }
+    else if (packet != NULL) {
+        packet->overflow = 1;
+    }
 }
 
 void TPM2_Packet_AppendBytes(TPM2_Packet* packet, byte* buf, int size)
@@ -232,6 +260,9 @@ void TPM2_Packet_AppendBytes(TPM2_Packet* packet, byte* buf, int size)
         if (buf)
             XMEMCPY(&packet->buf[packet->pos], buf, size);
         packet->pos += size;
+    }
+    else if (packet != NULL) {
+        packet->overflow = 1;
     }
 }
 void TPM2_Packet_ParseBytes(TPM2_Packet* packet, byte* buf, int size)
@@ -249,6 +280,7 @@ void TPM2_Packet_ParseBytes(TPM2_Packet* packet, byte* buf, int size)
         }
         if (size > 0 && packet->pos + size > packet->size) {
             /* Clamp pos on truncated read */
+            packet->overflow = 1;
             packet->pos = packet->size;
         }
         else {
@@ -264,15 +296,17 @@ void TPM2_Packet_ParseU16Buf(TPM2_Packet* packet, UINT16* size, byte* buf,
 {
     /* Init to 0 so a NULL packet (TPM2_Packet_ParseU16 is a no-op in that
      * case) leaves wireSize well-defined for the arithmetic below. */
+    int startPos = packet != NULL ? packet->pos : 0;
     UINT16 wireSize = 0;
     UINT16 copySz;
 
     TPM2_Packet_ParseU16(packet, &wireSize);
     /* Clamp to remaining packet bytes to prevent pos from going past size */
-    if (packet && (packet->pos >= packet->size)) {
+    if (packet && packet->pos == startPos) {
         wireSize = 0;
     }
     else if (packet && wireSize > (UINT16)(packet->size - packet->pos)) {
+        packet->overflow = 1;
         wireSize = (UINT16)(packet->size - packet->pos);
     }
     copySz = wireSize;
@@ -430,8 +464,9 @@ TPM_ST TPM2_Packet_AppendAuth(TPM2_Packet* packet, TPM2_CTX* ctx, CmdInfo_t* inf
 {
     TPM_ST st = TPM_ST_NO_SESSIONS;
 
+    /* the return type is a wire tag, so a negative error cannot be encoded */
     if (ctx == NULL || info == NULL)
-        return BAD_FUNC_ARG;
+        return st;
     if (ctx->session == NULL)
         return st;
 
@@ -528,8 +563,8 @@ void TPM2_Packet_AppendPCR(TPM2_Packet* packet, TPML_PCR_SELECTION* pcr)
     TPM2_Packet_AppendU32(packet, count);
     for (i=0; i<(int)count; i++) {
         UINT8 selectSz = pcr->pcrSelections[i].sizeofSelect;
-        if (selectSz > PCR_SELECT_MIN)
-            selectSz = PCR_SELECT_MIN;
+        if (selectSz > PCR_SELECT_MAX)
+            selectSz = PCR_SELECT_MAX;
         TPM2_Packet_AppendU16(packet, pcr->pcrSelections[i].hash);
         TPM2_Packet_AppendU8(packet, selectSz);
         TPM2_Packet_AppendBytes(packet,
@@ -541,6 +576,7 @@ void TPM2_Packet_ParsePCR(TPM2_Packet* packet, TPML_PCR_SELECTION* pcr)
     int i;
     UINT32 wireCount;
     UINT32 loopCount;
+    UINT32 parsedCount;
     UINT16 hash;
     UINT8 wireSizeofSelect;
     TPM2_Packet_ParseU32(packet, &wireCount);
@@ -564,14 +600,19 @@ void TPM2_Packet_ParsePCR(TPM2_Packet* packet, TPML_PCR_SELECTION* pcr)
     else {
         loopCount = 0;
     }
+    /* remaining/3 assumes a zero-length select, so it over-estimates how
+     * many entries the wire actually carries; count what is really parsed */
+    parsedCount = 0;
     for (i = 0; i < (int)loopCount; i++) {
+        if (packet == NULL || packet->pos + 3 > packet->size)
+            break;
         TPM2_Packet_ParseU16(packet, &hash);
         TPM2_Packet_ParseU8(packet, &wireSizeofSelect);
         if (i < (int)pcr->count) {
             pcr->pcrSelections[i].hash = hash;
             pcr->pcrSelections[i].sizeofSelect = wireSizeofSelect;
-            if (pcr->pcrSelections[i].sizeofSelect > PCR_SELECT_MIN)
-                pcr->pcrSelections[i].sizeofSelect = PCR_SELECT_MIN;
+            if (pcr->pcrSelections[i].sizeofSelect > PCR_SELECT_MAX)
+                pcr->pcrSelections[i].sizeofSelect = PCR_SELECT_MAX;
             TPM2_Packet_ParseBytes(packet,
                 pcr->pcrSelections[i].pcrSelect,
                 pcr->pcrSelections[i].sizeofSelect);
@@ -585,7 +626,10 @@ void TPM2_Packet_ParsePCR(TPM2_Packet* packet, TPML_PCR_SELECTION* pcr)
             /* Skip entire entry for overflow iterations */
             TPM2_Packet_ParseBytes(packet, NULL, wireSizeofSelect);
         }
+        parsedCount++;
     }
+    if (pcr->count > parsedCount)
+        pcr->count = parsedCount;
     /* Skip remaining wire entries beyond the capped loop so packet->pos
      * stays synchronized with the wire format for subsequent parsing.
      * Break when the packet is exhausted to avoid spinning on an
@@ -596,6 +640,9 @@ void TPM2_Packet_ParsePCR(TPM2_Packet* packet, TPML_PCR_SELECTION* pcr)
         TPM2_Packet_ParseU16(packet, &hash);
         TPM2_Packet_ParseU8(packet, &wireSizeofSelect);
         TPM2_Packet_ParseBytes(packet, NULL, wireSizeofSelect);
+    }
+    if (packet != NULL && (UINT32)i < wireCount) {
+        packet->overflow = 1;
     }
 }
 
@@ -646,6 +693,13 @@ void TPM2_Packet_AppendEccScheme(TPM2_Packet* packet, TPMT_SIG_SCHEME* scheme)
         TPM2_Packet_AppendU16(packet, scheme->details.ecdaa.hashAlg);
         TPM2_Packet_AppendU16(packet, scheme->details.ecdaa.count);
     }
+#ifdef WOLFTPM_PQC
+    else if (scheme->scheme == TPM_ALG_MLDSA ||
+             scheme->scheme == TPM_ALG_HASH_MLDSA) {
+        /* ML-DSA scheme union arms are TPMS_EMPTY (TCG v185 errata): the
+         * selector carries no trailing hash. */
+    }
+#endif
     else if (scheme->scheme != TPM_ALG_NULL) {
         TPM2_Packet_AppendU16(packet, scheme->details.any.hashAlg);
     }
@@ -730,8 +784,12 @@ void TPM2_Packet_ParseAsymScheme(TPM2_Packet* packet, TPMT_ASYM_SCHEME* scheme)
 
 void TPM2_Packet_AppendEccPoint(TPM2_Packet* packet, TPMS_ECC_POINT* point)
 {
+    if (point->x.size > sizeof(point->x.buffer))
+        point->x.size = sizeof(point->x.buffer);
     TPM2_Packet_AppendU16(packet, point->x.size);
     TPM2_Packet_AppendBytes(packet, point->x.buffer, point->x.size);
+    if (point->y.size > sizeof(point->y.buffer))
+        point->y.size = sizeof(point->y.buffer);
     TPM2_Packet_AppendU16(packet, point->y.size);
     TPM2_Packet_AppendBytes(packet, point->y.buffer, point->y.size);
 }
@@ -803,6 +861,7 @@ void TPM2_Packet_ParsePoint(TPM2_Packet* packet, TPM2B_ECC_POINT* point)
         }
         else {
             packet->pos = packet->size;
+            packet->overflow = 1;
         }
     }
 }
@@ -878,6 +937,7 @@ void TPM2_Packet_ParseSensitive(TPM2_Packet* packet, TPM2B_SENSITIVE* sensitive)
 
     TPM2_Packet_ParseU16(packet, &sensitive->size);
     if (sensitive->size == 0) {
+        XMEMSET(&sensitive->sensitiveArea, 0, sizeof(sensitive->sensitiveArea));
         return;
     }
     /* Clamp outer size to remaining packet bytes so inner parses are bounded */
@@ -1040,10 +1100,15 @@ TPM_RC TPM2_Packet_ParseSensitiveCreate(TPM2_Packet* packet, int maxSize,
         *sensDataSize = dataSz;
     }
     /* Ensure packet pos is aligned to end of TPM2B_SENSITIVE_CREATE, even if
-     * inner fields didn't consume all bytes (prevents desync on malformed input) */
-    if (rc == 0 && inSensSize > 0) {
+     * inner fields didn't consume all bytes (prevents desync on malformed input).
+     * Inner fields that overrun the declared size are rejected so the
+     * following inPublic always starts at the declared boundary. */
+    if (rc == 0) {
         int expectedEnd = sensStartPos + (int)inSensSize;
-        if (packet->pos < expectedEnd && expectedEnd <= maxSize) {
+        if (packet->pos > expectedEnd) {
+            rc = TPM_RC_SIZE;
+        }
+        else if (packet->pos < expectedEnd && expectedEnd <= maxSize) {
             packet->pos = expectedEnd;
         }
     }
@@ -1147,6 +1212,8 @@ void TPM2_Packet_AppendPublicArea(TPM2_Packet* packet, TPMT_PUBLIC* publicArea)
     TPM2_Packet_AppendU16(packet, publicArea->type);
     TPM2_Packet_AppendU16(packet, publicArea->nameAlg);
     TPM2_Packet_AppendU32(packet, publicArea->objectAttributes);
+    if (publicArea->authPolicy.size > sizeof(publicArea->authPolicy.buffer))
+        publicArea->authPolicy.size = sizeof(publicArea->authPolicy.buffer);
     TPM2_Packet_AppendU16(packet, publicArea->authPolicy.size);
     TPM2_Packet_AppendBytes(packet, publicArea->authPolicy.buffer,
         publicArea->authPolicy.size);
@@ -1156,16 +1223,28 @@ void TPM2_Packet_AppendPublicArea(TPM2_Packet* packet, TPMT_PUBLIC* publicArea)
 
     switch (publicArea->type) {
     case TPM_ALG_KEYEDHASH:
+        if (publicArea->unique.keyedHash.size >
+                sizeof(publicArea->unique.keyedHash.buffer))
+            publicArea->unique.keyedHash.size =
+                sizeof(publicArea->unique.keyedHash.buffer);
         TPM2_Packet_AppendU16(packet, publicArea->unique.keyedHash.size);
         TPM2_Packet_AppendBytes(packet, publicArea->unique.keyedHash.buffer,
             publicArea->unique.keyedHash.size);
         break;
     case TPM_ALG_SYMCIPHER:
+        if (publicArea->unique.sym.size >
+                sizeof(publicArea->unique.sym.buffer))
+            publicArea->unique.sym.size =
+                sizeof(publicArea->unique.sym.buffer);
         TPM2_Packet_AppendU16(packet, publicArea->unique.sym.size);
         TPM2_Packet_AppendBytes(packet, publicArea->unique.sym.buffer,
             publicArea->unique.sym.size);
         break;
     case TPM_ALG_RSA:
+        if (publicArea->unique.rsa.size >
+                sizeof(publicArea->unique.rsa.buffer))
+            publicArea->unique.rsa.size =
+                sizeof(publicArea->unique.rsa.buffer);
         TPM2_Packet_AppendU16(packet, publicArea->unique.rsa.size);
         TPM2_Packet_AppendBytes(packet, publicArea->unique.rsa.buffer,
             publicArea->unique.rsa.size);
@@ -1176,6 +1255,10 @@ void TPM2_Packet_AppendPublicArea(TPM2_Packet* packet, TPMT_PUBLIC* publicArea)
 #ifdef WOLFTPM_MLDSA
     case TPM_ALG_MLDSA:
     case TPM_ALG_HASH_MLDSA:
+        if (publicArea->unique.mldsa.size >
+                sizeof(publicArea->unique.mldsa.buffer))
+            publicArea->unique.mldsa.size =
+                sizeof(publicArea->unique.mldsa.buffer);
         TPM2_Packet_AppendU16(packet, publicArea->unique.mldsa.size);
         TPM2_Packet_AppendBytes(packet, publicArea->unique.mldsa.buffer,
             publicArea->unique.mldsa.size);
@@ -1183,6 +1266,10 @@ void TPM2_Packet_AppendPublicArea(TPM2_Packet* packet, TPMT_PUBLIC* publicArea)
 #endif /* WOLFTPM_MLDSA */
 #ifdef WOLFTPM_MLKEM
     case TPM_ALG_MLKEM:
+        if (publicArea->unique.mlkem.size >
+                sizeof(publicArea->unique.mlkem.buffer))
+            publicArea->unique.mlkem.size =
+                sizeof(publicArea->unique.mlkem.buffer);
         TPM2_Packet_AppendU16(packet, publicArea->unique.mlkem.size);
         TPM2_Packet_AppendBytes(packet, publicArea->unique.mlkem.buffer,
             publicArea->unique.mlkem.size);
@@ -1484,16 +1571,24 @@ void TPM2_Packet_ParseSignature(TPM2_Packet* packet, TPMT_SIGNATURE* sig)
     }
 }
 
-void TPM2_Packet_ParseAttest(TPM2_Packet* packet, TPMS_ATTEST* out)
+int TPM2_Packet_ParseAttest(TPM2_Packet* packet, TPMS_ATTEST* out)
 {
+    if (packet == NULL || out == NULL || packet->buf == NULL ||
+        packet->pos < 0 || packet->size < 0 || packet->pos > packet->size) {
+        return BAD_FUNC_ARG;
+    }
+
     XMEMSET(out, 0, sizeof(TPMS_ATTEST));
 
     TPM2_Packet_ParseU32(packet, &out->magic);
+    if (packet->overflow) {
+        return TPM_RC_SIZE;
+    }
     if (out->magic != TPM_GENERATED_VALUE) {
     #ifdef DEBUG_WOLFTPM
         printf("Attestation magic invalid!\n");
     #endif
-        return;
+        return TPM_RC_VALUE;
     }
 
     TPM2_Packet_ParseU16(packet, &out->type);
@@ -1512,6 +1607,9 @@ void TPM2_Packet_ParseAttest(TPM2_Packet* packet, TPMS_ATTEST* out)
     TPM2_Packet_ParseU8(packet, &out->clockInfo.safe);
 
     TPM2_Packet_ParseU64(packet, &out->firmwareVersion);
+    if (packet->overflow) {
+        return TPM_RC_SIZE;
+    }
 
     switch (out->type) {
         case TPM_ST_ATTEST_CERTIFY:
@@ -1594,8 +1692,13 @@ void TPM2_Packet_ParseAttest(TPM2_Packet* packet, TPMS_ATTEST* out)
         #ifdef DEBUG_WOLFTPM
             printf("Unknown attestation type: 0x%x\n", out->type);
         #endif
-            break;
+            return TPM_RC_VALUE;
     }
+
+    if (packet->overflow || packet->pos != packet->size) {
+        return TPM_RC_SIZE;
+    }
+    return TPM_RC_SUCCESS;
 }
 
 TPM_RC TPM2_Packet_Parse(TPM_RC rc, TPM2_Packet* packet)
@@ -1612,7 +1715,7 @@ TPM_RC TPM2_Packet_Parse(TPM_RC rc, TPM2_Packet* packet)
          * malicious or MITM responder could inflate respSz and cause
          * downstream parsers (bounded only by packet->size) to read
          * past the physical allocation. */
-        if (respSz > (UINT32)packet->size) {
+        if (respSz < TPM2_HEADER_SIZE || respSz > (UINT32)packet->size) {
             return TPM_RC_SIZE;
         }
         packet->size = respSz;
@@ -1634,6 +1737,9 @@ int TPM2_Packet_RetryRestore(TPM_RC rc, int* retries, TPM2_Packet* packet,
      * restore the clobbered header and the buffer size for an identical resend */
     XMEMCPY(packet->buf, cmdHdr, TPM2_HEADER_SIZE);
     packet->size = origSize;
+    /* The command body is intact again, so any overflow flagged while parsing
+     * the truncated retry response does not belong to the resend */
+    packet->overflow = 0;
     return 1;
 }
 #endif /* !WOLFTPM_NO_RETRY */

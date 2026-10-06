@@ -105,9 +105,10 @@ void WEAKFUNCTION hal_early_init(void)
 
 }
 #ifdef MMU
-int WEAKFUNCTION hal_dts_fixup(void* dts_addr)
+int WEAKFUNCTION hal_dts_fixup(void* dts_addr, uint32_t capacity)
 {
     (void)dts_addr;
+    (void)capacity;
     return 0;
 }
 #endif
@@ -399,7 +400,7 @@ void RAMFUNCTION wolfBoot_os64bit_jump(os64bit_entry_t entry,
 }
 #endif /* ENABLE_OS64BIT */
 
-#ifdef MMU
+#if defined(MMU) || defined(WOLFBOOT_FDT)
 void do_boot(const uint32_t *app_offset, const uint32_t* dts_offset)
 #else
 void do_boot(const uint32_t *app_offset)
@@ -420,7 +421,9 @@ void do_boot(const uint32_t *app_offset)
     boot_entry entry = (boot_entry)app_offset;
 
 #ifdef MMU
-    hal_dts_fixup((uint32_t*)dts_offset);
+    /* WOLFBOOT_DTS_MAX_SIZE is this target's DTS staging-window size (see
+     * include/fdt.h); it bounds every in-place fixup below. */
+    hal_dts_fixup((uint32_t*)dts_offset, WOLFBOOT_DTS_MAX_SIZE);
 #endif
 
 #if defined(DEBUG_UART) && defined(WOLFBOOT_ARCH_PPC)

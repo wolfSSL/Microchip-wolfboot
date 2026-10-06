@@ -1,8 +1,8 @@
 /* bench.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -181,7 +181,8 @@ static int bench_sym_aes(WOLFTPM2_DEV* dev, WOLFTPM2_KEY* storageKey,
     if (rc != 0) goto exit;
     rc = wolfTPM2_CreateAndLoadKey(dev, &aesKey, &storageKey->handle,
         &publicTemplate, (byte*)gUsageAuth, sizeof(gUsageAuth)-1);
-    if ((rc & TPM_RC_MODE) == TPM_RC_MODE || (rc & TPM_RC_VALUE) == TPM_RC_VALUE) {
+    if ((rc & RC_MAX_FMT1) == TPM_RC_MODE ||
+            (rc & RC_MAX_FMT1) == TPM_RC_VALUE) {
         printf("Benchmark symmetric %s not supported!\n", desc);
         rc = 0; goto exit;
     }
@@ -224,6 +225,7 @@ static int bench_pqc_mldsa(WOLFTPM2_DEV* dev, double maxDuration,
     XMEMSET(&mldsaKey, 0, sizeof(mldsaKey));
     XMEMSET(&publicTemplate, 0, sizeof(publicTemplate));
     XMEMSET(message, 0x11, sizeof(message));
+    XMEMSET(sig, 0, sizeof(sig));
 
     rc = wolfTPM2_GetKeyTemplate_MLDSA(&publicTemplate,
         TPMA_OBJECT_sign | TPMA_OBJECT_fixedTPM | TPMA_OBJECT_fixedParent |
@@ -265,6 +267,8 @@ static int bench_pqc_mldsa(WOLFTPM2_DEV* dev, double maxDuration,
     } while (bench_stats_check(start, &count, maxDuration));
     rc = bench_asym_done("ML-DSA", 65, "sign", count, start, rc);
     if (rc != 0) goto exit;
+    if (count == 0)
+        goto exit; /* no signature produced; nothing to verify */
 
     bench_stats_start(&count, &start);
     do {
@@ -502,19 +506,19 @@ int TPM2_Wrapper_BenchArgs(void* userCtx, int argc, char *argv[])
     /* SHA1 */
     rc = bench_sym_hash(&dev, "SHA1", TPM_ALG_SHA1, message.buffer,
         sizeof(message.buffer), cipher.buffer, TPM_SHA_DIGEST_SIZE, maxDuration);
-    if (rc != 0 && (rc & TPM_RC_HASH) != TPM_RC_HASH) goto exit;
+    if (rc != 0 && (rc & RC_MAX_FMT1) != TPM_RC_HASH) goto exit;
     /* SHA256 */
     rc = bench_sym_hash(&dev, "SHA256", TPM_ALG_SHA256, message.buffer,
         sizeof(message.buffer), cipher.buffer, TPM_SHA256_DIGEST_SIZE, maxDuration);
-    if (rc != 0 && (rc & TPM_RC_HASH) != TPM_RC_HASH) goto exit;
+    if (rc != 0 && (rc & RC_MAX_FMT1) != TPM_RC_HASH) goto exit;
     /* SHA384 */
     rc = bench_sym_hash(&dev, "SHA384", TPM_ALG_SHA384, message.buffer,
         sizeof(message.buffer), cipher.buffer, TPM_SHA384_DIGEST_SIZE, maxDuration);
-    if (rc != 0 && (rc & TPM_RC_HASH) != TPM_RC_HASH) goto exit;
+    if (rc != 0 && (rc & RC_MAX_FMT1) != TPM_RC_HASH) goto exit;
     /* SHA512 */
     rc = bench_sym_hash(&dev, "SHA512", TPM_ALG_SHA512, message.buffer,
         sizeof(message.buffer), cipher.buffer, TPM_SHA512_DIGEST_SIZE, maxDuration);
-    if (rc != 0 && (rc & TPM_RC_HASH) != TPM_RC_HASH) goto exit;
+    if (rc != 0 && (rc & RC_MAX_FMT1) != TPM_RC_HASH) goto exit;
 
 
     /* Create RSA key for encrypt/decrypt */

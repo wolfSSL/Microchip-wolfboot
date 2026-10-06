@@ -1,8 +1,8 @@
 /* spdm_msg.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -45,6 +45,18 @@ static int wolfSPDM_BuildSimpleMsg(WOLFSPDM_CTX* ctx, byte msgCode,
     return WOLFSPDM_SUCCESS;
 }
 
+/* KEY_EXCHANGE request size: 8-byte header, 32-byte RandomData, and two ECC
+ * coordinates, plus a config-specific OpaqueData block. Keep
+ * WOLFSPDM_KEYEX_OPAQUE_SZ in sync with the OpaqueData written below. */
+#define WOLFSPDM_KEYEX_FIXED_SZ  (40 + 2 * WOLFSPDM_ECC_KEY_SIZE)
+#ifdef WOLFSPDM_NUVOTON
+    #define WOLFSPDM_KEYEX_OPAQUE_SZ 14
+#elif defined(WOLFSPDM_NATIONS)
+    #define WOLFSPDM_KEYEX_OPAQUE_SZ 2
+#else
+    #define WOLFSPDM_KEYEX_OPAQUE_SZ 22
+#endif
+
 int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
 {
     word32 offset = 0;
@@ -54,7 +66,9 @@ int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     word32 pubKeyYSz = sizeof(pubKeyY);
     int rc;
 
-    SPDM_CHECK_BUILD_ARGS(ctx, buf, bufSz, 180);
+    /* Require exactly the encoded request size */
+    SPDM_CHECK_BUILD_ARGS(ctx, buf, bufSz,
+        WOLFSPDM_KEYEX_FIXED_SZ + WOLFSPDM_KEYEX_OPAQUE_SZ);
 
     rc = wolfSPDM_GenerateEphemeralKey(ctx);
     if (rc == WOLFSPDM_SUCCESS)
@@ -320,25 +334,9 @@ int wolfSPDM_CheckError(const byte* buf, word32 bufSz, int* errorCode)
     return 0;
 }
 
-/* Maximum SPDM version we support. Supports SPDM 1.2 through 1.4.
- * Override with -DWOLFSPDM_MAX_SPDM_VERSION at compile time to cap
- * at a lower version. */
-#ifndef WOLFSPDM_MAX_SPDM_VERSION
-#define WOLFSPDM_MAX_SPDM_VERSION  SPDM_VERSION_14
-#endif
-
-/* Minimum SPDM version we require. Our key derivation uses BinConcat
- * format ("spdm1.2 " prefix) which is a 1.2+ feature. SPDM 1.1 uses
- * a different HKDF label format and would require separate key
- * derivation code. Override at compile time if 1.1 support is added. */
-#ifndef WOLFSPDM_MIN_SPDM_VERSION
-#define WOLFSPDM_MIN_SPDM_VERSION  SPDM_VERSION_12
-#endif
-
 int wolfSPDM_ParseVersion(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
 {
     word16 entryCount;
-    word16 maxEntries;
     word32 i;
     byte highestVersion = 0;  /* No version found yet */
     byte maxVer;
@@ -346,16 +344,18 @@ int wolfSPDM_ParseVersion(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
     SPDM_CHECK_PARSE_ARGS(ctx, buf, bufSz, 6);
     SPDM_CHECK_RESPONSE(ctx, buf, bufSz, SPDM_VERSION, WOLFSPDM_E_VERSION_MISMATCH);
 
-    /* Parse VERSION response:
-     * Offset 4-5: VersionNumberEntryCount (LE)
+    /* VersionNumberEntryCount is the one-byte field at offset 5 (byte 4
+     * reserved) per DSP0274; older wolfTPM responders placed it at
+     * offset 4, so fall back to that when offset 5 is zero.
      * Offset 6+: VersionNumberEntry array (2 bytes each, LE) */
-    entryCount = SPDM_Get16LE(&buf[4]);
+    entryCount = buf[5];
+    if (entryCount == 0) {
+        entryCount = buf[4];
+    }
 
-    /* Cap entryCount to what actually fits in the buffer to prevent
-     * overflow on exotic compilers where i*2 could wrap */
-    maxEntries = (word16)((bufSz - 6) / 2);
-    if (entryCount > maxEntries) {
-        entryCount = maxEntries;
+    /* Reject a truncated entry list instead of negotiating from a subset */
+    if ((word32)6 + (word32)entryCount * 2 > bufSz) {
+        return WOLFSPDM_E_VERSION_MISMATCH;
     }
 
     /* Find highest mutually supported version.

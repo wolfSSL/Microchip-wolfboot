@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE) && defined(NO_INLINE)
     #define WOLFSSL_MISC_INCLUDED

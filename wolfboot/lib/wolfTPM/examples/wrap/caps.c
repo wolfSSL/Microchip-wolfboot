@@ -1,8 +1,8 @@
 /* caps.
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -119,6 +119,7 @@ int TPM2_Wrapper_CapsArgs(void* userCtx, int argc, char *argv[])
     rc = wolfTPM2_GetHandles(PERSISTENT_FIRST, NULL);
     if (rc >= 0) {
         printf("Found %d persistent handles\n", rc);
+        rc = TPM_RC_SUCCESS;
     }
 
     /* Print the available PCR's */

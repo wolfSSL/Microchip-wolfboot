@@ -1825,6 +1825,7 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
         WOLFSSL_MEM_STATS mem_stats;
     #endif
     #endif
+    WOLFSSL_HEAP_HINT *heap = NULL;
 #endif
 #if defined(WOLFSSL_TLS13) && defined(HAVE_SUPPORTED_CURVES)
     int onlyKeyShare = 0;
@@ -1868,6 +1869,12 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
 
     ((func_args*)args)->return_code = -1; /* error state */
 
+#ifdef HAVE_PK_CALLBACKS
+    /* The ECC callbacks read keyGenCnt whether or not certificates are
+     * compiled in, so this cannot sit inside the NO_CERTS block below. */
+    XMEMSET(&pkCbInfo, 0, sizeof(pkCbInfo));
+#endif
+
 #ifndef NO_RSA
     verifyCert = cliCertFile;
     ourCert    = svrCertFile;
@@ -1885,6 +1892,14 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
         verifyCert = cliEd448CertFile;
         ourCert    = ed448CertFile;
         ourKey     = ed448KeyFile;
+    #elif defined(TEST_HAVE_MLDSA_CERTS)
+        verifyCert = caMldsaCertFile;
+        ourCert    = mldsaCertFile;
+        ourKey     = mldsaKeyFile;
+    #elif defined(TEST_HAVE_SLHDSA_CERTS)
+        verifyCert = caSlhdsaCertFile;
+        ourCert    = slhdsaCertFile;
+        ourKey     = slhdsaKeyFile;
     #else
         verifyCert = NULL;
         ourCert    = NULL;
@@ -2005,7 +2020,6 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
             case 'G' :
             #ifdef WOLFSSL_SCTP
                 doDTLS  = 1;
-                dtlsUDP = 1;
                 dtlsSCTP = 1;
             #endif
                 break;
@@ -2766,7 +2780,8 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
             method = wolfDTLSv1_3_server_method_ex;
             break;
 #endif
-    #if defined(OPENSSL_EXTRA) || defined(WOLFSSL_EITHER_SIDE)
+    #if (defined(OPENSSL_EXTRA) || defined(WOLFSSL_EITHER_SIDE)) && \
+        !defined(WOLFSSL_NO_TLS12)
         case -3:
             method = wolfDTLSv1_2_method_ex;
             break;
@@ -2801,9 +2816,19 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
                                                   WOLFMEM_IO_POOL_FIXED));
     #endif /* DEBUG_WOLFSSL */
 
-    if (wolfSSL_CTX_load_static_memory(&ctx, method, memory, sizeof(memory),0,1)
-            != WOLFSSL_SUCCESS)
-        err_sys_ex(catastrophic, "unable to load static memory and create ctx");
+    if (wc_LoadStaticMemory(&heap, memory, sizeof(memory), 0, 1) != 0)
+        err_sys_ex(catastrophic, "unable to load static memory");
+
+#if defined(WOLFSSL_NO_MALLOC) && !defined(NO_MAIN_DRIVER)
+    /* only the standalone program may publish a pool of its own */
+    if (wolfSSL_GetGlobalHeapHint() == NULL)
+        wolfSSL_SetGlobalHeapHint(heap);
+#endif
+
+    if (method != NULL)
+        ctx = wolfSSL_CTX_new_ex(method(heap), heap);
+    if (ctx == NULL)
+        err_sys_ex(catastrophic, "unable to get ctx");
 
     /* load in a buffer for IO */
     if (wolfSSL_CTX_load_static_memory(&ctx, NULL, memoryIO, sizeof(memoryIO),
@@ -2938,8 +2963,7 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
     }
 #endif
 
-#if defined(NO_RSA) && !defined(HAVE_ECC) && !defined(HAVE_ED25519) && \
-                                                            !defined(HAVE_ED448)
+#if defined(TEST_NO_CLASSIC_AUTH) && !defined(TEST_HAVE_PQC_CERT_AUTH)
     if (!usePsk) {
         usePsk = 1;
     }
@@ -3100,7 +3124,7 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
 #endif
 
 
-#ifdef HAVE_ECC
+#if defined(HAVE_ECC) && !defined(NO_CERTS)
     /* Use ECDHE key size that matches long term key.
      * Zero means use ctx->privateKeySz.
      * Default ECDHE_SIZE is 32 bytes
@@ -3183,7 +3207,9 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
 #endif
 
 #ifdef WOLFSSL_SNIFFER
-    if (cipherList == NULL && version < 4) {
+    /* Only for TLS 1.2 and below.  A DTLS version is negative here
+     * (DTLS 1.3 is -4), so it has to be excluded explicitly. */
+    if (cipherList == NULL && version >= 0 && version < 4) {
         /* static RSA or static ECC cipher suites */
         const char* staticCipherList = "AES128-SHA:ECDH-ECDSA-AES128-SHA";
         if (wolfSSL_CTX_set_cipher_list(ctx, staticCipherList) != WOLFSSL_SUCCESS) {
@@ -4176,6 +4202,10 @@ THREAD_RETURN WOLFSSL_THREAD server_test(void* args)
 
 exit:
 
+#ifdef HAVE_PK_CALLBACKS
+    CleanupPkCallbackContexts(&pkCbInfo);
+#endif
+
 #ifdef WOLFSSL_WOLFSENTRY_HOOKS
     wolfsentry_ret =
         wolfsentry_shutdown(WOLFSENTRY_CONTEXT_ARGS_OUT_EX4(&wolfsentry, NULL));
@@ -4219,6 +4249,13 @@ exit:
 #if defined(WOLFSSL_CALLBACKS) && defined(WOLFSSL_EARLY_DATA)
     (void) earlyData;
 #endif
+#if defined(WOLFSSL_STATIC_MEMORY) && defined(WOLFSSL_NO_MALLOC) && \
+    !defined(NO_MAIN_DRIVER)
+    /* the pool backing the hint is on this function's stack */
+    if (wolfSSL_GetGlobalHeapHint() == (void*)heap)
+        wolfSSL_SetGlobalHeapHint(NULL);
+#endif
+
     WOLFSSL_RETURN_FROM_THREAD(0);
 }
 

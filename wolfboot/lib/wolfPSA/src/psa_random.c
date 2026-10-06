@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE)
 
@@ -48,10 +48,16 @@ psa_status_t psa_generate_random(uint8_t *output, size_t output_size)
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
+    /* A zero-length request succeeds without touching the RNG backend,
+     * which rejects the NULL pointer of a zero-capacity buffer. */
+    if (output_size == 0) {
+        return PSA_SUCCESS;
+    }
+
     wolfpsa_trace("psa_generate_random(%zu)", output_size);
     
     /* Initialize the RNG */
-    ret = wc_InitRng(&rng);
+    ret = wc_InitRng_ex(&rng, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }

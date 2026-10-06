@@ -204,6 +204,14 @@ void uart_write(const char* buf, unsigned int sz)
         SCI_TDR(DEBUG_UART_SCI) = c;
     }
 }
+void uart_read(char* buf, unsigned int sz)
+{
+    uint32_t pos = 0;
+    while (sz-- > 0) {
+        while ((SCI_SSR(DEBUG_UART_SCI) & SCI_SSR_RDRF) == 0);
+        buf[pos++] = (char)SCI_RDR(DEBUG_UART_SCI);
+    }
+}
 #endif /* DEBUG_UART */
 
 /* LOCO clock is used out of reset */
@@ -454,6 +462,31 @@ int hal_renesas_init(void)
 #endif /* TSIP */
 
 
+#ifdef WATCHDOG
+/* External watchdog (e.g. MAX6316-MAX6322): toggle the WDI GPIO so a signal
+ * edge restarts its timer. Pin set by WATCHDOG_WDI_PORT/WATCHDOG_WDI_PIN. */
+#ifndef WATCHDOG_WDI_PORT
+#define WATCHDOG_WDI_PORT 0 /* PORT0 */
+#endif
+#ifndef WATCHDOG_WDI_PIN
+#define WATCHDOG_WDI_PIN  0
+#endif
+
+static void hal_watchdog_init(void)
+{
+    /* Drive WDI as a general-purpose CMOS output */
+    PORT_PMR(WATCHDOG_WDI_PORT) &= (uint8_t)~(1U << WATCHDOG_WDI_PIN);
+    PORT_PDR(WATCHDOG_WDI_PORT) |= (uint8_t) (1U << WATCHDOG_WDI_PIN);
+}
+
+/* RAMFUNCTION: callable from the RAM-resident flash paths. */
+void RAMFUNCTION wolfBoot_watchdog_feed(void)
+{
+    /* Toggle WDI: any transition restarts the external watchdog timer */
+    PORT_PODR(WATCHDOG_WDI_PORT) ^= (uint8_t)(1U << WATCHDOG_WDI_PIN);
+}
+#endif /* WATCHDOG */
+
 void hal_init(void)
 {
 #if defined(WOLFBOOT_RENESAS_TSIP) && !defined(WOLFBOOT_RENESAS_APP)
@@ -475,6 +508,10 @@ void hal_init(void)
 #endif
 
     hal_flash_init();
+
+#ifdef WATCHDOG
+    hal_watchdog_init();
+#endif
 
 #if defined(WOLFBOOT_RENESAS_TSIP) && !defined(WOLFBOOT_RENESAS_APP)
     err = hal_renesas_init();

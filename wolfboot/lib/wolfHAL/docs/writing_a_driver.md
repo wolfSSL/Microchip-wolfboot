@@ -148,7 +148,7 @@ Single-instance device drivers must define the device struct within the driver
 extern const whal_Uart whal_Myplatform_Uart_Dev;
 
 /* src/uart/myplatform_uart.c */
-#include "board.h"  /* provides WHAL_CFG_MYPLATFORM_UART_DEV initializer */
+#include "wolfHAL_board.h"  /* provides WHAL_CFG_MYPLATFORM_UART_DEV initializer */
 const whal_Uart whal_Myplatform_Uart_Dev = WHAL_CFG_MYPLATFORM_UART_DEV;
 
 whal_Error whal_Myplatform_Uart_Init(whal_Uart *uartDev)
@@ -167,7 +167,7 @@ multi-instance device. For example: the STM32WB platform has multiple UART
 devices, each with their own register map offset.
 
 Since the user could use multiple instances of the device the user must define
-the device struct within the board.c and pass it in as a function argument. The
+the device struct within the wolfHAL_board.c and pass it in as a function argument. The
 driver must determine this at runtime like so:
 
 ```c
@@ -196,7 +196,7 @@ extern const whal_Uart whal_Myplatform_Uart_Dev;
 
 /* src/uart/myplatform_uart.c */
 #ifdef WHAL_CFG_MYPLATFORM_UART_SINGLE_INSTANCE
-#include "board.h"  /* provides WHAL_CFG_MYPLATFORM_UART_DEV initializer */
+#include "wolfHAL_board.h"  /* provides WHAL_CFG_MYPLATFORM_UART_DEV initializer */
 const whal_Uart whal_Myplatform_Uart_Dev = WHAL_CFG_MYPLATFORM_UART_DEV;
 #endif
 
@@ -267,6 +267,9 @@ The tick units are determined by the board's `GetTick` implementation. A 1 kHz
 SysTick gives millisecond ticks; a 1 MHz timer gives microsecond ticks. Drivers
 do not need to know the tick rate.
 
+The tick fields are 32-bit by default; define `WHAL_CFG_64BIT_TICK` to widen
+them to 64-bit (see "64-bit Ticks" below).
+
 #### whal_Reg_ReadPoll
 
 For the common case of polling a register bit, use `whal_Reg_ReadPoll` from
@@ -324,6 +327,27 @@ Define `WHAL_CFG_NO_TIMEOUT` to remove all timeout logic from the binary.
 When defined, `WHAL_TIMEOUT_START` becomes a no-op and `WHAL_TIMEOUT_EXPIRED`
 always evaluates to `0`, so polling loops run until the hardware condition is
 met with no overhead.
+
+#### 64-bit Ticks
+
+By default the tick fields (`timeoutTicks`, `startTick`, and the `GetTick`
+return value) are 32-bit, which wraps in about 49 days at millisecond
+resolution. Define `WHAL_CFG_64BIT_TICK` to widen them to `uint64_t` for
+systems that need a longer monotonic range. The elapsed-time comparison in
+`WHAL_TIMEOUT_EXPIRED` uses unsigned wraparound arithmetic that adjusts to the
+configured width, so both settings handle a tick-counter wrap correctly.
+
+When the macro is defined, the board's tick source must match the width: its
+`g_tick` counter and `GetTick` callback (typically `Board_GetTick`) must be
+`uint64_t`, since `whal_Timeout.GetTick` becomes `uint64_t (*)(void)`. The
+`WHAL_TICK_MAX` macro in `wolfHAL/timeout.h` evaluates to the maximum tick
+value at the configured width (`UINT32_MAX` or `UINT64_MAX`) for wrap-handling
+logic.
+
+A 64-bit `GetTick` must return a coherent snapshot. On a 32-bit MCU a 64-bit
+read is two loads, so a tick interrupt landing between them returns a torn value
+and `WHAL_TIMEOUT_EXPIRED` reports a spurious timeout. Read with interrupts
+masked, or retry until the halves agree.
 
 #### Adding Timeout to a Config Struct
 
@@ -416,7 +440,7 @@ devices without knowing the register addresses or driver symbols:
 The board uses these in device struct initializers:
 
 ```c
-/* board.c */
+/* wolfHAL_board.c */
 
 #include <wolfHAL/platform/myvendor/myplatform.h>
 whal_Uart g_whalUart = {
@@ -959,6 +983,80 @@ Reset the timer counter back to its initialized state.
 
 ---
 
+## PWM
+
+Header: `wolfHAL/pwm/pwm.h`
+
+The PWM driver generates a pulse-width-modulated output. Each channel's waveform
+(frequency, duty, polarity) is described by a `whal_Pwm_ChannelCfg` passed to
+Start, which applies it and begins output; Stop halts the channel. Channels are
+addressed by a zero-based index, and a driver returns `WHAL_ENOTSUP` for any
+channel its hardware does not implement (a single-output peripheral accepts only
+channel 0).
+
+The waveform's `periodCycles` and `pulseCycles` are counted in ticks of the
+driver's (prescaled) timer clock, not seconds; the board translates real time
+into ticks. On hardware that shares one counter across channels, every channel
+of an instance must use the same `periodCycles`.
+
+### Init
+
+Configure the instance-static PWM settings (clock source, prescaler, waveform
+mode) with the output disabled. The board must enable the peripheral clock
+before calling Init.
+
+### Deinit
+
+Disable the PWM output and release resources.
+
+### Start
+
+Apply a `whal_Pwm_ChannelCfg` to a channel and begin output. The generic
+dispatcher rejects a null waveform, a zero period, and
+`pulseCycles > periodCycles` with `WHAL_EINVAL`; the driver returns
+`WHAL_ENOTSUP` for a channel or waveform its hardware cannot represent. Start is
+a repeatable toggle with Stop and does not require a re-Init.
+
+### Stop
+
+Halt output on a channel, parking the pin. A subsequent Start reprograms and
+resumes the waveform.
+
+---
+
+## Display
+
+Header: `wolfHAL/display/display.h`
+
+The display driver provides a bus-agnostic API for pixel-addressable panels.
+Each driver implements the vtable and talks to its panel over the appropriate
+bus (SPI, parallel, etc.) internally. The pixel format, the byte layout of the
+data buffer, and the meaning of a region are defined by each driver rather than
+by the generic API.
+
+### Init
+
+Bring the panel up: configure the bus session, start any refresh / COM-inversion
+source the panel needs, and clear pixel memory to a known state. A driver that
+acquires resources here (e.g. a VCOM PWM) should release them on any Init error
+path so a failed Init leaves nothing running.
+
+### Deinit
+
+Shut the panel down, mirroring Init's bring-up in reverse (e.g. blank the panel
+before halting COM inversion, then release the bus).
+
+### Update
+
+Push pixel data to the `w` by `h` region whose top-left corner is (`x`, `y`).
+The generic dispatcher rejects structural violations (null pointers, a zero-area
+region, a null or zero-length data buffer) with `WHAL_EINVAL`; the driver
+returns `WHAL_ENOTSUP` for a region its hardware cannot address (e.g. a panel
+that can only write whole lines requires a full-width region) and validates
+`dataSz` against its own pixel format.
+
+---
+
 ## RNG
 
 Header: `wolfHAL/rng/rng.h`
@@ -1199,7 +1297,7 @@ hardware retains all necessary context internally.
 Applications reach each algorithm through its `BOARD_<ALGO>_DEV` macro
 (`BOARD_AES_GCM_DEV`, `BOARD_SHA256_DEV`, etc.). Boards point those at
 `WHAL_INTERNAL_DEV` for the common single-instance case or at a
-`&g_whalAesGcm` pointer if they have kept the device in `board.c`.
+`&g_whalAesGcm` pointer if they have kept the device in `wolfHAL_board.c`.
 
 One-shot:
 
@@ -1489,12 +1587,12 @@ qualify, since the chip exposes one of each) follow the pattern in the
 "Single-instance drivers" section above: the driver header
 `extern`-declares each singleton (the `whal_Crypto` peripheral and each
 per-algorithm `whal_<Plat>_<Algo>_Dev`), the driver `.c` defines them
-from `WHAL_CFG_<PLAT>_<ALGO>_DEV` initializers in `board.h`, and any
+from `WHAL_CFG_<PLAT>_<ALGO>_DEV` initializers in `wolfHAL_board.h`, and any
 streaming state is a `static` variable in the driver `.c` whose address
 the initializer plumbs into the `.state` field. The per-algorithm
 initializer's `.crypto` is the cast address of the `whal_Crypto`
 singleton. The board's `BOARD_<ALGO>_DEV` macro is then
-`WHAL_INTERNAL_DEV`. See `boards/stm32wb55xx_nucleo/board.h` for a
+`WHAL_INTERNAL_DEV`. See `boards/stm32wb55xx_nucleo/wolfHAL_board.h` for a
 worked example.
 
 ### Reference Implementations

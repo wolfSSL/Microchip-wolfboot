@@ -99,6 +99,10 @@ jobs:
           # STMicro ST33KTPM2
           - name: st33ktpm2 firmware
             wolftpm_config: --enable-st33 --enable-firmware --disable-fwtpm
+          # HAL nRST reset control (compile-only, no GPIO hardware in CI)
+          - name: hal-reset
+            wolftpm_config: --enable-st33 --enable-hal-reset --disable-fwtpm
+            test_command: "true"
           # SPDM + Nuvoton (compile-only, no hardware in CI)
           - name: spdm-nuvoton
             wolfssl_config: --enable-wolftpm --enable-ecc --enable-sha384 --enable-aesgcm --enable-hkdf --enable-sp
@@ -189,6 +193,19 @@ jobs:
             needs_swtpm: false
             test_command: "true"
 
+          # Kernel-device autodetect: /dev/tpmrm0 -> /dev/tpm0 -> SPI fallback.
+          # The only entry defining WOLFTPM_LINUX_DEV_AUTODETECT, so it is also
+          # the only one compiling that path's DEBUG_WOLFTPM code -- hence
+          # --enable-debug, which keeps those printfs under a compiler.
+          # Build-only: the runner has no /dev/tpm* and this config cannot talk
+          # to swtpm, so wolfTPM2_Init has no transport and unit.test fails at
+          # its first assertion. Runtime coverage needs a self-hosted runner
+          # with a kernel-bound TPM -- see docs/DEVTPM.md.
+          - name: devtpm-autodetect
+            wolftpm_config: --enable-autodetect --enable-debug
+            needs_swtpm: false
+            test_command: "true"
+
           # Negative tests: configure must error on conflicting flag combos,
           # and we verify the SPECIFIC error message (not just a non-zero
           # exit). wolfSSL is installed by the earlier `Setup wolfSSL` step,
@@ -248,7 +265,10 @@ jobs:
             wolftpm_config: --enable-advio --disable-fwtpm
             needs_swtpm: false
 
-          # Autodetect (default configure, /dev/tpm0 + SPI dual support)
+          # Default configure. NOTE this does NOT build the /dev/tpmX path:
+          # WOLFTPM_SWTPM is still auto-enabled here, which suppresses
+          # WOLFTPM_LINUX_DEV_AUTODETECT (wolftpm/tpm2_types.h). The kernel
+          # device path is covered by the devtpm-autodetect entry above.
           - name: autodetect
             wolftpm_config: "--disable-fwtpm"
             needs_swtpm: false

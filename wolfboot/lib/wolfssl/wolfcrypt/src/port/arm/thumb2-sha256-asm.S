@@ -15,6 +15,9 @@
  *       thumb2 ../wolfssl/wolfcrypt/src/port/arm/thumb2-sha256-asm.S
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_THUMB2_SHA256_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -57,6 +60,7 @@ L_SHA256_transform_len_k:
 	.text
 	.align	4
 	.globl	Transform_Sha256_Len_base
+	WC_ASM_ATT_HIDDEN(Transform_Sha256_Len_base)
 	.type	Transform_Sha256_Len_base, %function
 Transform_Sha256_Len_base:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -118,7 +122,7 @@ L_SHA256_transform_len_begin:
 	LDR	r4, [r0, #8]
 	EOR	r11, r11, r4
 #ifndef WOLFSSL_ARMASM_SHA256_SMALL
-	MOV	r3, #0x3
+	MOV	r3, #3
 	/* Start of 16 rounds */
 L_SHA256_transform_len_start_fast:
 	/* Round 0 */
@@ -874,7 +878,7 @@ L_SHA256_transform_len_start_fast:
 	ADD	r9, r9, r4
 	STR	r9, [sp, #60]
 	ADD	r12, r12, #0x40
-	SUBS	r3, r3, #0x1
+	SUBS	r3, r3, #1
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_SHA256_transform_len_start_fast
 #else
@@ -1393,10 +1397,10 @@ L_SHA256_transform_len_start_fast:
 	STR	r8, [r0, #16]
 	STR	r9, [r0]
 #else
-	MOV	r3, #0x4
+	MOV	r3, #4
 	/* Start of 16 rounds */
 L_SHA256_transform_len_start_small:
-	SUB	r3, r3, #0x1
+	SUB	r3, r3, #1
 	/* Round 0 */
 	LDR	r5, [r0, #16]
 	LDR	r6, [r0, #20]
@@ -1429,7 +1433,7 @@ L_SHA256_transform_len_start_small:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #12]
 	STR	r9, [r0, #28]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_0
 #else
@@ -1483,7 +1487,7 @@ L_SHA256_transform_len_blk_end_0:
 	ADD	r9, r9, r10
 	STR	r8, [r0, #8]
 	STR	r9, [r0, #24]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_1
 #else
@@ -1537,7 +1541,7 @@ L_SHA256_transform_len_blk_end_1:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #4]
 	STR	r9, [r0, #20]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_2
 #else
@@ -1591,7 +1595,7 @@ L_SHA256_transform_len_blk_end_2:
 	ADD	r9, r9, r10
 	STR	r8, [r0]
 	STR	r9, [r0, #16]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_3
 #else
@@ -1645,7 +1649,7 @@ L_SHA256_transform_len_blk_end_3:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #28]
 	STR	r9, [r0, #12]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_4
 #else
@@ -1699,7 +1703,7 @@ L_SHA256_transform_len_blk_end_4:
 	ADD	r9, r9, r10
 	STR	r8, [r0, #24]
 	STR	r9, [r0, #8]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_5
 #else
@@ -1753,7 +1757,7 @@ L_SHA256_transform_len_blk_end_5:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #20]
 	STR	r9, [r0, #4]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_6
 #else
@@ -1807,7 +1811,7 @@ L_SHA256_transform_len_blk_end_6:
 	ADD	r9, r9, r10
 	STR	r8, [r0, #16]
 	STR	r9, [r0]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_7
 #else
@@ -1861,7 +1865,7 @@ L_SHA256_transform_len_blk_end_7:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #12]
 	STR	r9, [r0, #28]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_8
 #else
@@ -1915,7 +1919,7 @@ L_SHA256_transform_len_blk_end_8:
 	ADD	r9, r9, r10
 	STR	r8, [r0, #8]
 	STR	r9, [r0, #24]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_9
 #else
@@ -1969,7 +1973,7 @@ L_SHA256_transform_len_blk_end_9:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #4]
 	STR	r9, [r0, #20]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_10
 #else
@@ -2023,7 +2027,7 @@ L_SHA256_transform_len_blk_end_10:
 	ADD	r9, r9, r10
 	STR	r8, [r0]
 	STR	r9, [r0, #16]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_11
 #else
@@ -2077,7 +2081,7 @@ L_SHA256_transform_len_blk_end_11:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #28]
 	STR	r9, [r0, #12]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_12
 #else
@@ -2131,7 +2135,7 @@ L_SHA256_transform_len_blk_end_12:
 	ADD	r9, r9, r10
 	STR	r8, [r0, #24]
 	STR	r9, [r0, #8]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_13
 #else
@@ -2185,7 +2189,7 @@ L_SHA256_transform_len_blk_end_13:
 	ADD	r9, r9, r11
 	STR	r8, [r0, #20]
 	STR	r9, [r0, #4]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_14
 #else
@@ -2239,7 +2243,7 @@ L_SHA256_transform_len_blk_end_14:
 	ADD	r9, r9, r10
 	STR	r8, [r0, #16]
 	STR	r9, [r0]
-	CMP	r3, #0x0
+	CMP	r3, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_SHA256_transform_len_blk_end_15
 #else
@@ -2261,7 +2265,7 @@ L_SHA256_transform_len_blk_end_14:
 	ADD	r9, r9, r4
 	STR	r9, [sp, #60]
 L_SHA256_transform_len_blk_end_15:
-	CMP	r3, #0x0
+	CMP	r3, #0
 	ADD	r12, r12, #0x40
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_SHA256_transform_len_start_small
@@ -2312,10 +2316,10 @@ L_SHA256_transform_len_blk_end_15:
 	.size	Transform_Sha256_Len_base,.-Transform_Sha256_Len_base
 #endif /* WOLFSSL_ARMASM_NO_NEON */
 #endif /* !NO_SHA256 */
-#endif /* WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

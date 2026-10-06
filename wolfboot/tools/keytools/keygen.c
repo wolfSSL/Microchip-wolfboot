@@ -99,6 +99,15 @@ static int exportPubKey = 0;
 static WC_RNG rng;
 static int noLocalKeys = 0;
 
+/* Exit after the RNG has been initialised: free the DRBG state first so
+ * it is not left resident in process memory, then terminate. */
+static void keygen_die(int code)
+{
+    wc_FreeRng(&rng);
+    wc_ForceZero(&rng, sizeof(rng));
+    exit(code);
+}
+
 /* ML-DSA pub keys are big. */
 #define KEYSLOT_MAX_PUBKEY_SIZE ML_DSA_L5_PUBKEY_SIZE
 
@@ -146,7 +155,7 @@ const char Store_hdr[] = "\n"
     "#define KEYSTORE_SECTION __attribute__((section (\"__KEYSTORE,__keystore\")))\n"
     "#elif defined(__CCRX__) || defined(WOLFBOOT_RENESAS_RSIP) || defined(WOLFBOOT_RENESAS_TSIP) || defined(WOLFBOOT_RENESAS_SCEPROTECT)\n"
     "#define KEYSTORE_SECTION /* Renesas RX */\n"
-    "#elif defined(TARGET_x86_64_efi)\n"
+    "#elif defined(TARGET_x86_64_efi) || defined(TARGET_aarch64_efi)\n"
     "#define KEYSTORE_SECTION\n"
     "#else\n"
     "#define KEYSTORE_SECTION __attribute__((section (\".keystore\")))\n"
@@ -202,7 +211,7 @@ const char Keystore_API[] =
     "    return (uint8_t*)RENESAS_RSIP_INSTALLEDKEY_RAM_ADDR;\n"
     "#else\n"
 #endif
-    "    if (id >= keystore_num_pubkeys())\n"
+    "    if (id < 0 || id >= keystore_num_pubkeys())\n"
     "        return (uint8_t *)0;\n"
     "    return (uint8_t *)PubKeys[id].pubkey;\n"
 #ifdef RENESAS_KEY
@@ -222,7 +231,7 @@ const char Keystore_API[] =
     "    return (int)sizeof(rsa_public_t);\n"
     "#else\n"
 #endif
-    "    if (id >= keystore_num_pubkeys())\n"
+    "    if (id < 0 || id >= keystore_num_pubkeys())\n"
     "        return -1;\n"
     "    return (int)PubKeys[id].pubkey_size;\n"
 #ifdef RENESAS_KEY
@@ -232,13 +241,15 @@ const char Keystore_API[] =
     "\n"
     "uint32_t keystore_get_mask(int id)\n"
     "{\n"
-    "    if (id >= keystore_num_pubkeys())\n"
+    "    if (id < 0 || id >= keystore_num_pubkeys())\n"
     "        return 0;\n"
     "    return PubKeys[id].part_id_mask;\n"
     "}\n"
     "\n"
     "uint32_t keystore_get_key_type(int id)\n"
     "{\n"
+    "    if (id < 0 || id >= keystore_num_pubkeys())\n"
+    "        return (uint32_t)-1;\n"
     "    return PubKeys[id].key_type;\n"
     "}\n"
     "\n"
@@ -557,7 +568,7 @@ static void keygen_rsa(const char *keyfile, int kbits, uint32_t id_mask,
     ret = wc_InitRsaKey(&k, NULL);
     if (ret != 0) {
         fprintf(stderr, "Unable to initialize RSA%d key\n", kbits);
-        exit(1);
+        keygen_die(1);
     }
     rsa_init = 1;
 
@@ -586,6 +597,8 @@ static void keygen_rsa(const char *keyfile, int kbits, uint32_t id_mask,
         exit_code = 4;
         goto cleanup;
     }
+    /* Unbuffered: keep no libc-owned copy of the private key. */
+    setvbuf(fpriv, NULL, _IONBF, 0);
     fwrite(priv_der, privlen, 1, fpriv);
     fclose(fpriv);
     fpriv = NULL;
@@ -606,7 +619,7 @@ cleanup:
         wc_FreeRsaKey(&k);
     wc_ForceZero(&k, sizeof(k));
     if (exit_code != 0)
-        exit(exit_code);
+        keygen_die(exit_code);
 }
 
 #define MAX_ECC_KEY_SIZE 66
@@ -666,6 +679,8 @@ static void keygen_ecc(const char *priv_fname, uint16_t ecc_key_size,
         exit_code = 3;
         goto cleanup;
     }
+    /* Unbuffered: keep no libc-owned copy of the private key. */
+    setvbuf(fpriv, NULL, _IONBF, 0);
 
     if (saveAsDer) {
         /* save file as standard ASN.1 / DER */
@@ -721,7 +736,7 @@ cleanup:
     wc_ForceZero(priv_der, sizeof(priv_der));
 
     if (exit_code != 0)
-        exit(exit_code);
+        keygen_die(exit_code);
 
     memcpy(k_buffer,                Qx, ecc_key_size);
     memcpy(k_buffer + ecc_key_size, Qy, ecc_key_size);
@@ -773,6 +788,8 @@ static void keygen_ed25519(const char *privkey, uint32_t id_mask)
         exit_code = 3;
         goto cleanup;
     }
+    /* Unbuffered: keep no libc-owned copy of the private key. */
+    setvbuf(fpriv, NULL, _IONBF, 0);
     fwrite(priv, 32, 1, fpriv);
     fwrite(pub, 32, 1, fpriv);
     fclose(fpriv);
@@ -793,7 +810,7 @@ cleanup:
         wc_ed25519_free(&k);
     wc_ForceZero(&k, sizeof(k));
     if (exit_code != 0)
-        exit(exit_code);
+        keygen_die(exit_code);
 }
 
 static void keygen_ed448(const char *privkey, uint32_t id_mask)
@@ -834,6 +851,8 @@ static void keygen_ed448(const char *privkey, uint32_t id_mask)
         exit_code = 3;
         goto cleanup;
     }
+    /* Unbuffered: keep no libc-owned copy of the private key. */
+    setvbuf(fpriv, NULL, _IONBF, 0);
     fwrite(priv, ED448_KEY_SIZE, 1, fpriv);
     fwrite(pub, ED448_PUB_KEY_SIZE, 1, fpriv);
     fclose(fpriv);
@@ -854,7 +873,7 @@ cleanup:
         wc_ed448_free(&k);
     wc_ForceZero(&k, sizeof(k));
     if (exit_code != 0)
-        exit(exit_code);
+        keygen_die(exit_code);
 }
 
 #include "../lms/lms_common.h"
@@ -976,7 +995,7 @@ cleanup:
         wc_ForceZero(&key, sizeof(key));
     }
     if (exit_code)
-        exit(exit_code);
+        keygen_die(exit_code);
 }
 
 #include "../xmss/xmss_common.h"
@@ -1095,7 +1114,7 @@ cleanup:
         wc_ForceZero(&key, sizeof(key));
     }
     if (exit_code)
-        exit(exit_code);
+        keygen_die(exit_code);
 }
 
 
@@ -1222,6 +1241,8 @@ static void keygen_ml_dsa(const char *priv_fname, uint32_t id_mask)
         exit_code = 1;
         goto cleanup;
     }
+    /* Unbuffered: keep no libc-owned copy of the private key. */
+    setvbuf(fpriv, NULL, _IONBF, 0);
 
     fwrite(priv, priv_len, 1, fpriv);
     fwrite(pub, pub_len, 1, fpriv);
@@ -1306,7 +1327,7 @@ cleanup:
         priv = NULL;
     }
     if (exit_code != 0)
-        exit(exit_code);
+        keygen_die(exit_code);
 }
 
 static void key_gen_check(const char *kfilename)

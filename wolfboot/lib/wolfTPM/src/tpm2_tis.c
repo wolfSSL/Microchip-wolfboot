@@ -1,8 +1,8 @@
 /* tpm2_tis.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -86,6 +86,7 @@ enum tpm_tis_status {
         #include <fcntl.h>
         #include <sys/stat.h>
         #include <errno.h>
+        #include <time.h>
 
         #define SEM_NAME "/wolftpm"
         #define SEM_PERMS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)
@@ -255,7 +256,7 @@ int TPM2_TIS_StartupWait(TPM2_CTX* ctx, int timeout)
         rc = TPM2_TIS_Read(ctx, TPM_ACCESS(0), &access, sizeof(access));
         /* if chip isn't present MISO will be high and return 0xFF */
         if (rc == TPM_RC_SUCCESS && (access & TPM_ACCESS_VALID) &&
-                (access != 0xFF)) {
+                (access != TPM_TIS_ACCESS_INVALID)) {
             return TPM_RC_SUCCESS;
         }
         XTPM_WAIT();
@@ -276,7 +277,10 @@ int TPM2_TIS_CheckLocality(TPM2_CTX* ctx, int locality, byte* access)
 static int TPM2_TIS_CheckLocalityAccessValid(TPM2_CTX* ctx, int locality,
     byte access)
 {
-    if ((access & (TPM_ACCESS_ACTIVE_LOCALITY | TPM_ACCESS_VALID)) ==
+    /* Reject a floating/unimplemented locality (see TPM_TIS_ACCESS_INVALID);
+     * otherwise e.g. an unsupported locality 4 would look active. */
+    if (access != TPM_TIS_ACCESS_INVALID &&
+        (access & (TPM_ACCESS_ACTIVE_LOCALITY | TPM_ACCESS_VALID)) ==
                   (TPM_ACCESS_ACTIVE_LOCALITY | TPM_ACCESS_VALID)) {
         ctx->locality = locality;
         return locality;
@@ -284,10 +288,9 @@ static int TPM2_TIS_CheckLocalityAccessValid(TPM2_CTX* ctx, int locality,
     return -1;
 }
 
-int TPM2_TIS_RequestLocality(TPM2_CTX* ctx, int timeout)
+int TPM2_TIS_RequestLocalityEx(TPM2_CTX* ctx, int locality, int timeout)
 {
     int rc;
-    int locality = WOLFTPM_LOCALITY_DEFAULT;
     byte access = 0;
 
     rc = TPM2_TIS_CheckLocality(ctx, locality, &access);
@@ -320,6 +323,49 @@ int TPM2_TIS_RequestLocality(TPM2_CTX* ctx, int timeout)
     return rc;
 }
 
+int TPM2_TIS_RequestLocality(TPM2_CTX* ctx, int timeout)
+{
+    int rc;
+    int locality = WOLFTPM_LOCALITY_DEFAULT;
+#ifdef WOLFTPM_TIS_RESET_STALE_LOCALITY
+    int l;
+    byte access = 0;
+
+    /* Recover a wedge (see WOLFTPM_TIS_RESET_STALE_LOCALITY in tpm2_tis.h): if
+     * the default locality is not active, release any other active one so it
+     * can be granted instead of spinning to timeout. */
+    if (TPM2_TIS_CheckLocality(ctx, locality, &access) == TPM_RC_SUCCESS &&
+            (access & TPM_ACCESS_ACTIVE_LOCALITY) == 0) {
+        for (l = 0; l <= WOLFTPM_LOCALITY_MAX; l++) {
+            if (l == locality) {
+                continue;
+            }
+            access = 0;
+            if (TPM2_TIS_CheckLocality(ctx, l, &access) == TPM_RC_SUCCESS &&
+                    access != TPM_TIS_ACCESS_INVALID &&
+                    (access & TPM_ACCESS_ACTIVE_LOCALITY)) {
+                (void)TPM2_TIS_ReleaseLocality(ctx, l);
+            }
+        }
+    }
+#endif /* WOLFTPM_TIS_RESET_STALE_LOCALITY */
+
+    rc = TPM2_TIS_RequestLocalityEx(ctx, locality, timeout);
+    /* RequestLocalityEx returns the granted locality (0-4) on success; status
+     * callers expect TPM_RC_SUCCESS, so map any granted locality onto it. */
+    if (rc >= 0 && rc <= WOLFTPM_LOCALITY_MAX)
+        rc = TPM_RC_SUCCESS;
+    return rc;
+}
+
+int TPM2_TIS_ReleaseLocality(TPM2_CTX* ctx, int locality)
+{
+    /* Relinquish the locality by writing the active locality bit. The TPM
+     * clears its active locality so another locality can be requested. */
+    byte access = TPM_ACCESS_ACTIVE_LOCALITY;
+    return TPM2_TIS_Write(ctx, TPM_ACCESS(locality), &access, sizeof(access));
+}
+
 int TPM2_TIS_GetInfo(TPM2_CTX* ctx)
 {
     int rc;
@@ -327,32 +373,32 @@ int TPM2_TIS_GetInfo(TPM2_CTX* ctx)
 
     rc = TPM2_TIS_Read(ctx, TPM_INTF_CAPS(ctx->locality), (byte*)&reg,
         sizeof(reg));
+    if (rc != TPM_RC_SUCCESS)
+        return rc;
 #ifdef BIG_ENDIAN_ORDER
     reg = ByteReverseWord32(reg);
 #endif
-    if (rc == TPM_RC_SUCCESS) {
-        ctx->caps = reg;
-    }
+    ctx->caps = reg;
 
     rc = TPM2_TIS_Read(ctx, TPM_DID_VID(ctx->locality), (byte*)&reg,
         sizeof(reg));
+    if (rc != TPM_RC_SUCCESS)
+        return rc;
 #ifdef BIG_ENDIAN_ORDER
     reg = ByteReverseWord32(reg);
 #endif
-    if (rc == TPM_RC_SUCCESS) {
-        ctx->did_vid = reg;
-    }
+    ctx->did_vid = reg;
 
     reg = 0;
     rc = TPM2_TIS_Read(ctx, TPM_RID(ctx->locality), (byte*)&reg, 1);
+    if (rc != TPM_RC_SUCCESS)
+        return rc;
 #ifdef BIG_ENDIAN_ORDER
     reg = ByteReverseWord32(reg);
 #endif
-    if (rc == TPM_RC_SUCCESS) {
-        ctx->rid = reg;
-    }
+    ctx->rid = reg;
 
-    return rc;
+    return TPM_RC_SUCCESS;
 }
 
 int TPM2_TIS_Status(TPM2_CTX* ctx, byte* status)
@@ -434,7 +480,8 @@ int TPM2_TIS_GetBurstCount(TPM2_CTX* ctx, word16* burstCount)
 int TPM2_TIS_ValidateRspSz(int rspSz, int packetSize)
 {
     int rc = TPM_RC_SUCCESS;
-    if (rspSz < 0 || rspSz >= MAX_RESPONSE_SIZE || rspSz > packetSize) {
+    if (rspSz < TPM2_HEADER_SIZE || rspSz > MAX_RESPONSE_SIZE ||
+            rspSz > packetSize) {
         rc = TPM_RC_FAILURE;
     }
     return rc;
@@ -477,7 +524,7 @@ int TPM2_TIS_SendCommand(TPM2_CTX* ctx, TPM2_Packet* packet)
     pos = 0;
     while (pos < packet->pos) {
         rc = TPM2_TIS_GetBurstCount(ctx, &burstCount);
-        if (rc < 0)
+        if (rc != TPM_RC_SUCCESS)
             goto exit;
 
         xferSz = packet->pos - pos;
@@ -540,7 +587,7 @@ int TPM2_TIS_SendCommand(TPM2_CTX* ctx, TPM2_Packet* packet)
         }
 
         rc = TPM2_TIS_GetBurstCount(ctx, &burstCount);
-        if (rc < 0)
+        if (rc != TPM_RC_SUCCESS)
             goto exit;
 
         xferSz = rspSz - pos;

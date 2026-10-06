@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 --  SPARK wrapper package around GNAT Library packages.
 with SPARK_Sockets; pragma Elaborate_All (SPARK_Sockets);
 

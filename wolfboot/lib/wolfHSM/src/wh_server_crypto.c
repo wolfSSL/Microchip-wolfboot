@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -33,8 +33,17 @@
 #include "wolfssl/wolfcrypt/aes.h"
 #include "wolfssl/wolfcrypt/sha256.h"
 #include "wolfssl/wolfcrypt/sha512.h"
+#ifdef WOLFSSL_SHA3
+#include "wolfssl/wolfcrypt/sha3.h"
+#endif
 #include "wolfssl/wolfcrypt/cmac.h"
 #include "wolfssl/wolfcrypt/wc_mldsa.h"
+#if defined(WOLFSSL_HAVE_LMS)
+#include "wolfssl/wolfcrypt/wc_lms.h"
+#endif
+#if defined(WOLFSSL_HAVE_XMSS)
+#include "wolfssl/wolfcrypt/wc_xmss.h"
+#endif
 #include "wolfssl/wolfcrypt/wc_mlkem.h"
 #include "wolfssl/wolfcrypt/hmac.h"
 #include "wolfssl/wolfcrypt/kdf.h"
@@ -127,6 +136,15 @@ static int _HandleEccVerify(whServerContext* ctx, uint16_t magic, int devId,
                             const void* cryptoDataIn, uint16_t inSize,
                             void* cryptoDataOut, uint16_t* outSize);
 #endif /* HAVE_ECC_VERIFY */
+static int _HandleEccMakePub(whServerContext* ctx, uint16_t magic, int devId,
+                             const void* cryptoDataIn, uint16_t inSize,
+                             void* cryptoDataOut, uint16_t* outSize);
+#ifdef HAVE_ECC_CHECK_KEY
+static int _HandleEccCheckPubKey(whServerContext* ctx, uint16_t magic,
+                                 int devId, const void* cryptoDataIn,
+                                 uint16_t inSize, void* cryptoDataOut,
+                                 uint16_t* outSize);
+#endif /* HAVE_ECC_CHECK_KEY */
 #endif /* HAVE_ECC */
 
 #ifdef HAVE_CURVE25519
@@ -212,6 +230,21 @@ static int _HandleMlKemDecapsDma(whServerContext* ctx, uint16_t magic,
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* WOLFSSL_HAVE_MLKEM */
 
+static void _CryptoEvictKeyLocked(whServerContext* ctx, whKeyId keyId)
+{
+    int ret;
+
+    if ((ctx == NULL) || WH_KEYID_ISERASED(keyId)) {
+        return;
+    }
+
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret == WH_ERROR_OK) {
+        (void)wh_Server_KeystoreEvictKey(ctx, keyId);
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+    } /* WH_SERVER_NVM_LOCK() */
+}
+
 /** Public server crypto functions */
 
 #ifndef NO_RSA
@@ -251,7 +284,8 @@ int wh_Server_CacheImportRsaKey(whServerContext* ctx, RsaKey* key,
         /* set meta */
         cacheMeta->id = keyId;
         cacheMeta->len = der_size;
-        cacheMeta->flags = flags;
+        /* clients can't set server-only flags (e.g. trusted KEK) */
+        cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
         cacheMeta->access = WH_NVM_ACCESS_ANY;
 
         if (    (label != NULL) &&
@@ -280,6 +314,34 @@ int wh_Server_CacheExportRsaKey(whServerContext* ctx, whKeyId keyId,
     if (ret == 0) {
         ret = wh_Crypto_RsaDeserializeKeyDer(cacheMeta->len, cacheBuf, key);
     }
+    return ret;
+}
+
+static int _CacheExportRsaKeyEnforce(whServerContext* ctx, whKeyId keyId,
+                                     whNvmFlags requiredUsage, RsaKey* key)
+{
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((ctx == NULL) || (key == NULL) || (WH_KEYID_ISERASED(keyId))) {
+        return WH_ERROR_BADARGS;
+    }
+    /* Freshen, check usage and deserialize under one hold of the NVM lock so
+     * the policy verdict, the metadata length and the key bytes all come from
+     * the same snapshot of the shared cache slot. This matters for the global
+     * shared cache. */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_KeystoreEnforceKeyUsage(cacheMeta, requiredUsage);
+        }
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Crypto_RsaDeserializeKeyDer(cacheMeta->len, cacheBuf, key);
+        }
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+    } /* WH_SERVER_NVM_LOCK() */
     return ret;
 }
 
@@ -341,25 +403,45 @@ static int _HandleRsaKeyGen(whServerContext* ctx, uint16_t magic, int devId,
             }
             else {
                 /* Must import the key into the cache and return keyid */
-                if (WH_KEYID_ISERASED(key_id)) {
-                    /* Generate a new id */
-                    ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
-                    WH_DEBUG_SERVER_VERBOSE("RsaKeyGen UniqueId: keyId:%u, ret:%d\n", key_id, ret);
-                    if (ret != WH_ERROR_OK) {
-                        /* Early return on unique ID generation failure */
-                        wc_FreeRsaKey(rsa);
-                        return ret;
+                /* Hold the NVM lock so id allocation and cache import are
+                 * atomic with respect to other server contexts under
+                 * THREADSAFE. This matters for the shared global cache. */
+                ret = WH_SERVER_NVM_LOCK(ctx);
+                if (ret == WH_ERROR_OK) {
+                    if (WH_KEYID_ISERASED(key_id)) {
+                        /* Generate a new id */
+                        ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
+                        WH_DEBUG_SERVER_VERBOSE(
+                            "RsaKeyGen UniqueId: keyId:%u, ret:%d\n", key_id,
+                            ret);
                     }
-                }
-
-                if (ret == 0) {
-                    ret = wh_Server_CacheImportRsaKey(ctx, rsa, key_id, flags,
-                                                      label_size, label);
-                }
+                    if (ret == WH_ERROR_OK) {
+                        ret = wh_Server_CacheImportRsaKey(
+                            ctx, rsa, key_id, flags, label_size, label);
+                    }
+                    (void)WH_SERVER_NVM_UNLOCK(ctx);
+                } /* WH_SERVER_NVM_LOCK() */
                 WH_DEBUG_SERVER_VERBOSE("RsaKeyGen CacheKeyRsa: keyId:%u, ret:%d\n", key_id, ret);
                 if (ret == 0) {
+                    /* Best-effort public key export: when the serialized
+                     * public key fits in the response body, return it so the
+                     * client can skip a separate ExportPublicKey call. When it
+                     * does not fit (small comm buffer or a large key), leave the
+                     * body empty and keep the cached key. Plain MakeCacheKey
+                     * callers ignore the body and see no regression;
+                     * MakeCacheKeyAndExportPublic callers detect the empty body
+                     * and evict the key themselves. */
+                    int pub_ret = wc_RsaKeyToPublicDer(rsa, out, max_size);
+                    if (pub_ret > 0) {
+                        der_size = (uint16_t)pub_ret;
+                    }
+                    else {
+                        der_size = 0;
+                    }
+                }
+                if (ret == 0) {
                     res.keyId = wh_KeyId_TranslateToClient(key_id);
-                    res.len   = 0;
+                    res.len   = der_size;
                 }
             }
         }
@@ -413,86 +495,79 @@ static int _HandleRsaFunction(whServerContext* ctx, uint16_t magic, int devId,
     }
 
     /* in and out are after the fixed size fields */
-    byte* in  = (uint8_t*)(cryptoDataIn + sizeof(whMessageCrypto_RsaRequest));
-    byte* out = (uint8_t*)(cryptoDataOut + sizeof(whMessageCrypto_RsaResponse));
+    const byte* in  = (const byte*)cryptoDataIn + sizeof(whMessageCrypto_RsaRequest);
+    byte*       out = (byte*)cryptoDataOut + sizeof(whMessageCrypto_RsaResponse);
 
     WH_DEBUG_SERVER_VERBOSE("HandleRsaFunction opType:%d inLen:%u keyId:%u outLen:%u\n",
             op_type, in_len, key_id, out_len);
-    switch (op_type)
-    {
-    case RSA_PUBLIC_ENCRYPT:
-    case RSA_PUBLIC_DECRYPT:
-    case RSA_PRIVATE_ENCRYPT:
-    case RSA_PRIVATE_DECRYPT:
-        /* Valid op_types */
-        break;
-    default:
-        /* Invalid opType */
-        WH_DEBUG_SERVER_VERBOSE("Unknown opType:%d\n", op_type);
+    switch (op_type) {
+        case RSA_PUBLIC_ENCRYPT:
+        case RSA_PUBLIC_DECRYPT:
+        case RSA_PRIVATE_ENCRYPT:
+        case RSA_PRIVATE_DECRYPT:
+            /* Valid op_types */
+            break;
+        default:
+            /* Invalid opType */
+            WH_DEBUG_SERVER_VERBOSE("Unknown opType:%d\n", op_type);
 
-        return BAD_FUNC_ARG;
+            return BAD_FUNC_ARG;
     }
 
-    /* Validate key usage policy based on RSA operation type */
-    if (!WH_KEYID_ISERASED(key_id)) {
-        whNvmFlags requiredUsage = WH_NVM_FLAGS_NONE;
-        switch (op_type) {
-            case RSA_PUBLIC_ENCRYPT:
-            case RSA_PRIVATE_ENCRYPT:
-                requiredUsage = WH_NVM_FLAGS_USAGE_ENCRYPT;
-                break;
-            case RSA_PUBLIC_DECRYPT:
-            case RSA_PRIVATE_DECRYPT:
-                requiredUsage = WH_NVM_FLAGS_USAGE_DECRYPT;
-                break;
-        }
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id, requiredUsage);
-        if (ret != WH_ERROR_OK) {
+    /* Determine the required key usage based on the RSA operation type */
+    whNvmFlags requiredUsage = WH_NVM_FLAGS_NONE;
+    switch (op_type) {
+        case RSA_PUBLIC_ENCRYPT:
+        case RSA_PRIVATE_ENCRYPT:
+            requiredUsage = WH_NVM_FLAGS_USAGE_ENCRYPT;
+            break;
+        case RSA_PUBLIC_DECRYPT:
+        case RSA_PRIVATE_DECRYPT:
+            requiredUsage = WH_NVM_FLAGS_USAGE_DECRYPT;
+            break;
+    }
+
+    /* init rsa key */
+    ret = wc_InitRsaKey_ex(rsa, NULL, devId);
+    /* load the key from the keystore, enforcing the usage policy against the
+     * same locked snapshot of the key that is exported */
+    if (ret == 0) {
+        ret = _CacheExportRsaKeyEnforce(ctx, key_id, requiredUsage, rsa);
+        if (ret == WH_ERROR_USAGE) {
             /* Currently wolfCrypt doesn't have a way for crypto callbacks to
             distinguish if a low level RSA operation (like encrypt/decrypt) is
             being performed as part of a higher level operation like
             sign/verify. Until that information is propagated to the
             callback, the usage flags are treated as equivalent. */
-            if (ret == WH_ERROR_USAGE) {
-                if (op_type == RSA_PUBLIC_DECRYPT) {
-                    /* Decrypt usage flag wasn't set so this might be a verify
-                     * operation. Attempt to enforce against the verify flag */
-                    ret = wh_Server_KeystoreFindEnforceKeyUsage(
-                        ctx, key_id, WH_NVM_FLAGS_USAGE_VERIFY);
-                }
-                else if (op_type == RSA_PRIVATE_ENCRYPT) {
-                    /* Encrypt usage flag wasn't set so this might be a sign
-                     * operation. Attempt to enforce against the sign flag */
-                    ret = wh_Server_KeystoreFindEnforceKeyUsage(
-                        ctx, key_id, WH_NVM_FLAGS_USAGE_SIGN);
-                }
+            if (op_type == RSA_PUBLIC_DECRYPT) {
+                /* Decrypt usage flag wasn't set so this might be a verify
+                 * operation. Attempt to enforce against the verify flag */
+                ret = _CacheExportRsaKeyEnforce(ctx, key_id,
+                                                WH_NVM_FLAGS_USAGE_VERIFY, rsa);
             }
-            if (ret != WH_ERROR_OK) {
-                goto cleanup;
+            else if (op_type == RSA_PRIVATE_ENCRYPT) {
+                /* Encrypt usage flag wasn't set so this might be a sign
+                 * operation. Attempt to enforce against the sign flag */
+                ret = _CacheExportRsaKeyEnforce(ctx, key_id,
+                                                WH_NVM_FLAGS_USAGE_SIGN, rsa);
             }
         }
-    }
-
-    /* init rsa key */
-    ret = wc_InitRsaKey_ex(rsa, NULL, devId);
-    /* load the key from the keystore */
-    if (ret == 0) {
-        ret = wh_Server_CacheExportRsaKey(ctx, key_id, rsa);
-        WH_DEBUG_SERVER_VERBOSE("CacheExportRsaKey keyid:%u, ret:%d\n", key_id, ret);
+        WH_DEBUG_SERVER_VERBOSE("CacheExportRsaKey keyid:%u, ret:%d\n", key_id,
+                                ret);
         if (ret == 0) {
             /* do the rsa operation */
-            ret = wc_RsaFunction(in, in_len, out, &out_len,
-                op_type, rsa, ctx->crypto->rng);
-            WH_DEBUG_SERVER_VERBOSE("RsaFunction in:%p %u, out:%p, opType:%d, outLen:%d, ret:%d\n",
-                    in, in_len, out, op_type, out_len, ret);
+            ret = wc_RsaFunction(in, in_len, out, &out_len, op_type, rsa,
+                                 ctx->crypto->rng);
+            WH_DEBUG_SERVER_VERBOSE(
+                "RsaFunction in:%p %u, out:%p, opType:%d, outLen:%d, ret:%d\n",
+                in, in_len, out, op_type, out_len, ret);
         }
         /* free the key */
         wc_FreeRsaKey(rsa);
     }
-cleanup:
     if (evict != 0) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     if (ret == 0) {
         whMessageCrypto_RsaResponse res;
@@ -535,9 +610,9 @@ static int _HandleRsaGetSize(whServerContext* ctx, uint16_t magic, int devId,
 
     /* init rsa key */
     ret = wc_InitRsaKey_ex(rsa, NULL, devId);
-    /* load the key from the keystore */
+    /* load the key from the keystore (no usage requirement for size query) */
     if (ret == 0) {
-        ret = wh_Server_CacheExportRsaKey(ctx, key_id, rsa);
+        ret = _CacheExportRsaKeyEnforce(ctx, key_id, WH_NVM_FLAGS_NONE, rsa);
         /* get the size */
         if (ret == 0) {
             key_size = wc_RsaEncryptSize(rsa);
@@ -551,7 +626,7 @@ static int _HandleRsaGetSize(whServerContext* ctx, uint16_t magic, int devId,
         WH_DEBUG_SERVER_VERBOSE("evicting temp key:%x options:%u evict:%u\n",
                key_id, options, evict);
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     if (ret == 0) {
         res.keySize = key_size;
@@ -595,7 +670,8 @@ int wh_Server_EccKeyCacheImport(whServerContext* ctx, ecc_key* key,
         /* set meta */
         cacheMeta->id = keyId;
         cacheMeta->len = der_size;
-        cacheMeta->flags = flags;
+        /* clients can't set server-only flags (e.g. trusted KEK) */
+        cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
         cacheMeta->access = WH_NVM_ACCESS_ANY;
 
         if (    (label != NULL) &&
@@ -624,6 +700,34 @@ int wh_Server_EccKeyCacheExport(whServerContext* ctx, whKeyId keyId,
     if (ret == WH_ERROR_OK) {
         ret = wh_Crypto_EccDeserializeKeyDer(cacheBuf, cacheMeta->len, key);
     }
+    return ret;
+}
+
+static int _EccKeyCacheExportEnforce(whServerContext* ctx, whKeyId keyId,
+                                     whNvmFlags requiredUsage, ecc_key* key)
+{
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((ctx == NULL) || (key == NULL) || WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+    /* Freshen, check usage and deserialize under one hold of the NVM lock so
+     * the policy verdict, the metadata length and the key bytes all come from
+     * the same snapshot of the shared cache slot. This matters for the shared
+     * global cache. */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_KeystoreEnforceKeyUsage(cacheMeta, requiredUsage);
+        }
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Crypto_EccDeserializeKeyDer(cacheBuf, cacheMeta->len, key);
+        }
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+    } /* WH_SERVER_NVM_LOCK() */
     return ret;
 }
 #endif /* HAVE_ECC */
@@ -655,7 +759,8 @@ int wh_Server_CacheImportEd25519Key(whServerContext* ctx, ed25519_key* key,
     if (ret == WH_ERROR_OK) {
         cacheMeta->id     = keyId;
         cacheMeta->len    = der_size;
-        cacheMeta->flags  = flags;
+        /* clients can't set server-only flags (e.g. trusted KEK) */
+        cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
         cacheMeta->access = WH_NVM_ACCESS_ANY;
 
         if ((label != NULL) && (label_len > 0)) {
@@ -681,6 +786,37 @@ int wh_Server_CacheExportEd25519Key(whServerContext* ctx, whKeyId keyId,
     if (ret == WH_ERROR_OK) {
         ret = wh_Crypto_Ed25519DeserializeKeyDer(cacheBuf, cacheMeta->len, key);
     }
+    return ret;
+}
+
+static int _CacheExportEd25519KeyEnforce(whServerContext* ctx, whKeyId keyId,
+                                         whNvmFlags   requiredUsage,
+                                         ed25519_key* key)
+{
+    uint8_t*       cacheBuf = NULL;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((ctx == NULL) || (key == NULL) || WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* Freshen, check usage and deserialize under one hold of the NVM lock so
+     * the policy verdict, the metadata length and the key bytes all come from
+     * the same snapshot of the shared cache slot. This matters for the shared
+     * global cache. */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_KeystoreEnforceKeyUsage(cacheMeta, requiredUsage);
+        }
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Crypto_Ed25519DeserializeKeyDer(cacheBuf, cacheMeta->len,
+                                                     key);
+        }
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+    } /* WH_SERVER_NVM_LOCK() */
     return ret;
 }
 #endif /* HAVE_ED25519 */
@@ -714,7 +850,8 @@ int wh_Server_CacheImportCurve25519Key(whServerContext* server,
             /* Update metadata to cache the key */
             cacheMeta->id     = keyId;
             cacheMeta->len    = keySz;
-            cacheMeta->flags  = flags;
+            /* clients can't set server-only flags (e.g. trusted KEK) */
+            cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
             cacheMeta->access = WH_NVM_ACCESS_ANY;
             if ((label != NULL) && (label_len > 0)) {
                 memcpy(cacheMeta->label, label, label_len);
@@ -747,14 +884,51 @@ int wh_Server_CacheExportCurve25519Key(whServerContext* server, whKeyId keyId,
     }
     return ret;
 }
+
+static int _CacheExportCurve25519KeyEnforce(whServerContext* server,
+                                            whKeyId          keyId,
+                                            whNvmFlags       requiredUsage,
+                                            curve25519_key*  key)
+{
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((server == NULL) || (key == NULL) || (WH_KEYID_ISERASED(keyId))) {
+        return WH_ERROR_BADARGS;
+    }
+    /* Freshen, check usage and deserialize under one hold of the NVM lock so
+     * the policy verdict, the metadata length and the key bytes all come from
+     * the same snapshot of the shared cache slot. This matters for the shared
+     * global cache.  */
+    ret = WH_SERVER_NVM_LOCK(server);
+    if (ret == WH_ERROR_OK) {
+        ret =
+            wh_Server_KeystoreFreshenKey(server, keyId, &cacheBuf, &cacheMeta);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_KeystoreEnforceKeyUsage(cacheMeta, requiredUsage);
+        }
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Crypto_Curve25519DeserializeKey(cacheBuf, cacheMeta->len,
+                                                     key);
+        }
+        (void)WH_SERVER_NVM_UNLOCK(server);
+    } /* WH_SERVER_NVM_LOCK() */
+    return ret;
+}
 #endif /* HAVE_CURVE25519 */
 
 #ifdef WOLFSSL_HAVE_MLDSA
-/* The big key cache buffer must be able to hold a full ML-DSA keypair DER,
- * otherwise wh_Server_MlDsaKeyCacheImport() can never succeed. */
+/* When verify-only, the server caches only the public key DER. Otherwise it
+ * must be able to hold a full keypair DER (public + private). */
+#if defined(WOLFSSL_DILITHIUM_VERIFY_ONLY) || defined(WOLFSSL_MLDSA_VERIFY_ONLY)
+#define WH_SERVER_MLDSA_MAX_CACHE_DER_SIZE MLDSA_MAX_PUB_KEY_DER_SIZE
+#else
+#define WH_SERVER_MLDSA_MAX_CACHE_DER_SIZE MLDSA_MAX_BOTH_KEY_DER_SIZE
+#endif
 WH_UTILS_STATIC_ASSERT(
-    WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE >= MLDSA_MAX_BOTH_KEY_DER_SIZE,
-    "WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE too small for ML-DSA keypair DER");
+    WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE >= WH_SERVER_MLDSA_MAX_CACHE_DER_SIZE,
+    "WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE too small for ML-DSA key DER");
 
 int wh_Server_MlDsaKeyCacheImport(whServerContext* ctx, wc_MlDsaKey* key,
                                   whKeyId keyId, whNvmFlags flags,
@@ -770,21 +944,20 @@ int wh_Server_MlDsaKeyCacheImport(whServerContext* ctx, wc_MlDsaKey* key,
         return WH_ERROR_BADARGS;
     }
 
-    /* The key may hold a full keypair, in which case
-     * wh_Crypto_MlDsaSerializeKeyDer() encodes both the public and private key
-     * (wc_MlDsaKey_KeyToDer()), so size for both keys, not just the private key. */
     ret = wh_Server_KeystoreGetCacheSlotChecked(
-        ctx, keyId, MLDSA_MAX_BOTH_KEY_DER_SIZE, &cacheBuf, &cacheMeta);
+        ctx, keyId, WH_SERVER_MLDSA_MAX_CACHE_DER_SIZE, &cacheBuf, &cacheMeta);
     if (ret == WH_ERROR_OK) {
-        ret = wh_Crypto_MlDsaSerializeKeyDer(key, MLDSA_MAX_BOTH_KEY_DER_SIZE,
-                                             cacheBuf, &der_size);
+        ret = wh_Crypto_MlDsaSerializeKeyDer(key,
+                                WH_SERVER_MLDSA_MAX_CACHE_DER_SIZE,
+                                cacheBuf, &der_size);
         WH_DEBUG_SERVER_VERBOSE("keyId:%u, ret:%d\n", keyId, ret);
     }
 
     if (ret == WH_ERROR_OK) {
         cacheMeta->id     = keyId;
         cacheMeta->len    = der_size;
-        cacheMeta->flags  = flags;
+        /* clients can't set server-only flags (e.g. trusted KEK) */
+        cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
         cacheMeta->access = WH_NVM_ACCESS_ANY;
 
         if ((label != NULL) && (label_len > 0)) {
@@ -814,9 +987,47 @@ int wh_Server_MlDsaKeyCacheExport(whServerContext* ctx, whKeyId keyId,
     }
     return ret;
 }
+
+static int _MlDsaKeyCacheExportEnforce(whServerContext* ctx, whKeyId keyId,
+                                       whNvmFlags   requiredUsage,
+                                       wc_MlDsaKey* key)
+{
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((ctx == NULL) || (key == NULL) || (WH_KEYID_ISERASED(keyId))) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* Freshen, check usage and deserialize under one hold of the NVM lock so
+     * the policy verdict, the metadata length and the key bytes all come from
+     * the same snapshot of the shared cache slot.  This matters for the shared
+     * global cache. */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_KeystoreEnforceKeyUsage(cacheMeta, requiredUsage);
+        }
+        if (ret == WH_ERROR_OK) {
+            ret =
+                wh_Crypto_MlDsaDeserializeKeyDer(cacheBuf, cacheMeta->len, key);
+            WH_DEBUG_SERVER_VERBOSE("keyId:%u, ret:%d\n", keyId, ret);
+        }
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+    } /* WH_SERVER_NVM_LOCK() */
+    return ret;
+}
 #endif /* WOLFSSL_HAVE_MLDSA */
 
 #ifdef WOLFSSL_HAVE_MLKEM
+/* The cache import below always requests a max-size slot, so a build whose big
+ * cache buffer cannot hold one has no working ML-KEM cache keygen or import. */
+WH_UTILS_STATIC_ASSERT(
+    WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE >= WC_ML_KEM_MAX_PRIVATE_KEY_SIZE,
+    "WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE too small for ML-KEM private key");
+
 int wh_Server_MlKemKeyCacheImport(whServerContext* ctx, MlKemKey* key,
                                   whKeyId keyId, whNvmFlags flags,
                                   uint16_t label_len, uint8_t* label)
@@ -840,7 +1051,8 @@ int wh_Server_MlKemKeyCacheImport(whServerContext* ctx, MlKemKey* key,
     if (ret == WH_ERROR_OK) {
         cacheMeta->id     = keyId;
         cacheMeta->len    = keySize;
-        cacheMeta->flags  = flags;
+        /* clients can't set server-only flags (e.g. trusted KEK) */
+        cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
         cacheMeta->access = WH_NVM_ACCESS_ANY;
         if ((label != NULL) && (label_len > 0)) {
             memcpy(cacheMeta->label, label, label_len);
@@ -868,7 +1080,304 @@ int wh_Server_MlKemKeyCacheExport(whServerContext* ctx, whKeyId keyId,
     }
     return ret;
 }
+
+static int _MlKemKeyCacheExportEnforce(whServerContext* ctx, whKeyId keyId,
+                                       whNvmFlags requiredUsage, MlKemKey* key)
+{
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((ctx == NULL) || (key == NULL) || (WH_KEYID_ISERASED(keyId))) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* Freshen, check usage and deserialize under one hold of the NVM lock so
+     * the policy verdict, the metadata length and the key bytes all come from
+     * the same snapshot of the shared cache slot.  This matters for the shared
+     * global cache. */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_KeystoreEnforceKeyUsage(cacheMeta, requiredUsage);
+        }
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Crypto_MlKemDeserializeKey(cacheBuf, cacheMeta->len, key);
+            WH_DEBUG_SERVER_VERBOSE("keyId:%u, ret:%d\n", keyId, ret);
+        }
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+    } /* WH_SERVER_NVM_LOCK() */
+    return ret;
+}
 #endif /* WOLFSSL_HAVE_MLKEM */
+
+/* The sign path (and its slot callbacks) is unavailable in verify-only builds;
+ * gate on at least one non-verify-only stateful algorithm being enabled. */
+#if ((defined(WOLFSSL_HAVE_LMS) && !defined(WOLFSSL_LMS_VERIFY_ONLY)) ||     \
+     (defined(WOLFSSL_HAVE_XMSS) && !defined(WOLFSSL_XMSS_VERIFY_ONLY))) &&  \
+    defined(WOLFHSM_CFG_DMA)
+/* Stateful-key persistence context.
+ *
+ * wolfCrypt's wc_LmsKey_Sign and wc_XmssKey_Sign require write/read callbacks
+ * for the software path. We wire write_private_key directly to atomic NVM
+ * commit (wh_Nvm_AddObjectWithReclaim): wolfCrypt's contract is to advance
+ * the index, call write_cb, and only emit the signature if write_cb returned
+ * success. That gives us pre-commit-then-emit ordering for free.
+ *
+ * This context keeps a pointer into the server's cache slot blob (laid out by
+ * wh_Crypto_{Lms,Xmss}SerializeKey). Each write_cb invocation overwrites the
+ * priv region of the slot in place and re-commits the entire slot. */
+typedef struct whServerStatefulSigCtx {
+    whServerContext* server;
+    whKeyId          keyId;
+    whNvmMetadata*   meta;        /* points at the cache slot's metadata */
+    uint8_t*         slotBuf;     /* points at the cache slot's data buffer */
+    uint16_t         hdrSz;       /* fixed header size (offset to params) */
+    uint16_t         pubLen;      /* priv begins at hdrSz + paramLen + pubLen */
+    uint16_t         paramLen;
+    uint16_t         slotCapacity;
+} whServerStatefulSigCtx;
+
+/* Compute the priv-region offset inside the slot blob from the context. */
+static uint16_t _StatefulSigPrivOffset(const whServerStatefulSigCtx* b)
+{
+    return (uint16_t)(b->hdrSz + b->paramLen + b->pubLen);
+}
+
+/* Update the slot blob's privLen header field in place. */
+static void _StatefulSigWritePrivLen(uint8_t* slotBuf, uint16_t privLen)
+{
+    uint8_t* p = slotBuf + offsetof(whCryptoStatefulSigHeader, privLen);
+    memcpy(p, &privLen, sizeof(privLen));
+}
+
+#if defined(WOLFSSL_HAVE_LMS) && defined(WOLFHSM_CFG_DMA) && \
+    !defined(WOLFSSL_LMS_VERIFY_ONLY)
+static int _LmsSlotWriteCb(const byte* priv, word32 privSz, void* context)
+{
+    whServerStatefulSigCtx* b = (whServerStatefulSigCtx*)context;
+    uint16_t                   privOff;
+    uint32_t                   newLen;
+    int                        rc;
+
+    if ((b == NULL) || (priv == NULL) || (b->slotBuf == NULL) ||
+        (b->meta == NULL)) {
+        return WC_LMS_RC_BAD_ARG;
+    }
+
+    privOff = _StatefulSigPrivOffset(b);
+    newLen  = (uint32_t)privOff + privSz;
+    if (newLen > b->slotCapacity) {
+        return WC_LMS_RC_WRITE_FAIL;
+    }
+
+    memcpy(b->slotBuf + privOff, priv, privSz);
+    _StatefulSigWritePrivLen(b->slotBuf, (uint16_t)privSz);
+    b->meta->len = (whNvmSize)newLen;
+
+    /* Atomic dual-partition commit. Wolfcrypt aborts the sign if this
+     * returns anything other than _SAVED_TO_NV_MEMORY, so the signature
+     * never escapes for an un-persisted index. */
+    rc = wh_Nvm_AddObjectWithReclaim(b->server->nvm, b->meta, b->meta->len,
+                                     b->slotBuf);
+    return (rc == WH_ERROR_OK) ? WC_LMS_RC_SAVED_TO_NV_MEMORY
+                               : WC_LMS_RC_WRITE_FAIL;
+}
+
+static int _LmsSlotReadCb(byte* priv, word32 privSz, void* context)
+{
+    whServerStatefulSigCtx* b = (whServerStatefulSigCtx*)context;
+    uint16_t                   privOff;
+
+    if ((b == NULL) || (priv == NULL) || (b->slotBuf == NULL)) {
+        return WC_LMS_RC_BAD_ARG;
+    }
+
+    privOff = _StatefulSigPrivOffset(b);
+    if ((uint32_t)privOff + privSz > b->meta->len) {
+        return WC_LMS_RC_READ_FAIL;
+    }
+
+    memcpy(priv, b->slotBuf + privOff, privSz);
+    return WC_LMS_RC_READ_TO_MEMORY;
+}
+#endif /* WOLFSSL_HAVE_LMS && WOLFHSM_CFG_DMA && !WOLFSSL_LMS_VERIFY_ONLY */
+
+#if defined(WOLFSSL_HAVE_XMSS) && defined(WOLFHSM_CFG_DMA) && \
+    !defined(WOLFSSL_XMSS_VERIFY_ONLY)
+static enum wc_XmssRc _XmssSlotWriteCb(const byte* priv, word32 privSz,
+                                         void* context)
+{
+    whServerStatefulSigCtx* b = (whServerStatefulSigCtx*)context;
+    uint16_t                   privOff;
+    uint32_t                   newLen;
+    int                        rc;
+
+    if ((b == NULL) || (priv == NULL) || (b->slotBuf == NULL) ||
+        (b->meta == NULL)) {
+        return WC_XMSS_RC_BAD_ARG;
+    }
+
+    privOff = _StatefulSigPrivOffset(b);
+    newLen  = (uint32_t)privOff + privSz;
+    if (newLen > b->slotCapacity) {
+        return WC_XMSS_RC_WRITE_FAIL;
+    }
+
+    memcpy(b->slotBuf + privOff, priv, privSz);
+    _StatefulSigWritePrivLen(b->slotBuf, (uint16_t)privSz);
+    b->meta->len = (whNvmSize)newLen;
+
+    rc = wh_Nvm_AddObjectWithReclaim(b->server->nvm, b->meta, b->meta->len,
+                                     b->slotBuf);
+    return (rc == WH_ERROR_OK) ? WC_XMSS_RC_SAVED_TO_NV_MEMORY
+                               : WC_XMSS_RC_WRITE_FAIL;
+}
+
+static enum wc_XmssRc _XmssSlotReadCb(byte* priv, word32 privSz,
+                                        void* context)
+{
+    whServerStatefulSigCtx* b = (whServerStatefulSigCtx*)context;
+    uint16_t                   privOff;
+
+    if ((b == NULL) || (priv == NULL) || (b->slotBuf == NULL)) {
+        return WC_XMSS_RC_BAD_ARG;
+    }
+
+    privOff = _StatefulSigPrivOffset(b);
+    if ((uint32_t)privOff + privSz > b->meta->len) {
+        return WC_XMSS_RC_READ_FAIL;
+    }
+
+    memcpy(priv, b->slotBuf + privOff, privSz);
+    return WC_XMSS_RC_READ_TO_MEMORY;
+}
+#endif /* WOLFSSL_HAVE_XMSS && WOLFHSM_CFG_DMA && !WOLFSSL_XMSS_VERIFY_ONLY */
+#endif /* stateful sign path enabled && WOLFHSM_CFG_DMA */
+
+#ifdef WOLFSSL_HAVE_LMS
+/* Import serializes the private key, so it is unavailable in verify-only. */
+#ifndef WOLFSSL_LMS_VERIFY_ONLY
+int wh_Server_LmsKeyCacheImport(whServerContext* ctx, LmsKey* key,
+                                whKeyId keyId, whNvmFlags flags,
+                                uint16_t label_len, uint8_t* label)
+{
+    int            ret = WH_ERROR_OK;
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    uint16_t       slotCapacity = WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE;
+    uint16_t       blobSize;
+
+    if ((ctx == NULL) || (key == NULL) || (WH_KEYID_ISERASED(keyId)) ||
+        ((label != NULL) && (label_len > sizeof(cacheMeta->label)))) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_Server_KeystoreGetCacheSlotChecked(ctx, keyId, slotCapacity,
+                                                &cacheBuf, &cacheMeta);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Crypto_LmsSerializeKey(key, slotCapacity, cacheBuf, &blobSize);
+    }
+    if (ret == WH_ERROR_OK) {
+        cacheMeta->id  = keyId;
+        cacheMeta->len = blobSize;
+        /* Stateful private key state must never leave the HSM; reuse of a
+         * one-time signature index breaks the scheme. Force non-exportable.
+         * Strip server-only flags a client may never set (e.g. trusted KEK). */
+        cacheMeta->flags =
+            (flags & ~WH_NVM_FLAGS_SERVER_ONLY) | WH_NVM_FLAGS_NONEXPORTABLE;
+        cacheMeta->access = WH_NVM_ACCESS_ANY;
+        if ((label != NULL) && (label_len > 0)) {
+            memcpy(cacheMeta->label, label, label_len);
+        }
+    }
+    return ret;
+}
+#endif /* !WOLFSSL_LMS_VERIFY_ONLY */
+
+int wh_Server_LmsKeyCacheExport(whServerContext* ctx, whKeyId keyId,
+                                LmsKey* key)
+{
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((ctx == NULL) || (key == NULL) || (WH_KEYID_ISERASED(keyId))) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Crypto_LmsDeserializeKey(cacheBuf, (uint16_t)cacheMeta->len,
+                                          key);
+    }
+    return ret;
+}
+#endif /* WOLFSSL_HAVE_LMS */
+
+#ifdef WOLFSSL_HAVE_XMSS
+/* Import serializes the private key, so it is unavailable in verify-only. */
+#ifndef WOLFSSL_XMSS_VERIFY_ONLY
+int wh_Server_XmssKeyCacheImport(whServerContext* ctx, XmssKey* key,
+                                 const char* paramStr, whKeyId keyId,
+                                 whNvmFlags flags, uint16_t label_len,
+                                 uint8_t* label)
+{
+    int            ret = WH_ERROR_OK;
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    uint16_t       slotCapacity = WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE;
+    uint16_t       blobSize;
+
+    if ((ctx == NULL) || (key == NULL) || (paramStr == NULL) ||
+        (WH_KEYID_ISERASED(keyId)) ||
+        ((label != NULL) && (label_len > sizeof(cacheMeta->label)))) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_Server_KeystoreGetCacheSlotChecked(ctx, keyId, slotCapacity,
+                                                &cacheBuf, &cacheMeta);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Crypto_XmssSerializeKey(key, paramStr, slotCapacity, cacheBuf,
+                                         &blobSize);
+    }
+    if (ret == WH_ERROR_OK) {
+        cacheMeta->id  = keyId;
+        cacheMeta->len = blobSize;
+        /* Stateful private key state must never leave the HSM; reuse of a
+         * one-time signature index breaks the scheme. Force non-exportable.
+         * Strip server-only flags a client may never set (e.g. trusted KEK). */
+        cacheMeta->flags =
+            (flags & ~WH_NVM_FLAGS_SERVER_ONLY) | WH_NVM_FLAGS_NONEXPORTABLE;
+        cacheMeta->access = WH_NVM_ACCESS_ANY;
+        if ((label != NULL) && (label_len > 0)) {
+            memcpy(cacheMeta->label, label, label_len);
+        }
+    }
+    return ret;
+}
+#endif /* !WOLFSSL_XMSS_VERIFY_ONLY */
+
+int wh_Server_XmssKeyCacheExport(whServerContext* ctx, whKeyId keyId,
+                                 XmssKey* key)
+{
+    uint8_t*       cacheBuf;
+    whNvmMetadata* cacheMeta;
+    int            ret;
+
+    if ((ctx == NULL) || (key == NULL) || (WH_KEYID_ISERASED(keyId))) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Crypto_XmssDeserializeKey(cacheBuf, (uint16_t)cacheMeta->len,
+                                           key);
+    }
+    return ret;
+}
+#endif /* WOLFSSL_HAVE_XMSS */
 
 
 /** Request/Response Handling functions */
@@ -878,12 +1387,14 @@ static int _HandleEccKeyGen(whServerContext* ctx, uint16_t magic, int devId,
                             const void* cryptoDataIn, uint16_t inSize,
                             void* cryptoDataOut, uint16_t* outSize)
 {
-    (void)inSize;
-
     int                               ret = WH_ERROR_OK;
     ecc_key                           key[1];
     whMessageCrypto_EccKeyGenRequest  req;
     whMessageCrypto_EccKeyGenResponse res;
+
+    if (inSize < sizeof(whMessageCrypto_EccKeyGenRequest)) {
+        return WH_ERROR_BADARGS;
+    }
 
     /* Translate request */
     ret = wh_MessageCrypto_TranslateEccKeyGenRequest(
@@ -920,38 +1431,48 @@ static int _HandleEccKeyGen(whServerContext* ctx, uint16_t magic, int devId,
                 key_id = WH_KEYID_ERASED;
                 ret    = wh_Crypto_EccSerializeKeyDer(key, max_size, res_out,
                                                       &res_size);
-                /* TODO: RSA has the following, should we do the same? */
-                /*
-                if (ret == 0) {
-                    res.keyId = 0;
-                    res.len = res_size;
-                }
-                */
             }
             else {
                 /* Must import the key into the cache and return keyid
                  */
                 res_size = 0;
-                if (WH_KEYID_ISERASED(key_id)) {
-                    /* Generate a new id */
-                    ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
-                    WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n", key_id, ret);
-                    if (ret != WH_ERROR_OK) {
-                        /* Early return on unique ID generation failure */
-                        wc_ecc_free(key);
-                        return ret;
+                /* Hold the NVM lock so id allocation and cache import are
+                 * atomic with respect to other server contexts under
+                 * THREADSAFE.  This matters for the shared
+                 * global cache. */
+                ret = WH_SERVER_NVM_LOCK(ctx);
+                if (ret == WH_ERROR_OK) {
+                    if (WH_KEYID_ISERASED(key_id)) {
+                        /* Generate a new id */
+                        ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
+                        WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n", key_id,
+                                        ret);
+                    }
+                    if (ret == WH_ERROR_OK) {
+                        ret = wh_Server_EccKeyCacheImport(
+                            ctx, key, key_id, flags, label_size, label);
+                    }
+                    (void)WH_SERVER_NVM_UNLOCK(ctx);
+                } /* WH_SERVER_NVM_LOCK() */
+                WH_DEBUG_SERVER("CacheImport: keyId:%u, ret:%d\n", key_id, ret);
+                if (ret == 0) {
+                    /* Best-effort public key export: when the serialized
+                     * public key fits in the response body, return it so the
+                     * client can skip a separate ExportPublicKey call. When it
+                     * does not fit (small comm buffer or a large key), leave the
+                     * body empty and keep the cached key. Plain MakeCacheKey
+                     * callers ignore the body and see no regression;
+                     * MakeCacheKeyAndExportPublic callers detect the empty body
+                     * and evict the key themselves. */
+                    int pub_ret =
+                        wc_EccPublicKeyToDer(key, res_out, max_size, 1);
+                    if (pub_ret > 0) {
+                        res_size = (uint16_t)pub_ret;
+                    }
+                    else {
+                        res_size = 0;
                     }
                 }
-                if (ret == 0) {
-                    ret = wh_Server_EccKeyCacheImport(ctx, key, key_id, flags,
-                                                      label_size, label);
-                }
-                WH_DEBUG_SERVER("CacheImport: keyId:%u, ret:%d\n", key_id, ret);
-                /* TODO: RSA has the following, should we do the same? */
-                /*
-                res.keyId = WH_KEYID_ID(key_id);
-                res.len = 0;
-                */
             }
         }
         wc_ecc_free(key);
@@ -1003,15 +1524,6 @@ static int _HandleEccSharedSecret(whServerContext* ctx, uint16_t magic,
     whNvmFlags flags = (whNvmFlags)req.flags;
     int        cache = !(flags & WH_NVM_FLAGS_EPHEMERAL);
 
-    /* Validate key usage policy for key derivation (private key) */
-    if (!WH_KEYID_ISERASED(prv_key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, prv_key_id,
-                                                    WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     /* Response message */
     byte* res_out =
         (byte*)cryptoDataOut + sizeof(whMessageCrypto_EcdhResponse);
@@ -1027,12 +1539,15 @@ static int _HandleEccSharedSecret(whServerContext* ctx, uint16_t magic,
             /* set rng */
             ret = wc_ecc_set_rng(prv_key, ctx->crypto->rng);
             if (ret == 0) {
-                /* load the private key */
-                ret = wh_Server_EccKeyCacheExport(ctx, prv_key_id, prv_key);
-            }
-            if (ret == WH_ERROR_OK) {
-                /* load the public key */
-                ret = wh_Server_EccKeyCacheExport(ctx, pub_key_id, pub_key);
+                /* load the private key, enforcing the derive usage policy
+                 * against the same locked snapshot that is exported */
+                ret = _EccKeyCacheExportEnforce(
+                    ctx, prv_key_id, WH_NVM_FLAGS_USAGE_DERIVE, prv_key);
+                if (ret == WH_ERROR_OK) {
+                    /* load the public key (no usage requirement) */
+                    ret = _EccKeyCacheExportEnforce(ctx, pub_key_id,
+                                                    WH_NVM_FLAGS_NONE, pub_key);
+                }
             }
             if (ret == WH_ERROR_OK) {
                 /* make shared secret */
@@ -1078,14 +1593,13 @@ static int _HandleEccSharedSecret(whServerContext* ctx, uint16_t magic,
             }
         }
     }
-cleanup:
     if (evict_pub) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, pub_key_id);
+        _CryptoEvictKeyLocked(ctx, pub_key_id);
     }
     if (evict_prv) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, prv_key_id);
+        _CryptoEvictKeyLocked(ctx, prv_key_id);
     }
     if (ret == 0) {
         whMessageCrypto_EcdhResponse res;
@@ -1145,15 +1659,6 @@ static int _HandleEccSign(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t options = req.options;
     int      evict   = !!(options & WH_MESSAGE_CRYPTO_ECCSIGN_OPTIONS_EVICT);
 
-    /* Validate key usage policy for signing */
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_SIGN);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     /* Response message */
     byte* res_out =
         (byte*)cryptoDataOut + sizeof(whMessageCrypto_EccSignResponse);
@@ -1164,8 +1669,10 @@ static int _HandleEccSign(whServerContext* ctx, uint16_t magic, int devId,
     /* init private key */
     ret = wc_ecc_init_ex(key, NULL, devId);
     if (ret == 0) {
-        /* load the private key */
-        ret = wh_Server_EccKeyCacheExport(ctx, key_id, key);
+        /* load the private key, enforcing the sign usage policy against the
+         * same locked snapshot that is exported */
+        ret = _EccKeyCacheExportEnforce(ctx, key_id, WH_NVM_FLAGS_USAGE_SIGN,
+                                        key);
         if (ret == WH_ERROR_OK) {
             WH_DEBUG_SERVER_VERBOSE("EccSign: key_id=%x, in_len=%u, res_len=%u, ret=%d\n",
                 key_id, (unsigned)in_len, (unsigned)res_len, ret);
@@ -1177,10 +1684,9 @@ static int _HandleEccSign(whServerContext* ctx, uint16_t magic, int devId,
         }
         wc_ecc_free(key);
     }
-cleanup:
     if (evict != 0) {
         /* typecasting to void so that not overwrite ret */
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     if (ret == 0) {
         whMessageCrypto_EccSignResponse res;
@@ -1240,15 +1746,6 @@ static int _HandleEccVerify(whServerContext* ctx, uint16_t magic, int devId,
     int      export_pub_key =
         !!(options & WH_MESSAGE_CRYPTO_ECCVERIFY_OPTIONS_EXPORTPUB);
 
-    /* Validate key usage policy for verification */
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_VERIFY);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     /* Response message */
     byte* res_pub =
         (uint8_t*)(cryptoDataOut) + sizeof(whMessageCrypto_EccVerifyResponse);
@@ -1260,8 +1757,10 @@ static int _HandleEccVerify(whServerContext* ctx, uint16_t magic, int devId,
     /* init public key */
     ret = wc_ecc_init_ex(key, NULL, devId);
     if (ret == 0) {
-        /* load the public key */
-        ret = wh_Server_EccKeyCacheExport(ctx, key_id, key);
+        /* load the public key, enforcing the verify usage policy against the
+         * same locked snapshot that is exported */
+        ret = _EccKeyCacheExportEnforce(ctx, key_id, WH_NVM_FLAGS_USAGE_VERIFY,
+                                        key);
         if (ret == WH_ERROR_OK) {
             /* verify the signature */
             ret = wc_ecc_verify_hash(req_sig, sig_len, req_hash, hash_len,
@@ -1288,10 +1787,9 @@ static int _HandleEccVerify(whServerContext* ctx, uint16_t magic, int devId,
         wc_ecc_free(key);
     }
 
-cleanup:
     if (evict != 0) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     if (ret == 0) {
         res.pubSz = pub_size;
@@ -1305,6 +1803,179 @@ cleanup:
     return ret;
 }
 #endif /* HAVE_ECC_VERIFY */
+
+static int _HandleEccMakePub(whServerContext* ctx, uint16_t magic, int devId,
+                             const void* cryptoDataIn, uint16_t inSize,
+                             void* cryptoDataOut, uint16_t* outSize)
+{
+    int                                ret;
+    ecc_key                            key[1];
+    whMessageCrypto_EccMakePubRequest  req;
+    whMessageCrypto_EccMakePubResponse res;
+
+    /* Validate minimum size */
+    if (inSize < sizeof(whMessageCrypto_EccMakePubRequest)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* Translate request */
+    ret = wh_MessageCrypto_TranslateEccMakePubRequest(
+        magic, (const whMessageCrypto_EccMakePubRequest*)cryptoDataIn, &req);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Extract parameters from translated request */
+    whKeyId key_id = wh_KeyId_TranslateFromClient(
+        WH_KEYTYPE_CRYPTO, ctx->comm->client_id, req.keyId);
+    int evict = !!(req.options & WH_MESSAGE_CRYPTO_ECCMAKEPUB_OPTIONS_EVICT);
+
+    /* Response message */
+    byte* res_pub =
+        (uint8_t*)(cryptoDataOut) + sizeof(whMessageCrypto_EccMakePubResponse);
+    word32 pub_size = (word32)(WOLFHSM_CFG_COMM_DATA_LEN -
+                               sizeof(whMessageCrypto_GenericResponseHeader) -
+                               sizeof(whMessageCrypto_EccMakePubResponse));
+
+    /* Deliberately no wh_Server_KeystoreFindEnforceKeyUsage(): this operation
+     * only produces public material, which keystore policy treats as
+     * always-exportable (see _KeystoreCheckPolicy / WH_KS_OP_EXPORT_PUBLIC).
+     * The private scalar is used solely to derive the public point. */
+    ret = wc_ecc_init_ex(key, NULL, devId);
+    if (ret == 0) {
+        /* load the private key */
+        ret = wh_Server_EccKeyCacheExport(ctx, key_id, key);
+        if (ret == WH_ERROR_OK) {
+            /* Always derive Q = d*G rather than returning whatever public point
+             * the cached key happens to carry, so the result cannot be steered
+             * by a cache entry whose stored point disagrees with its scalar.
+             * This also matches software wc_ecc_make_pub(), which fails on a
+             * key that holds no private scalar. The RNG blinds the multiply
+             * on the multi-precision path (SP builds ignore it). */
+            ret = wc_ecc_make_pub_ex(key, NULL, ctx->crypto->rng);
+            if (ret == 0) {
+                ret = wc_ecc_export_x963(key, res_pub, &pub_size);
+            }
+            WH_DEBUG_SERVER_VERBOSE("EccMakePub: key_id=%x, pub_size=%u, "
+                                    "ret=%d\n",
+                                    key_id, (unsigned)pub_size, ret);
+        }
+        wc_ecc_free(key);
+    }
+
+    if (evict != 0) {
+        /* User requested to evict from cache, even if the call failed */
+        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+    }
+    if (ret == 0) {
+        res.pubSz = pub_size;
+
+        wh_MessageCrypto_TranslateEccMakePubResponse(
+            magic, &res, (whMessageCrypto_EccMakePubResponse*)cryptoDataOut);
+
+        *outSize = sizeof(whMessageCrypto_EccMakePubResponse) + pub_size;
+    }
+    return ret;
+}
+
+#ifdef HAVE_ECC_CHECK_KEY
+static int _HandleEccCheckPubKey(whServerContext* ctx, uint16_t magic,
+                                 int devId, const void* cryptoDataIn,
+                                 uint16_t inSize, void* cryptoDataOut,
+                                 uint16_t* outSize)
+{
+    int                              ret;
+    ecc_key                          key[1];
+    whMessageCrypto_EccCheckRequest  req;
+    whMessageCrypto_EccCheckResponse res;
+
+    /* Validate minimum size */
+    if (inSize < sizeof(whMessageCrypto_EccCheckRequest)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* Translate request */
+    ret = wh_MessageCrypto_TranslateEccCheckRequest(
+        magic, (const whMessageCrypto_EccCheckRequest*)cryptoDataIn, &req);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Validate variable-length fields fit within inSize */
+    if (req.pubSz > inSize - sizeof(whMessageCrypto_EccCheckRequest)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* Extract parameters from translated request */
+    whKeyId key_id = wh_KeyId_TranslateFromClient(
+        WH_KEYTYPE_CRYPTO, ctx->comm->client_id, req.keyId);
+    const uint8_t* req_pub = (const uint8_t*)(cryptoDataIn) +
+                             sizeof(whMessageCrypto_EccCheckRequest);
+    int evict = !!(req.options & WH_MESSAGE_CRYPTO_ECCCHECK_OPTIONS_EVICT);
+
+    /* The curve travels with the key's DER encoding, so curveId is redundant.
+     * The request deliberately carries no partial-validation knobs:
+     * wc_ecc_check_key() is wolfCrypt's only public validation entry point
+     * (partial validation lives in a static function reachable only from the
+     * import APIs) and the only route to this server's own crypto callback
+     * (the key is bound to the server devId), so validation always runs in
+     * full. */
+    (void)req.curveId;
+
+    /* no need to enforce flags for pub key operation */
+    ret = wc_ecc_init_ex(key, NULL, devId);
+    if (ret == 0) {
+        /* load the key to validate */
+        ret = wh_Server_EccKeyCacheExport(ctx, key_id, key);
+        if (ret == WH_ERROR_OK) {
+            /* A private-only key has no point to validate yet. Unlike make-pub
+             * we derive only when one is missing: validating a key means
+             * checking the point it actually carries. The RNG blinds the
+             * multiply on the multi-precision path (SP builds ignore it). */
+            if (key->type == ECC_PRIVATEKEY_ONLY) {
+                ret = wc_ecc_make_pub_ex(key, NULL, ctx->crypto->rng);
+            }
+            if (ret == 0) {
+                ret = wc_ecc_check_key(key);
+            }
+            /* Reject a key whose caller-held public point disagrees with the
+             * point that actually belongs to the resident key. ECC_PRIV_KEY_E
+             * matches what software wc_ecc_check_key() returns for exactly
+             * this condition (ecc_check_privkey_gen: d*G != Q). */
+            if ((ret == 0) && (req.pubSz > 0)) {
+                byte   pub[1 + 2 * MAX_ECC_BYTES];
+                word32 pub_size = sizeof(pub);
+
+                ret = wc_ecc_export_x963(key, pub, &pub_size);
+                if ((ret == 0) && ((pub_size != req.pubSz) ||
+                                   (memcmp(pub, req_pub, pub_size) != 0))) {
+                    ret = ECC_PRIV_KEY_E;
+                }
+            }
+            WH_DEBUG_SERVER_VERBOSE("EccCheckPubKey: key_id=%x, pubSz=%u, "
+                                    "ret=%d\n",
+                                    key_id, (unsigned)req.pubSz, ret);
+        }
+        wc_ecc_free(key);
+    }
+
+    if (evict != 0) {
+        /* User requested to evict from cache, even if the call failed */
+        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+    }
+    /* The validation verdict itself travels in the response header rc, which
+     * is what wolfCrypt's crypto callback contract expects. */
+    if (ret == 0) {
+        res.ok = 1;
+
+        wh_MessageCrypto_TranslateEccCheckResponse(
+            magic, &res, (whMessageCrypto_EccCheckResponse*)cryptoDataOut);
+
+        *outSize = sizeof(whMessageCrypto_EccCheckResponse);
+    }
+    return ret;
+}
+#endif /* HAVE_ECC_CHECK_KEY */
 #endif /* HAVE_ECC */
 
 
@@ -1384,7 +2055,8 @@ int wh_Server_KeyCacheImportRaw(whServerContext* ctx, const uint8_t* keyData,
 
         cacheMeta->id     = keyId;
         cacheMeta->len    = keySize;
-        cacheMeta->flags  = flags;
+        /* clients can't set server-only flags (e.g. trusted KEK) */
+        cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
         cacheMeta->access = WH_NVM_ACCESS_ANY;
 
         if ((label != NULL) && (label_len > 0)) {
@@ -1431,7 +2103,8 @@ int wh_Server_CmacKdfKeyCacheImport(whServerContext* ctx,
     if (ret == WH_ERROR_OK) {
         cacheMeta->id     = keyId;
         cacheMeta->len    = keySize;
-        cacheMeta->flags  = flags;
+        /* clients can't set server-only flags (e.g. trusted KEK) */
+        cacheMeta->flags  = flags & ~WH_NVM_FLAGS_SERVER_ONLY;
         cacheMeta->access = WH_NVM_ACCESS_ANY;
 
         if ((label != NULL) && (label_len > 0)) {
@@ -1442,6 +2115,16 @@ int wh_Server_CmacKdfKeyCacheImport(whServerContext* ctx,
     return ret;
 }
 #endif /* HAVE_CMAC_KDF */
+
+#if defined(HAVE_HKDF) || defined(HAVE_CMAC_KDF)
+/* Bound on KDF inputs supplied by key ID. */
+#ifdef HAVE_ECC
+WH_UTILS_STATIC_ASSERT(
+    WOLFHSM_CFG_SERVER_KDF_MAX_KEY_SIZE >= MAX_ECC_BYTES,
+    "WOLFHSM_CFG_SERVER_KDF_MAX_KEY_SIZE too small to hold an ECDH shared "
+    "secret as a cached KDF input");
+#endif /* HAVE_ECC */
+#endif /* HAVE_HKDF || HAVE_CMAC_KDF */
 
 #ifdef HAVE_HKDF
 static int _HandleHkdf(whServerContext* ctx, uint16_t magic, int devId,
@@ -1498,38 +2181,38 @@ static int _HandleHkdf(whServerContext* ctx, uint16_t magic, int devId,
     const uint8_t* info = salt + saltSz;
 
     /* Buffer for cached key if needed */
-    uint8_t*       cachedKeyBuf  = NULL;
-    whNvmMetadata* cachedKeyMeta = NULL;
+    uint8_t       cachedKeyBuf[WOLFHSM_CFG_SERVER_KDF_MAX_KEY_SIZE];
+    whNvmMetadata cachedKeyMeta[1];
+
+    /* Get pointer to where output data would be stored (after response struct).
+     * Declared before the first goto so no jump skips an initialization. */
+    uint8_t* out =
+        (uint8_t*)cryptoDataOut + sizeof(whMessageCrypto_HkdfResponse);
+    uint16_t max_size =
+        (uint16_t)(WOLFHSM_CFG_COMM_DATA_LEN -
+                   sizeof(whMessageCrypto_GenericResponseHeader) -
+                   ((uint8_t*)out - (uint8_t*)cryptoDataOut));
 
     /* Check if we should use cached key as input */
     if (inKeySz == 0 && !WH_KEYID_ISERASED(keyIdIn)) {
-        /* Grab references to key in the cache */
-        ret = wh_Server_KeystoreFreshenKey(ctx, keyIdIn, &cachedKeyBuf,
-                                           &cachedKeyMeta);
+        /* Copy the IKM out, enforcing the derive usage policy against the
+         * same locked snapshot; see the KDF input bound above _HandleHkdf() */
+        uint32_t cachedKeyLen = sizeof(cachedKeyBuf);
+        ret                   = wh_Server_KeystoreReadKeyEnforce(
+            ctx, keyIdIn, WH_NVM_FLAGS_USAGE_DERIVE, cachedKeyMeta,
+            cachedKeyBuf, &cachedKeyLen);
         if (ret != WH_ERROR_OK) {
-            return ret;
-        }
-        /* Validate key usage policy for key derivation (input key) */
-        ret = wh_Server_KeystoreEnforceKeyUsage(cachedKeyMeta,
-                                                WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            return ret;
+            goto cleanup;
         }
         /* Update inKey pointer and size to use cached key */
         inKey   = cachedKeyBuf;
         inKeySz = cachedKeyMeta->len;
     }
 
-    /* Get pointer to where output data would be stored (after response struct)
-     */
-    uint8_t* out =
-        (uint8_t*)cryptoDataOut + sizeof(whMessageCrypto_HkdfResponse);
-    uint16_t max_size = (uint16_t)(WOLFHSM_CFG_COMM_DATA_LEN -
-                                   ((uint8_t*)out - (uint8_t*)cryptoDataOut));
-
     /* Check if output size is valid */
     if (outSz > max_size) {
-        return WH_ERROR_BADARGS;
+        ret = WH_ERROR_BADARGS;
+        goto cleanup;
     }
 
     /* Generate the key into the output buffer */
@@ -1545,20 +2228,22 @@ static int _HandleHkdf(whServerContext* ctx, uint16_t magic, int devId,
         }
         else {
             /* Must import the key into the cache and return keyid */
-            if (WH_KEYID_ISERASED(key_id)) {
-                /* Generate a new id */
-                ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
-                WH_DEBUG_SERVER_VERBOSE("HkdfKeyGen UniqueId: keyId:%u, ret:%d\n", key_id, ret);
-                if (ret != WH_ERROR_OK) {
-                    /* Early return on unique ID generation failure */
-                    return ret;
+            /* Hold the NVM lock so id allocation and cache import are atomic
+             * with respect to other server contexts under THREADSAFE. */
+            ret = WH_SERVER_NVM_LOCK(ctx);
+            if (ret == WH_ERROR_OK) {
+                if (WH_KEYID_ISERASED(key_id)) {
+                    /* Generate a new id */
+                    ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
+                    WH_DEBUG_SERVER_VERBOSE(
+                        "HkdfKeyGen UniqueId: keyId:%u, ret:%d\n", key_id, ret);
                 }
-            }
-
-            if (ret == 0) {
-                ret = wh_Server_HkdfKeyCacheImport(ctx, out, outSz, key_id,
-                                                   flags, label_size, label);
-            }
+                if (ret == WH_ERROR_OK) {
+                    ret = wh_Server_HkdfKeyCacheImport(
+                        ctx, out, outSz, key_id, flags, label_size, label);
+                }
+                (void)WH_SERVER_NVM_UNLOCK(ctx);
+            } /* WH_SERVER_NVM_LOCK() */
             WH_DEBUG_SERVER_VERBOSE("HkdfKeyGen CacheImport: keyId:%u, ret:%d\n", key_id, ret);
             if (ret == WH_ERROR_OK) {
                 res.keyIdOut = wh_KeyId_TranslateToClient(key_id);
@@ -1579,6 +2264,9 @@ static int _HandleHkdf(whServerContext* ctx, uint16_t magic, int devId,
         }
     }
 
+cleanup:
+    /* The IKM copy is plaintext key material, so don't leave it on the stack */
+    wc_ForceZero(cachedKeyBuf, sizeof(cachedKeyBuf));
     return ret;
 }
 #endif /* HAVE_HKDF */
@@ -1636,25 +2324,34 @@ static int _HandleCmacKdf(whServerContext* ctx, uint16_t magic, int devId,
     const uint8_t* z         = salt + saltSz;
     const uint8_t* fixedInfo = z + zSz;
 
-    uint8_t*       cachedSaltBuf  = NULL;
-    whNvmMetadata* cachedSaltMeta = NULL;
-    uint8_t*       cachedZBuf     = NULL;
-    whNvmMetadata* cachedZMeta    = NULL;
+    /* The salt is a CMAC key, so wolfCrypt accepts only an AES key size here */
+    uint8_t       cachedSaltBuf[AES_256_KEY_SIZE];
+    whNvmMetadata cachedSaltMeta[1];
+    uint8_t       cachedZBuf[WOLFHSM_CFG_SERVER_KDF_MAX_KEY_SIZE];
+    whNvmMetadata cachedZMeta[1];
+
+    /* Declared before the first goto so no jump skips an initialization */
+    uint8_t* out =
+        (uint8_t*)cryptoDataOut + sizeof(whMessageCrypto_CmacKdfResponse);
+    uint16_t max_size =
+        (uint16_t)(WOLFHSM_CFG_COMM_DATA_LEN -
+                   sizeof(whMessageCrypto_GenericResponseHeader) -
+                   ((uint8_t*)out - (uint8_t*)cryptoDataOut));
 
     if (saltSz == 0) {
         if (WH_KEYID_ISERASED(saltKeyId)) {
-            return WH_ERROR_BADARGS;
+            ret = WH_ERROR_BADARGS;
+            goto cleanup;
         }
-        ret = wh_Server_KeystoreFreshenKey(ctx, saltKeyId, &cachedSaltBuf,
-                                           &cachedSaltMeta);
+        /* Copy the salt out, enforcing the derive usage policy against the
+         * same locked snapshot. An oversize salt now fails NOSPACE here
+         * rather than BAD_FUNC_ARG in wc_KDA_KDF_twostep_cmac() */
+        uint32_t cachedSaltLen = sizeof(cachedSaltBuf);
+        ret                    = wh_Server_KeystoreReadKeyEnforce(
+            ctx, saltKeyId, WH_NVM_FLAGS_USAGE_DERIVE, cachedSaltMeta,
+            cachedSaltBuf, &cachedSaltLen);
         if (ret != WH_ERROR_OK) {
-            return ret;
-        }
-        /* Validate key usage policy for cached salt */
-        ret = wh_Server_KeystoreEnforceKeyUsage(cachedSaltMeta,
-                                                WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            return ret;
+            goto cleanup;
         }
         salt   = cachedSaltBuf;
         saltSz = cachedSaltMeta->len;
@@ -1662,34 +2359,30 @@ static int _HandleCmacKdf(whServerContext* ctx, uint16_t magic, int devId,
 
     if (zSz == 0) {
         if (WH_KEYID_ISERASED(zKeyId)) {
-            return WH_ERROR_BADARGS;
+            ret = WH_ERROR_BADARGS;
+            goto cleanup;
         }
-        ret = wh_Server_KeystoreFreshenKey(ctx, zKeyId, &cachedZBuf,
-                                           &cachedZMeta);
+        /* Copy Z out, enforcing the derive usage policy against the same
+         * locked snapshot; see the KDF input bound above _HandleHkdf() */
+        uint32_t cachedZLen = sizeof(cachedZBuf);
+        ret                 = wh_Server_KeystoreReadKeyEnforce(
+            ctx, zKeyId, WH_NVM_FLAGS_USAGE_DERIVE, cachedZMeta, cachedZBuf,
+            &cachedZLen);
         if (ret != WH_ERROR_OK) {
-            return ret;
-        }
-        /* Validate key usage policy for key derivation (Z key) */
-        ret = wh_Server_KeystoreEnforceKeyUsage(cachedZMeta,
-                                                WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            return ret;
+            goto cleanup;
         }
         z   = cachedZBuf;
         zSz = cachedZMeta->len;
     }
 
     if ((salt == NULL) || (z == NULL) || (outSz == 0)) {
-        return WH_ERROR_BADARGS;
+        ret = WH_ERROR_BADARGS;
+        goto cleanup;
     }
 
-    uint8_t* out =
-        (uint8_t*)cryptoDataOut + sizeof(whMessageCrypto_CmacKdfResponse);
-    uint16_t max_size = (uint16_t)(WOLFHSM_CFG_COMM_DATA_LEN -
-                                   ((uint8_t*)out - (uint8_t*)cryptoDataOut));
-
     if (outSz > max_size) {
-        return WH_ERROR_BADARGS;
+        ret = WH_ERROR_BADARGS;
+        goto cleanup;
     }
 
     ret = wc_KDA_KDF_twostep_cmac(salt, saltSz, z, zSz,
@@ -1702,15 +2395,19 @@ static int _HandleCmacKdf(whServerContext* ctx, uint16_t magic, int devId,
             res.outSz    = outSz;
         }
         else {
-            if (WH_KEYID_ISERASED(keyIdOut)) {
-                ret = wh_Server_KeystoreGetUniqueId(ctx, &keyIdOut);
-                if (ret != WH_ERROR_OK) {
-                    return ret;
+            /* Hold the NVM lock so id allocation and cache import are atomic
+             * with respect to other server contexts under THREADSAFE. */
+            ret = WH_SERVER_NVM_LOCK(ctx);
+            if (ret == WH_ERROR_OK) {
+                if (WH_KEYID_ISERASED(keyIdOut)) {
+                    ret = wh_Server_KeystoreGetUniqueId(ctx, &keyIdOut);
                 }
-            }
-
-            ret = wh_Server_CmacKdfKeyCacheImport(ctx, out, outSz, keyIdOut,
-                                                  flags, label_size, label);
+                if (ret == WH_ERROR_OK) {
+                    ret = wh_Server_CmacKdfKeyCacheImport(
+                        ctx, out, outSz, keyIdOut, flags, label_size, label);
+                }
+                (void)WH_SERVER_NVM_UNLOCK(ctx);
+            } /* WH_SERVER_NVM_LOCK() */
             if (ret == WH_ERROR_OK) {
                 res.keyIdOut = wh_KeyId_TranslateToClient(keyIdOut);
                 res.outSz    = 0;
@@ -1727,6 +2424,11 @@ static int _HandleCmacKdf(whServerContext* ctx, uint16_t magic, int devId,
         }
     }
 
+cleanup:
+    /* The salt and Z copies are plaintext derive secrets, so don't leave them
+     * on the stack */
+    wc_ForceZero(cachedSaltBuf, sizeof(cachedSaltBuf));
+    wc_ForceZero(cachedZBuf, sizeof(cachedZBuf));
     return ret;
 }
 #endif /* HAVE_CMAC_KDF */
@@ -1737,12 +2439,14 @@ static int _HandleCurve25519KeyGen(whServerContext* ctx, uint16_t magic,
                                    uint16_t inSize, void* cryptoDataOut,
                                    uint16_t* outSize)
 {
-    (void)inSize;
-
     int                                      ret = WH_ERROR_OK;
     curve25519_key                           key[1];
     whMessageCrypto_Curve25519KeyGenRequest  req;
     whMessageCrypto_Curve25519KeyGenResponse res;
+
+    if (inSize < sizeof(whMessageCrypto_Curve25519KeyGenRequest)) {
+        return WH_ERROR_BADARGS;
+    }
 
     /* Translate request */
     ret = wh_MessageCrypto_TranslateCurve25519KeyGenRequest(
@@ -1780,26 +2484,48 @@ static int _HandleCurve25519KeyGen(whServerContext* ctx, uint16_t magic,
                 ret    = wh_Crypto_Curve25519SerializeKey(key, out, &ser_size);
             }
             else {
+                uint16_t max_size =
+                    (uint16_t)(WOLFHSM_CFG_COMM_DATA_LEN -
+                               (out - (uint8_t*)cryptoDataOut));
                 ser_size = 0;
                 /* Must import the key into the cache and return keyid */
-                if (WH_KEYID_ISERASED(key_id)) {
-                    /* Generate a new id */
-                    ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
-                    WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n",
-                           key_id, ret);
-                    if (ret != WH_ERROR_OK) {
-                        /* Early return on unique ID generation failure */
-                        wc_curve25519_free(key);
-                        return ret;
+                /* Hold the NVM lock so id allocation and cache import are
+                 * atomic with respect to other server contexts under
+                 * THREADSAFE. */
+                ret = WH_SERVER_NVM_LOCK(ctx);
+                if (ret == WH_ERROR_OK) {
+                    if (WH_KEYID_ISERASED(key_id)) {
+                        /* Generate a new id */
+                        ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
+                        WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n", key_id,
+                                        ret);
                     }
-                }
-
-                if (ret == 0) {
-                    ret = wh_Server_CacheImportCurve25519Key(
-                        ctx, key, key_id, flags, label_size, label);
-                }
+                    if (ret == WH_ERROR_OK) {
+                        ret = wh_Server_CacheImportCurve25519Key(
+                            ctx, key, key_id, flags, label_size, label);
+                    }
+                    (void)WH_SERVER_NVM_UNLOCK(ctx);
+                } /* WH_SERVER_NVM_LOCK() */
                 WH_DEBUG_SERVER_VERBOSE("CacheImport: keyId:%u, ret:%d\n",
                        key_id, ret);
+                if (ret == 0) {
+                    /* Best-effort public key export: when the serialized
+                     * public key fits in the response body, return it so the
+                     * client can skip a separate ExportPublicKey call. When it
+                     * does not fit (small comm buffer or a large key), leave the
+                     * body empty and keep the cached key. Plain MakeCacheKey
+                     * callers ignore the body and see no regression;
+                     * MakeCacheKeyAndExportPublic callers detect the empty body
+                     * and evict the key themselves. */
+                    int pub_ret =
+                        wc_Curve25519PublicKeyToDer(key, out, max_size, 1);
+                    if (pub_ret > 0) {
+                        ser_size = (uint16_t)pub_ret;
+                    }
+                    else {
+                        ser_size = 0;
+                    }
+                }
             }
         }
         wc_curve25519_free(key);
@@ -1855,15 +2581,6 @@ static int _HandleCurve25519SharedSecret(whServerContext* ctx, uint16_t magic,
     whNvmFlags flags           = (whNvmFlags)req.flags;
     int        cache           = !(flags & WH_NVM_FLAGS_EPHEMERAL);
 
-    /* Validate key usage policy for key derivation (private key) */
-    if (!WH_KEYID_ISERASED(prv_key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, prv_key_id,
-                                                    WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     /* Response message */
     uint8_t* res_out       = (uint8_t*)cryptoDataOut +
                              sizeof(whMessageCrypto_Curve25519Response);
@@ -1884,10 +2601,15 @@ static int _HandleCurve25519SharedSecret(whServerContext* ctx, uint16_t magic,
             }
 #endif
             if (ret == 0) {
-                ret = wh_Server_CacheExportCurve25519Key(ctx, prv_key_id, priv);
-            }
-            if (ret == 0) {
-                ret = wh_Server_CacheExportCurve25519Key(ctx, pub_key_id, pub);
+                /* load the private key, enforcing the derive usage policy
+                 * against the same locked snapshot that is exported */
+                ret = _CacheExportCurve25519KeyEnforce(
+                    ctx, prv_key_id, WH_NVM_FLAGS_USAGE_DERIVE, priv);
+                if (ret == WH_ERROR_OK) {
+                    /* load the public key (no usage requirement) */
+                    ret = _CacheExportCurve25519KeyEnforce(
+                        ctx, pub_key_id, WH_NVM_FLAGS_NONE, pub);
+                }
             }
             if (ret == 0) {
                 ret = wc_curve25519_shared_secret_ex(priv, pub, res_out,
@@ -1932,14 +2654,13 @@ static int _HandleCurve25519SharedSecret(whServerContext* ctx, uint16_t magic,
             }
         }
     }
-cleanup:
     if (evict_pub) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, pub_key_id);
+        _CryptoEvictKeyLocked(ctx, pub_key_id);
     }
     if (evict_prv) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, prv_key_id);
+        _CryptoEvictKeyLocked(ctx, prv_key_id);
     }
     if (ret == 0) {
         uint16_t payload_len;
@@ -1969,12 +2690,14 @@ static int _HandleEd25519KeyGen(whServerContext* ctx, uint16_t magic, int devId,
                                 const void* cryptoDataIn, uint16_t inSize,
                                 void* cryptoDataOut, uint16_t* outSize)
 {
-    (void)inSize;
-
     int                                   ret = WH_ERROR_OK;
     ed25519_key                           key[1];
     whMessageCrypto_Ed25519KeyGenRequest  req;
     whMessageCrypto_Ed25519KeyGenResponse res;
+
+    if (inSize < sizeof(whMessageCrypto_Ed25519KeyGenRequest)) {
+        return WH_ERROR_BADARGS;
+    }
 
     ret = wh_MessageCrypto_TranslateEd25519KeyGenRequest(
         magic, (const whMessageCrypto_Ed25519KeyGenRequest*)cryptoDataIn, &req);
@@ -2005,16 +2728,37 @@ static int _HandleEd25519KeyGen(whServerContext* ctx, uint16_t magic, int devId,
             }
             else {
                 ser_size = 0;
-                if (WH_KEYID_ISERASED(key_id)) {
-                    ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
-                    if (ret != WH_ERROR_OK) {
-                        wc_ed25519_free(key);
-                        return ret;
+                /* Hold the NVM lock so id allocation and cache import are
+                 * atomic with respect to other server contexts under
+                 * THREADSAFE. */
+                ret = WH_SERVER_NVM_LOCK(ctx);
+                if (ret == WH_ERROR_OK) {
+                    if (WH_KEYID_ISERASED(key_id)) {
+                        ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
                     }
-                }
+                    if (ret == WH_ERROR_OK) {
+                        ret = wh_Server_CacheImportEd25519Key(
+                            ctx, key, key_id, flags, label_size, label);
+                    }
+                    (void)WH_SERVER_NVM_UNLOCK(ctx);
+                } /* WH_SERVER_NVM_LOCK() */
                 if (ret == 0) {
-                    ret = wh_Server_CacheImportEd25519Key(
-                        ctx, key, key_id, flags, label_size, label);
+                    /* Best-effort public key export: when the serialized
+                     * public key fits in the response body, return it so the
+                     * client can skip a separate ExportPublicKey call. When it
+                     * does not fit (small comm buffer or a large key), leave the
+                     * body empty and keep the cached key. Plain MakeCacheKey
+                     * callers ignore the body and see no regression;
+                     * MakeCacheKeyAndExportPublic callers detect the empty body
+                     * and evict the key themselves. */
+                    int pub_ret =
+                        wc_Ed25519PublicKeyToDer(key, res_out, max_size, 1);
+                    if (pub_ret > 0) {
+                        ser_size = (uint16_t)pub_ret;
+                    }
+                    else {
+                        ser_size = 0;
+                    }
                 }
             }
         }
@@ -2086,21 +2830,16 @@ static int _HandleEd25519Sign(whServerContext* ctx, uint16_t magic, int devId,
     uint8_t* req_ctx = req_msg + msg_len;
     int evict = !!(req.options & WH_MESSAGE_CRYPTO_ED25519_SIGN_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_SIGN);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     uint8_t* res_sig =
         (uint8_t*)cryptoDataOut + sizeof(whMessageCrypto_Ed25519SignResponse);
     word32 sig_len = sizeof(sig);
 
     ret = wc_ed25519_init_ex(key, NULL, devId);
     if (ret == 0) {
-        ret = wh_Server_CacheExportEd25519Key(ctx, key_id, key);
+        /* load the private key, enforcing the sign usage policy against the
+         * same locked snapshot that is exported */
+        ret = _CacheExportEd25519KeyEnforce(ctx, key_id,
+                                            WH_NVM_FLAGS_USAGE_SIGN, key);
         if (ret == WH_ERROR_OK) {
             ret = wc_ed25519_sign_msg_ex(req_msg, msg_len, sig, &sig_len, key,
                                          (byte)req.type, req_ctx,
@@ -2117,10 +2856,9 @@ static int _HandleEd25519Sign(whServerContext* ctx, uint16_t magic, int devId,
         memcpy(res_sig, sig, sig_len);
     }
 
-cleanup:
     if (evict) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     if (ret == 0) {
@@ -2187,19 +2925,14 @@ static int _HandleEd25519Verify(whServerContext* ctx, uint16_t magic, int devId,
     int      evict =
         !!(req.options & WH_MESSAGE_CRYPTO_ED25519_VERIFY_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_VERIFY);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     int result = 0;
 
     ret = wc_ed25519_init_ex(key, NULL, devId);
     if (ret == 0) {
-        ret = wh_Server_CacheExportEd25519Key(ctx, key_id, key);
+        /* load the public key, enforcing the verify usage policy against the
+         * same locked snapshot that is exported */
+        ret = _CacheExportEd25519KeyEnforce(ctx, key_id,
+                                            WH_NVM_FLAGS_USAGE_VERIFY, key);
         if (ret == WH_ERROR_OK) {
             ret = wc_ed25519_verify_msg_ex(req_sig, sig_len, req_msg, msg_len,
                                            &result, key, (byte)req.type,
@@ -2208,9 +2941,8 @@ static int _HandleEd25519Verify(whServerContext* ctx, uint16_t magic, int devId,
         wc_ed25519_free(key);
     }
 
-cleanup:
     if (evict != 0) {
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     if (ret == 0) {
@@ -2267,14 +2999,6 @@ static int _HandleEd25519SignDma(whServerContext* ctx, uint16_t magic,
         WH_KEYTYPE_CRYPTO, ctx->comm->client_id, req.keyId);
     int evict = !!(req.options & WH_MESSAGE_CRYPTO_ED25519_SIGN_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_SIGN);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     memset(&res, 0, sizeof(res));
 
     sigLen = req.sig.sz;
@@ -2295,7 +3019,10 @@ static int _HandleEd25519SignDma(whServerContext* ctx, uint16_t magic,
     if (ret == WH_ERROR_OK) {
         ret = wc_ed25519_init_ex(key, NULL, devId);
         if (ret == 0) {
-            ret = wh_Server_CacheExportEd25519Key(ctx, key_id, key);
+            /* load the private key, enforcing the sign usage policy against
+             * the same locked snapshot that is exported */
+            ret = _CacheExportEd25519KeyEnforce(ctx, key_id,
+                                                WH_NVM_FLAGS_USAGE_SIGN, key);
             if (ret == WH_ERROR_OK) {
                 ret = wc_ed25519_sign_msg_ex(msgAddr, req.msg.sz, sigAddr,
                                              &sigLen, key, (byte)req.type,
@@ -2318,9 +3045,8 @@ static int _HandleEd25519SignDma(whServerContext* ctx, uint16_t magic,
         ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
         WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
 
-cleanup:
     if (evict != 0) {
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     if (ret == WH_ERROR_OK) {
@@ -2375,14 +3101,6 @@ static int _HandleEd25519VerifyDma(whServerContext* ctx, uint16_t magic,
     int evict =
         !!(req.options & WH_MESSAGE_CRYPTO_ED25519_VERIFY_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_VERIFY);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     memset(&res, 0, sizeof(res));
 
     ret = wh_Server_DmaProcessClientAddress(
@@ -2403,7 +3121,10 @@ static int _HandleEd25519VerifyDma(whServerContext* ctx, uint16_t magic,
     if (ret == WH_ERROR_OK) {
         ret = wc_ed25519_init_ex(key, NULL, devId);
         if (ret == 0) {
-            ret = wh_Server_CacheExportEd25519Key(ctx, key_id, key);
+            /* load the public key, enforcing the verify usage policy against
+             * the same locked snapshot that is exported */
+            ret = _CacheExportEd25519KeyEnforce(ctx, key_id,
+                                                WH_NVM_FLAGS_USAGE_VERIFY, key);
             if (ret == WH_ERROR_OK) {
                 int verified = 0;
                 ret          = wc_ed25519_verify_msg_ex(
@@ -2424,9 +3145,8 @@ static int _HandleEd25519VerifyDma(whServerContext* ctx, uint16_t magic,
         ctx, (uintptr_t)req.sig.addr, &sigAddr, req.sig.sz,
         WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
 
-cleanup:
     if (evict != 0) {
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     if (ret == WH_ERROR_OK) {
@@ -2451,8 +3171,8 @@ static int _HandleAesCtr(whServerContext* ctx, uint16_t magic, int devId,
     Aes                            aes[1] = {0};
     whMessageCrypto_AesCtrRequest  req;
     whMessageCrypto_AesCtrResponse res;
-    uint8_t*                       cachedKey = NULL;
-    whNvmMetadata*                 keyMeta   = NULL;
+    uint8_t                        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata                  keyMeta[1];
 
     if (inSize < sizeof(whMessageCrypto_AesCtrRequest)) {
         return WH_ERROR_BADARGS;
@@ -2468,8 +3188,9 @@ static int _HandleAesCtr(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t key_len     = req.keyLen;
     uint32_t len         = req.sz;
     uint32_t left        = req.left;
-    uint64_t needed_size = sizeof(whMessageCrypto_AesCtrRequest) + len +
-                           key_len + AES_IV_SIZE + AES_BLOCK_SIZE;
+    uint64_t needed_size = (uint64_t)sizeof(whMessageCrypto_AesCtrRequest) +
+                           (uint64_t)len + (uint64_t)key_len +
+                           (uint64_t)AES_IV_SIZE + (uint64_t)AES_BLOCK_SIZE;
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -2493,13 +3214,14 @@ static int _HandleAesCtr(whServerContext* ctx, uint16_t magic, int devId,
     WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] tmp ", tmp, AES_BLOCK_SIZE);
     /* Freshen key and validate usage policy if key is not erased */
     if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFreshenKey(ctx, key_id, &cachedKey, &keyMeta);
-        if (ret == WH_ERROR_OK) {
-            /* Validate key usage policy */
-            ret = wh_Server_KeystoreEnforceKeyUsage(
-                keyMeta, enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                  : WH_NVM_FLAGS_USAGE_DECRYPT);
-        }
+        /* Copy the key + metadata into private buffers, enforcing the usage
+         * policy against the same locked snapshot that is read. The crypto
+         * below then runs entirely on the private copy. */
+        uint32_t cachedKeyLen = sizeof(cachedKey);
+        ret                   = wh_Server_KeystoreReadKeyEnforce(
+            ctx, key_id,
+            enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT : WH_NVM_FLAGS_USAGE_DECRYPT,
+            keyMeta, cachedKey, &cachedKeyLen);
         if (ret == WH_ERROR_OK) {
             /* override the incoming values with cached key */
             key     = cachedKey;
@@ -2525,22 +3247,33 @@ static int _HandleAesCtr(whServerContext* ctx, uint16_t magic, int devId,
         ret = wc_AesSetKeyDirect(aes, (byte*)key, (word32)key_len, (byte*)iv,
                                  enc != 0 ? AES_ENCRYPTION : AES_DECRYPTION);
         if (ret == WH_ERROR_OK) {
-            /* do the crypto operation; also restore previous left */
-            aes->left = left;
-            memcpy(aes->tmp, tmp, sizeof(aes->tmp));
-            if (enc != 0) {
-                ret = wc_AesCtrEncrypt(aes, (byte*)out, (byte*)in, (word32)len);
-                if (ret == WH_ERROR_OK) {
-                    WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Encrypted output",
-                                             out, len);
-                }
+            /* Reject client-supplied left values outside the valid range.
+             * wc_AesCtrEncrypt indexes aes->tmp via AES_BLOCK_SIZE - aes->left;
+             * an out-of-range value causes an out-of-bounds read that could
+             * disclose server-side memory across the HSM trust boundary. */
+            if (left > AES_BLOCK_SIZE) {
+                ret = WH_ERROR_BADARGS;
             }
             else {
-                /* CTR uses the same function for encrypt and decrypt */
-                ret = wc_AesCtrEncrypt(aes, (byte*)out, (byte*)in, (word32)len);
-                if (ret == WH_ERROR_OK) {
-                    WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Decrypted output",
-                                             out, len);
+                /* Restore streaming CTR context from the previous call. */
+                aes->left = left;
+                memcpy(aes->tmp, tmp, sizeof(aes->tmp));
+                if (enc != 0) {
+                    ret = wc_AesCtrEncrypt(aes, (byte*)out, (byte*)in,
+                                           (word32)len);
+                    if (ret == WH_ERROR_OK) {
+                        WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Encrypted output",
+                                                 out, len);
+                    }
+                }
+                else {
+                    /* CTR uses the same function for encrypt and decrypt */
+                    ret = wc_AesCtrEncrypt(aes, (byte*)out, (byte*)in,
+                                           (word32)len);
+                    if (ret == WH_ERROR_OK) {
+                        WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Decrypted output",
+                                                 out, len);
+                    }
                 }
             }
         }
@@ -2560,6 +3293,7 @@ static int _HandleAesCtr(whServerContext* ctx, uint16_t magic, int devId,
         ret = wh_MessageCrypto_TranslateAesCtrResponse(
             magic, &res, (whMessageCrypto_AesCtrResponse*)cryptoDataOut);
     }
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 
@@ -2580,8 +3314,8 @@ static int _HandleAesCtrDma(whServerContext* ctx, uint16_t magic, int devId,
     word32 outSz   = 0;
 
     whKeyId        keyId;
-    uint8_t*       cachedKey = NULL;
-    whNvmMetadata* keyMeta   = NULL;
+    uint8_t        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata  keyMeta[1];
 
     (void)seq;
 
@@ -2600,8 +3334,9 @@ static int _HandleAesCtrDma(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t keyLen      = req.keySz;
     uint32_t len         = req.input.sz;
     uint32_t left        = req.left;
-    uint64_t needed_size = sizeof(whMessageCrypto_AesCtrDmaRequest) + keyLen +
-                           AES_IV_SIZE + AES_BLOCK_SIZE;
+    uint64_t needed_size = (uint64_t)sizeof(whMessageCrypto_AesCtrDmaRequest) +
+                           (uint64_t)keyLen + (uint64_t)AES_IV_SIZE +
+                           (uint64_t)AES_BLOCK_SIZE;
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -2633,14 +3368,15 @@ static int _HandleAesCtrDma(whServerContext* ctx, uint16_t magic, int devId,
 
         /* Freshen key and validate usage policy if key is not erased */
         if (!WH_KEYID_ISERASED(keyId)) {
-            ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cachedKey,
-                                               &keyMeta);
-            if (ret == WH_ERROR_OK) {
-                /* Validate key usage policy */
-                ret = wh_Server_KeystoreEnforceKeyUsage(
-                    keyMeta, enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                    : WH_NVM_FLAGS_USAGE_DECRYPT);
-            }
+            /* Copy the key + metadata into private buffers, enforcing the
+             * usage policy against the same locked snapshot that is read. The
+             * crypto below then runs entirely on the private copy. */
+            uint32_t cachedKeyLen = sizeof(cachedKey);
+            ret                   = wh_Server_KeystoreReadKeyEnforce(
+                ctx, keyId,
+                enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
+                                           : WH_NVM_FLAGS_USAGE_DECRYPT,
+                keyMeta, cachedKey, &cachedKeyLen);
             if (ret == WH_ERROR_OK) {
                 key    = cachedKey;
                 keyLen = keyMeta->len;
@@ -2686,32 +3422,40 @@ static int _HandleAesCtrDma(whServerContext* ctx, uint16_t magic, int devId,
         ret = wc_AesSetKeyDirect(aes, (byte*)key, (word32)keyLen, (byte*)iv,
                                  enc != 0 ? AES_ENCRYPTION : AES_DECRYPTION);
         if (ret == WH_ERROR_OK) {
-            /* do the crypto operation */
-            /* restore previous left */
-            aes->left = left;
-            memcpy(aes->tmp, tmp, sizeof(aes->tmp));
-            if (enc != 0) {
-                ret = wc_AesCtrEncrypt(aes, (byte*)outAddr, (byte*)inAddr,
-                                       (word32)len);
-                if (ret == WH_ERROR_OK) {
-                    WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Encrypted output",
-                                             outAddr, len);
-                }
+            /* Reject client-supplied left values outside the valid range.
+             * wc_AesCtrEncrypt indexes aes->tmp via AES_BLOCK_SIZE - aes->left;
+             * an out-of-range value causes an out-of-bounds read that could
+             * disclose server-side memory across the HSM trust boundary. */
+            if (left > AES_BLOCK_SIZE) {
+                ret = WH_ERROR_BADARGS;
             }
             else {
-                /* CTR uses the same function for encrypt and decrypt */
-                ret = wc_AesCtrEncrypt(aes, (byte*)outAddr, (byte*)inAddr,
-                                       (word32)len);
-                if (ret == WH_ERROR_OK) {
-                    WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Decrypted output",
-                                             outAddr, len);
+                /* Restore streaming CTR context from the previous call. */
+                aes->left = left;
+                memcpy(aes->tmp, tmp, sizeof(aes->tmp));
+                if (enc != 0) {
+                    ret = wc_AesCtrEncrypt(aes, (byte*)outAddr, (byte*)inAddr,
+                                           (word32)len);
+                    if (ret == WH_ERROR_OK) {
+                        WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Encrypted output",
+                                                 outAddr, len);
+                    }
                 }
-            }
-            if (ret == WH_ERROR_OK) {
-                left = aes->left;
-                outSz = len;
-                memcpy(out_tmp, aes->tmp, AES_BLOCK_SIZE);
-                memcpy(out_iv, aes->reg, AES_IV_SIZE);
+                else {
+                    /* CTR uses the same function for encrypt and decrypt */
+                    ret = wc_AesCtrEncrypt(aes, (byte*)outAddr, (byte*)inAddr,
+                                           (word32)len);
+                    if (ret == WH_ERROR_OK) {
+                        WH_DEBUG_VERBOSE_HEXDUMP("[AesCtr] Decrypted output",
+                                                 outAddr, len);
+                    }
+                }
+                if (ret == WH_ERROR_OK) {
+                    left = aes->left;
+                    outSz = len;
+                    memcpy(out_tmp, aes->tmp, AES_BLOCK_SIZE);
+                    memcpy(out_iv, aes->reg, AES_IV_SIZE);
+                }
             }
         }
     }
@@ -2748,6 +3492,7 @@ static int _HandleAesCtrDma(whServerContext* ctx, uint16_t magic, int devId,
     *outSize = sizeof(whMessageCrypto_AesCtrDmaResponse) +
                AES_IV_SIZE + AES_BLOCK_SIZE;
 
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 #endif /* WOLFHSM_CFG_DMA */
@@ -2762,8 +3507,8 @@ static int _HandleAesEcb(whServerContext* ctx, uint16_t magic, int devId,
     Aes                            aes[1] = {0};
     whMessageCrypto_AesEcbRequest  req;
     whMessageCrypto_AesEcbResponse res;
-    uint8_t*                       cachedKey = NULL;
-    whNvmMetadata*                 keyMeta   = NULL;
+    uint8_t                        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata                  keyMeta[1];
 
     if (inSize < sizeof(whMessageCrypto_AesEcbRequest)) {
         return WH_ERROR_BADARGS;
@@ -2779,8 +3524,8 @@ static int _HandleAesEcb(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t enc     = req.enc;
     uint32_t key_len = req.keyLen;
     uint32_t len     = req.sz;
-    uint64_t needed_size =
-        sizeof(whMessageCrypto_AesEcbRequest) + len + key_len;
+    uint64_t needed_size = (uint64_t)sizeof(whMessageCrypto_AesEcbRequest) +
+                           (uint64_t)len + (uint64_t)key_len;
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -2801,13 +3546,14 @@ static int _HandleAesEcb(whServerContext* ctx, uint16_t magic, int devId,
 
     /* Freshen key and validate usage policy if key is not erased */
     if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFreshenKey(ctx, key_id, &cachedKey, &keyMeta);
-        if (ret == WH_ERROR_OK) {
-            /* Validate key usage policy */
-            ret = wh_Server_KeystoreEnforceKeyUsage(
-                keyMeta, enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                  : WH_NVM_FLAGS_USAGE_DECRYPT);
-        }
+        /* Copy the key + metadata into private buffers, enforcing the usage
+         * policy against the same locked snapshot that is read. The crypto
+         * below then runs entirely on the private copy. */
+        uint32_t cachedKeyLen = sizeof(cachedKey);
+        ret                   = wh_Server_KeystoreReadKeyEnforce(
+            ctx, key_id,
+            enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT : WH_NVM_FLAGS_USAGE_DECRYPT,
+            keyMeta, cachedKey, &cachedKeyLen);
         if (ret == WH_ERROR_OK) {
             /* override the incoming values with cached key */
             key     = cachedKey;
@@ -2861,6 +3607,7 @@ static int _HandleAesEcb(whServerContext* ctx, uint16_t magic, int devId,
         ret = wh_MessageCrypto_TranslateAesEcbResponse(
             magic, &res, (whMessageCrypto_AesEcbResponse*)cryptoDataOut);
     }
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 
@@ -2880,8 +3627,8 @@ static int _HandleAesEcbDma(whServerContext* ctx, uint16_t magic, int devId,
     word32 outSz   = 0;
 
     whKeyId        keyId;
-    uint8_t*       cachedKey = NULL;
-    whNvmMetadata* keyMeta   = NULL;
+    uint8_t        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata  keyMeta[1];
 
     (void)seq;
 
@@ -2898,7 +3645,8 @@ static int _HandleAesEcbDma(whServerContext* ctx, uint16_t magic, int devId,
 
     uint32_t keyLen      = req.keySz;
     uint32_t len         = req.input.sz;
-    uint64_t needed_size = sizeof(whMessageCrypto_AesEcbDmaRequest) + keyLen;
+    uint64_t needed_size =
+        (uint64_t)sizeof(whMessageCrypto_AesEcbDmaRequest) + (uint64_t)keyLen;
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -2922,14 +3670,15 @@ static int _HandleAesEcbDma(whServerContext* ctx, uint16_t magic, int devId,
 
         /* Freshen key and validate usage policy if key is not erased */
         if (!WH_KEYID_ISERASED(keyId)) {
-            ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cachedKey,
-                                               &keyMeta);
-            if (ret == WH_ERROR_OK) {
-                /* Validate key usage policy */
-                ret = wh_Server_KeystoreEnforceKeyUsage(
-                    keyMeta, req.enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                        : WH_NVM_FLAGS_USAGE_DECRYPT);
-            }
+            /* Copy the key + metadata into private buffers, enforcing the
+             * usage policy against the same locked snapshot that is read. The
+             * crypto below then runs entirely on the private copy. */
+            uint32_t cachedKeyLen = sizeof(cachedKey);
+            ret                   = wh_Server_KeystoreReadKeyEnforce(
+                ctx, keyId,
+                req.enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
+                                               : WH_NVM_FLAGS_USAGE_DECRYPT,
+                keyMeta, cachedKey, &cachedKeyLen);
             if (ret == WH_ERROR_OK) {
                 key    = cachedKey;
                 keyLen = keyMeta->len;
@@ -3028,6 +3777,7 @@ static int _HandleAesEcbDma(whServerContext* ctx, uint16_t magic, int devId,
         magic, &res, (whMessageCrypto_AesEcbDmaResponse*)cryptoDataOut);
     *outSize  = sizeof(whMessageCrypto_AesEcbDmaResponse);
 
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 #endif /* WOLFHSM_CFG_DMA */
@@ -3042,8 +3792,8 @@ static int _HandleAesCbc(whServerContext* ctx, uint16_t magic, int devId,
     Aes                            aes[1] = {0};
     whMessageCrypto_AesCbcRequest  req;
     whMessageCrypto_AesCbcResponse res;
-    uint8_t*                       cachedKey = NULL;
-    whNvmMetadata*                 keyMeta   = NULL;
+    uint8_t                        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata                  keyMeta[1];
 
     /* Validate minimum size */
     if (inSize < sizeof(whMessageCrypto_AesCbcRequest)) {
@@ -3061,8 +3811,9 @@ static int _HandleAesCbc(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t enc         = req.enc;
     uint32_t key_len     = req.keyLen;
     uint32_t len         = req.sz;
-    uint64_t needed_size = sizeof(whMessageCrypto_AesCbcRequest) + len +
-                           key_len + AES_BLOCK_SIZE;
+    uint64_t needed_size = (uint64_t)sizeof(whMessageCrypto_AesCbcRequest) +
+                           (uint64_t)len + (uint64_t)key_len +
+                           (uint64_t)AES_BLOCK_SIZE;
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -3085,13 +3836,14 @@ static int _HandleAesCbc(whServerContext* ctx, uint16_t magic, int devId,
     WH_DEBUG_VERBOSE_HEXDUMP("[AesCbc] IV", iv, AES_BLOCK_SIZE);
     /* Freshen key and validate usage policy if key is not erased */
     if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFreshenKey(ctx, key_id, &cachedKey, &keyMeta);
-        if (ret == WH_ERROR_OK) {
-            /* Validate key usage policy */
-            ret = wh_Server_KeystoreEnforceKeyUsage(
-                keyMeta, enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                  : WH_NVM_FLAGS_USAGE_DECRYPT);
-        }
+        /* Copy the key + metadata into private buffers, enforcing the usage
+         * policy against the same locked snapshot that is read. The crypto
+         * below then runs entirely on the private copy. */
+        uint32_t cachedKeyLen = sizeof(cachedKey);
+        ret                   = wh_Server_KeystoreReadKeyEnforce(
+            ctx, key_id,
+            enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT : WH_NVM_FLAGS_USAGE_DECRYPT,
+            keyMeta, cachedKey, &cachedKeyLen);
         if (ret == WH_ERROR_OK) {
             /* override the incoming values with cached key */
             key     = cachedKey;
@@ -3146,6 +3898,7 @@ static int _HandleAesCbc(whServerContext* ctx, uint16_t magic, int devId,
         ret = wh_MessageCrypto_TranslateAesCbcResponse(
             magic, &res, (whMessageCrypto_AesCbcResponse*)cryptoDataOut);
     }
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 
@@ -3165,8 +3918,8 @@ static int _HandleAesCbcDma(whServerContext* ctx, uint16_t magic, int devId,
     word32 outSz   = 0;
 
     whKeyId        keyId;
-    uint8_t*       cachedKey = NULL;
-    whNvmMetadata* keyMeta   = NULL;
+    uint8_t        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata  keyMeta[1];
 
     (void)seq;
 
@@ -3184,8 +3937,8 @@ static int _HandleAesCbcDma(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t enc         = req.enc;
     uint32_t keyLen      = req.keySz;
     uint32_t len         = req.input.sz;
-    uint64_t needed_size = sizeof(whMessageCrypto_AesCbcDmaRequest) + keyLen +
-                           AES_IV_SIZE;
+    uint64_t needed_size = (uint64_t)sizeof(whMessageCrypto_AesCbcDmaRequest) +
+                           (uint64_t)keyLen + (uint64_t)AES_IV_SIZE;
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -3214,14 +3967,15 @@ static int _HandleAesCbcDma(whServerContext* ctx, uint16_t magic, int devId,
 
         /* Freshen key and validate usage policy if key is not erased */
         if (!WH_KEYID_ISERASED(keyId)) {
-            ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cachedKey,
-                                               &keyMeta);
-            if (ret == WH_ERROR_OK) {
-                /* Validate key usage policy */
-                ret = wh_Server_KeystoreEnforceKeyUsage(
-                    keyMeta, enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                    : WH_NVM_FLAGS_USAGE_DECRYPT);
-            }
+            /* Copy the key + metadata into private buffers, enforcing the
+             * usage policy against the same locked snapshot that is read. The
+             * crypto below then runs entirely on the private copy. */
+            uint32_t cachedKeyLen = sizeof(cachedKey);
+            ret                   = wh_Server_KeystoreReadKeyEnforce(
+                ctx, keyId,
+                enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
+                                           : WH_NVM_FLAGS_USAGE_DECRYPT,
+                keyMeta, cachedKey, &cachedKeyLen);
             if (ret == WH_ERROR_OK) {
                 key    = cachedKey;
                 keyLen = keyMeta->len;
@@ -3320,6 +4074,7 @@ static int _HandleAesCbcDma(whServerContext* ctx, uint16_t magic, int devId,
         magic, &res, (whMessageCrypto_AesCbcDmaResponse*)cryptoDataOut);
     *outSize  = sizeof(whMessageCrypto_AesCbcDmaResponse) + AES_IV_SIZE;
 
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 #endif /* WOLFHSM_CFG_DMA */
@@ -3332,8 +4087,8 @@ static int _HandleAesGcm(whServerContext* ctx, uint16_t magic, int devId,
 {
     int            ret       = WH_ERROR_OK;
     Aes            aes[1]    = {0};
-    uint8_t*       cachedKey = NULL;
-    whNvmMetadata* keyMeta   = NULL;
+    uint8_t        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata  keyMeta[1];
 
     /* Validate minimum size */
     if (inSize < sizeof(whMessageCrypto_AesGcmRequest)) {
@@ -3356,9 +4111,10 @@ static int _HandleAesGcm(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t tag_len     = req.authTagSz;
     whKeyId  key_id      = wh_KeyId_TranslateFromClient(
              WH_KEYTYPE_CRYPTO, ctx->comm->client_id, req.keyId);
-    uint64_t needed_size = sizeof(whMessageCrypto_AesGcmRequest) + len +
-                           key_len + iv_len + authin_len +
-                           ((enc == 0) ? tag_len : 0);
+    uint64_t needed_size = (uint64_t)sizeof(whMessageCrypto_AesGcmRequest) +
+                           (uint64_t)len + (uint64_t)key_len +
+                           (uint64_t)iv_len + (uint64_t)authin_len +
+                           (uint64_t)((enc == 0) ? tag_len : 0);
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -3382,6 +4138,12 @@ static int _HandleAesGcm(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t res_len = sizeof(whMessageCrypto_AesGcmResponse) + len +
                        ((enc == 0) ? 0 : tag_len);
 
+    /* Ensure the response output and tag fit within the comm data buffer */
+    if (res_len > (WOLFHSM_CFG_COMM_DATA_LEN -
+                   sizeof(whMessageCrypto_GenericResponseHeader))) {
+        return WH_ERROR_BADARGS;
+    }
+
     WH_DEBUG_SERVER_VERBOSE("AESGCM: enc:%d keylen:%d ivsz:%d insz:%d authinsz:%d "
             "authtagsz:%d reqsz:%u ressz:%u\n",
             enc, key_len, iv_len, len, authin_len, tag_len, (uint32_t)needed_size,
@@ -3394,14 +4156,16 @@ static int _HandleAesGcm(whServerContext* ctx, uint16_t magic, int devId,
 
     /* Freshen key and validate usage policy if key is not erased */
     if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFreshenKey(ctx, key_id, &cachedKey, &keyMeta);
-        WH_DEBUG_SERVER_VERBOSE("AesGcm FreshenKey key_id:%u ret:%d\n", key_id, ret);
-        if (ret == WH_ERROR_OK) {
-            /* Validate key usage policy */
-            ret = wh_Server_KeystoreEnforceKeyUsage(
-                keyMeta, enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                  : WH_NVM_FLAGS_USAGE_DECRYPT);
-        }
+        /* Copy the key + metadata into private buffers, enforcing the usage
+         * policy against the same locked snapshot that is read. The crypto
+         * below then runs entirely on the private copy. */
+        uint32_t cachedKeyLen = sizeof(cachedKey);
+        ret                   = wh_Server_KeystoreReadKeyEnforce(
+            ctx, key_id,
+            enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT : WH_NVM_FLAGS_USAGE_DECRYPT,
+            keyMeta, cachedKey, &cachedKeyLen);
+        WH_DEBUG_SERVER_VERBOSE("AesGcm ReadKey key_id:%u ret:%d\n", key_id,
+                                ret);
         if (ret == WH_ERROR_OK) {
             /* override the incoming values with cached key */
             key     = cachedKey;
@@ -3470,6 +4234,7 @@ static int _HandleAesGcm(whServerContext* ctx, uint16_t magic, int devId,
         ret = wh_MessageCrypto_TranslateAesGcmResponse(
             magic, &res, (whMessageCrypto_AesGcmResponse*)cryptoDataOut);
     }
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 
@@ -3490,8 +4255,8 @@ static int _HandleAesGcmDma(whServerContext* ctx, uint16_t magic, int devId,
     word32 outSz       = 0;
 
     whKeyId        keyId;
-    uint8_t*       cachedKey = NULL;
-    whNvmMetadata* keyMeta   = NULL;
+    uint8_t        cachedKey[AES_256_KEY_SIZE];
+    whNvmMetadata  keyMeta[1];
 
     (void)seq;
 
@@ -3511,8 +4276,9 @@ static int _HandleAesGcmDma(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t len         = req.input.sz;
     uint32_t ivLen       = req.ivSz;
     uint32_t tagLen      = req.authTagSz;
-    uint64_t needed_size = sizeof(whMessageCrypto_AesGcmDmaRequest) + keyLen +
-                           ivLen + (enc != 0 ? 0 : tagLen);
+    uint64_t needed_size = (uint64_t)sizeof(whMessageCrypto_AesGcmDmaRequest) +
+                           (uint64_t)keyLen + (uint64_t)ivLen +
+                           (uint64_t)(enc != 0 ? 0 : tagLen);
     if (needed_size != inSize) {
         return WH_ERROR_BADARGS;
     }
@@ -3542,14 +4308,15 @@ static int _HandleAesGcmDma(whServerContext* ctx, uint16_t magic, int devId,
 
         /* Freshen key and validate usage policy if key is not erased */
         if (!WH_KEYID_ISERASED(keyId)) {
-            ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cachedKey,
-                                               &keyMeta);
-            if (ret == WH_ERROR_OK) {
-                /* Validate key usage policy */
-                ret = wh_Server_KeystoreEnforceKeyUsage(
-                    keyMeta, enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
-                                    : WH_NVM_FLAGS_USAGE_DECRYPT);
-            }
+            /* Copy the key + metadata into private buffers, enforcing the
+             * usage policy against the same locked snapshot that is read. The
+             * crypto below then runs entirely on the private copy. */
+            uint32_t cachedKeyLen = sizeof(cachedKey);
+            ret                   = wh_Server_KeystoreReadKeyEnforce(
+                ctx, keyId,
+                enc != 0 ? WH_NVM_FLAGS_USAGE_ENCRYPT
+                                           : WH_NVM_FLAGS_USAGE_DECRYPT,
+                keyMeta, cachedKey, &cachedKeyLen);
             if (ret == WH_ERROR_OK) {
                 key    = cachedKey;
                 keyLen = keyMeta->len;
@@ -3665,6 +4432,7 @@ static int _HandleAesGcmDma(whServerContext* ctx, uint16_t magic, int devId,
         magic, &res, (whMessageCrypto_AesGcmDmaResponse*)cryptoDataOut);
     *outSize = sizeof(whMessageCrypto_AesGcmDmaResponse) + res.authTagSz;
 
+    wc_ForceZero(cachedKey, sizeof(cachedKey));
     return ret;
 }
 #endif /* WOLFHSM_CFG_DMA */
@@ -3691,17 +4459,17 @@ static int _CmacResolveKey(whServerContext* ctx, const uint8_t* requestKey,
         whKeyId keyId = wh_KeyId_TranslateFromClient(
             WH_KEYTYPE_CRYPTO, ctx->comm->client_id, clientKeyId);
 
-        /* Validate key usage policy - CMAC accepts sign or verify */
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, keyId,
-                                                    WH_NVM_FLAGS_USAGE_SIGN);
+        /* Copy the key into the caller's private buffer, enforcing the usage
+         * policy against the same locked snapshot that is read. CMAC accepts
+         * sign or verify usage, so retry with verify on a usage failure; each
+         * attempt is an atomic policy-check + read. */
+        uint32_t reqKeyLen = *outKeyLen;
+        ret                = wh_Server_KeystoreReadKeyEnforce(
+            ctx, keyId, WH_NVM_FLAGS_USAGE_SIGN, NULL, outKey, outKeyLen);
         if (ret == WH_ERROR_USAGE) {
-            ret = wh_Server_KeystoreFindEnforceKeyUsage(
-                ctx, keyId, WH_NVM_FLAGS_USAGE_VERIFY);
-        }
-
-        if (ret == WH_ERROR_OK) {
-            ret =
-                wh_Server_KeystoreReadKey(ctx, keyId, NULL, outKey, outKeyLen);
+            *outKeyLen = reqKeyLen;
+            ret        = wh_Server_KeystoreReadKeyEnforce(
+                ctx, keyId, WH_NVM_FLAGS_USAGE_VERIFY, NULL, outKey, outKeyLen);
         }
 
         if (ret == WH_ERROR_OK) {
@@ -3836,6 +4604,7 @@ static int _HandleCmac(whServerContext* ctx, uint16_t magic, int devId,
             *outSize = sizeof(res) + res.outSz;
         }
     }
+    wc_ForceZero(tmpKey, sizeof(tmpKey));
     WH_DEBUG_SERVER_VERBOSE("cmac end ret:%d\n", ret);
     return ret;
 }
@@ -4243,6 +5012,140 @@ static int _HandleSha512(whServerContext* ctx, uint16_t magic, int devId,
     return ret;
 }
 #endif /* WOLFSSL_SHA512 */
+
+#if defined(WOLFSSL_SHA3)
+/* SHA3 - one handler dispatches all four variants on hashType. */
+
+typedef struct {
+    uint32_t blockSize;
+    uint32_t digestSize;
+    int (*initFn)(wc_Sha3* sha, void* heap, int devId);
+    int (*updateFn)(wc_Sha3* sha, const byte* data, word32 len);
+    int (*finalFn)(wc_Sha3* sha, byte* hash);
+} _Sha3VariantOps;
+
+static int _Sha3LookupOps(int hashType, _Sha3VariantOps* ops)
+{
+    switch (hashType) {
+#ifndef WOLFSSL_NOSHA3_224
+        case WC_HASH_TYPE_SHA3_224:
+            ops->blockSize  = WC_SHA3_224_BLOCK_SIZE;
+            ops->digestSize = WC_SHA3_224_DIGEST_SIZE;
+            ops->initFn     = wc_InitSha3_224;
+            ops->updateFn   = wc_Sha3_224_Update;
+            ops->finalFn    = wc_Sha3_224_Final;
+            return 0;
+#endif
+#ifndef WOLFSSL_NOSHA3_256
+        case WC_HASH_TYPE_SHA3_256:
+            ops->blockSize  = WC_SHA3_256_BLOCK_SIZE;
+            ops->digestSize = WC_SHA3_256_DIGEST_SIZE;
+            ops->initFn     = wc_InitSha3_256;
+            ops->updateFn   = wc_Sha3_256_Update;
+            ops->finalFn    = wc_Sha3_256_Final;
+            return 0;
+#endif
+#ifndef WOLFSSL_NOSHA3_384
+        case WC_HASH_TYPE_SHA3_384:
+            ops->blockSize  = WC_SHA3_384_BLOCK_SIZE;
+            ops->digestSize = WC_SHA3_384_DIGEST_SIZE;
+            ops->initFn     = wc_InitSha3_384;
+            ops->updateFn   = wc_Sha3_384_Update;
+            ops->finalFn    = wc_Sha3_384_Final;
+            return 0;
+#endif
+#ifndef WOLFSSL_NOSHA3_512
+        case WC_HASH_TYPE_SHA3_512:
+            ops->blockSize  = WC_SHA3_512_BLOCK_SIZE;
+            ops->digestSize = WC_SHA3_512_DIGEST_SIZE;
+            ops->initFn     = wc_InitSha3_512;
+            ops->updateFn   = wc_Sha3_512_Update;
+            ops->finalFn    = wc_Sha3_512_Final;
+            return 0;
+#endif
+        default:
+            return WH_ERROR_BADARGS;
+    }
+}
+
+static int _HandleSha3(whServerContext* ctx, int hashType, uint16_t magic,
+                       int devId, const void* cryptoDataIn, uint16_t inSize,
+                       void* cryptoDataOut, uint16_t* outSize)
+{
+    int                          ret = 0;
+    wc_Sha3                      sha3[1];
+    whMessageCrypto_Sha3Request  req;
+    whMessageCrypto_Sha3Response res = {0};
+    const uint8_t*               inData;
+    _Sha3VariantOps              ops;
+
+    (void)ctx;
+
+    ret = _Sha3LookupOps(hashType, &ops);
+    if (ret != 0) {
+        return ret;
+    }
+
+    if (inSize < sizeof(whMessageCrypto_Sha3Request)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateSha3Request(magic, cryptoDataIn, &req);
+    if (ret != 0) {
+        return ret;
+    }
+
+    if ((uint32_t)req.inSz >
+        (uint32_t)(inSize - sizeof(whMessageCrypto_Sha3Request))) {
+        return WH_ERROR_BADARGS;
+    }
+    if (!req.isLastBlock && (req.inSz % ops.blockSize) != 0) {
+        return WH_ERROR_BADARGS;
+    }
+    if (req.isLastBlock && req.inSz >= ops.blockSize) {
+        return WH_ERROR_BADARGS;
+    }
+
+    inData = (const uint8_t*)cryptoDataIn + sizeof(whMessageCrypto_Sha3Request);
+
+    ret = ops.initFn(sha3, NULL, devId);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Restore Keccak state from client. initFn already zeroed t[] and i. */
+    memcpy(sha3->s, req.resumeState.s, sizeof(sha3->s));
+
+    if (req.inSz > 0) {
+        ret = ops.updateFn(sha3, inData, req.inSz);
+    }
+    if (ret == 0) {
+        if (req.isLastBlock) {
+            ret = ops.finalFn(sha3, res.hash);
+        }
+        else {
+            /* Post-condition: whole-block input must leave i == 0. */
+            if (sha3->i != 0) {
+                ret = WH_ERROR_ABORTED;
+            }
+            else {
+                memcpy(res.resumeState.s, sha3->s, sizeof(res.resumeState.s));
+            }
+        }
+    }
+
+    if (ret == 0) {
+        ret =
+            wh_MessageCrypto_TranslateSha3Response(magic, &res, cryptoDataOut);
+        if (ret == 0) {
+            *outSize = sizeof(res);
+        }
+    }
+
+    return ret;
+}
+#endif /* WOLFSSL_SHA3 */
+
 #ifdef WOLFSSL_HAVE_MLDSA
 
 #ifndef WOLFSSL_MLDSA_NO_MAKE_KEY
@@ -4284,18 +5187,21 @@ static int _HandleMlDsaKeyGen(whServerContext* ctx, uint16_t magic, int devId,
 #ifdef WOLFSSL_MLDSA_NO_MAKE_KEY
     (void)ctx;
     (void)magic;
+    (void)devId;
     (void)cryptoDataIn;
     (void)inSize;
     (void)cryptoDataOut;
     (void)outSize;
     return WH_ERROR_NOHANDLER;
 #else
-    (void)inSize;
-
     int                                 ret = WH_ERROR_OK;
     wc_MlDsaKey                         key[1];
     whMessageCrypto_MlDsaKeyGenRequest  req;
     whMessageCrypto_MlDsaKeyGenResponse res;
+
+    if (inSize < sizeof(whMessageCrypto_MlDsaKeyGenRequest)) {
+        return WH_ERROR_BADARGS;
+    }
 
     /* Translate the request */
     ret = wh_MessageCrypto_TranslateMlDsaKeyGenRequest(
@@ -4349,24 +5255,47 @@ static int _HandleMlDsaKeyGen(whServerContext* ctx, uint16_t magic, int devId,
                         /* Must import the key into the cache and return keyid
                          */
                         res_size = 0;
-                        if (WH_KEYID_ISERASED(key_id)) {
-                            /* Generate a new id */
-                            ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
-                            WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n",
-                                   key_id, ret);
-                            if (ret != WH_ERROR_OK) {
-                                /* Early return on unique ID generation failure
-                                 */
-                                wc_MlDsaKey_Free(key);
-                                return ret;
+                        /* Hold the NVM lock so id allocation and cache import
+                         * are atomic with respect to other server contexts
+                         * under THREADSAFE. */
+                        ret = WH_SERVER_NVM_LOCK(ctx);
+                        if (ret == WH_ERROR_OK) {
+                            if (WH_KEYID_ISERASED(key_id)) {
+                                /* Generate a new id */
+                                ret =
+                                    wh_Server_KeystoreGetUniqueId(ctx, &key_id);
+                                WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n",
+                                                key_id, ret);
                             }
-                        }
-                        if (ret == 0) {
-                            ret = wh_Server_MlDsaKeyCacheImport(
-                                ctx, key, key_id, flags, label_size, label);
-                        }
+                            if (ret == WH_ERROR_OK) {
+                                ret = wh_Server_MlDsaKeyCacheImport(
+                                    ctx, key, key_id, flags, label_size, label);
+                            }
+                            (void)WH_SERVER_NVM_UNLOCK(ctx);
+                        } /* WH_SERVER_NVM_LOCK() */
                         WH_DEBUG_SERVER("CacheImport: keyId:%u, ret:%d\n",
                                key_id, ret);
+#ifdef WOLFSSL_MLDSA_PUBLIC_KEY
+                        if (ret == 0) {
+                            /* Best-effort public key export: when the
+                             * serialized public key fits in the response body,
+                             * return it so the client can skip a separate
+                             * ExportPublicKey call. When it does not fit (small
+                             * comm buffer or a large key), leave the body empty
+                             * and keep the cached key. Plain MakeCacheKey callers
+                             * ignore the body and see no regression;
+                             * MakeCacheKeyAndExportPublic callers detect the
+                             * empty body and evict the key themselves. */
+                            int pub_ret = wc_MlDsaKey_PublicKeyToDer(
+                                key, res_out, max_size, 1);
+                            if (pub_ret > 0) {
+                                res_size = (uint16_t)pub_ret;
+                            }
+                            else {
+                                res_size = 0;
+                            }
+                        }
+#endif /* WOLFSSL_MLDSA_PUBLIC_KEY */
                     }
                 }
             }
@@ -4394,18 +5323,21 @@ static int _HandleMlDsaSign(whServerContext* ctx, uint16_t magic, int devId,
 #ifdef WOLFSSL_MLDSA_NO_SIGN
     (void)ctx;
     (void)magic;
+    (void)devId;
     (void)cryptoDataIn;
     (void)inSize;
     (void)cryptoDataOut;
     (void)outSize;
     return WH_ERROR_NOHANDLER;
 #else
-    (void)inSize;
-
     int                                 ret;
     wc_MlDsaKey                         key[1];
     whMessageCrypto_MlDsaSignRequest    req;
     whMessageCrypto_MlDsaSignResponse   res;
+
+    if (inSize < sizeof(whMessageCrypto_MlDsaSignRequest)) {
+        return WH_ERROR_BADARGS;
+    }
 
     /* Translate the request */
     ret = wh_MessageCrypto_TranslateMlDsaSignRequest(
@@ -4424,20 +5356,7 @@ static int _HandleMlDsaSign(whServerContext* ctx, uint16_t magic, int devId,
     uint32_t options     = req.options;
     int      evict       = !!(options & WH_MESSAGE_CRYPTO_MLDSA_SIGN_OPTIONS_EVICT);
 
-    /* Validate key usage policy for signing */
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_SIGN);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
-    /* Validate input length against available data to prevent buffer overread
-     */
-    if (inSize < sizeof(whMessageCrypto_MlDsaSignRequest)) {
-        return WH_ERROR_BADARGS;
-    }
+    /* Validate the declared lengths against the remaining payload */
     word32 available_data = inSize - sizeof(whMessageCrypto_MlDsaSignRequest);
     if (in_len > available_data) {
         return WH_ERROR_BADARGS;
@@ -4460,8 +5379,10 @@ static int _HandleMlDsaSign(whServerContext* ctx, uint16_t magic, int devId,
     /* init private key */
     ret = wc_MlDsaKey_Init(key, NULL, devId);
     if (ret == 0) {
-        /* load the private key */
-        ret = wh_Server_MlDsaKeyCacheExport(ctx, key_id, key);
+        /* load the private key, enforcing the sign usage policy against the
+         * same locked snapshot that is exported */
+        ret = _MlDsaKeyCacheExportEnforce(ctx, key_id, WH_NVM_FLAGS_USAGE_SIGN,
+                                          key);
         if (ret == WH_ERROR_OK) {
             /* sign the input using appropriate FIPS 204 API */
             if (preHashType != WC_HASH_TYPE_NONE) {
@@ -4477,10 +5398,9 @@ static int _HandleMlDsaSign(whServerContext* ctx, uint16_t magic, int devId,
         }
         wc_MlDsaKey_Free(key);
     }
-cleanup:
     if (evict != 0) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     if (ret == 0) {
         res.sz   = res_len;
@@ -4501,6 +5421,7 @@ static int _HandleMlDsaVerify(whServerContext* ctx, uint16_t magic, int devId,
 #ifdef WOLFSSL_MLDSA_NO_VERIFY
     (void)ctx;
     (void)magic;
+    (void)devId;
     (void)cryptoDataIn;
     (void)inSize;
     (void)cryptoDataOut;
@@ -4511,6 +5432,10 @@ static int _HandleMlDsaVerify(whServerContext* ctx, uint16_t magic, int devId,
     wc_MlDsaKey                         key[1];
     whMessageCrypto_MlDsaVerifyRequest  req;
     whMessageCrypto_MlDsaVerifyResponse res;
+
+    if (inSize < sizeof(whMessageCrypto_MlDsaVerifyRequest)) {
+        return WH_ERROR_BADARGS;
+    }
 
     /* Translate the request */
     ret = wh_MessageCrypto_TranslateMlDsaVerifyRequest(
@@ -4531,19 +5456,7 @@ static int _HandleMlDsaVerify(whServerContext* ctx, uint16_t magic, int devId,
         (uint8_t*)(cryptoDataIn) + sizeof(whMessageCrypto_MlDsaVerifyRequest);
     int evict = !!(options & WH_MESSAGE_CRYPTO_MLDSA_VERIFY_OPTIONS_EVICT);
 
-    /* Validate key usage policy for verification */
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_VERIFY);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     /* Validate lengths against available payload (overflow-safe) */
-    if (inSize < sizeof(whMessageCrypto_MlDsaVerifyRequest)) {
-        return WH_ERROR_BADARGS;
-    }
     uint32_t available = inSize - sizeof(whMessageCrypto_MlDsaVerifyRequest);
     if ((sig_len > available) || (hash_len > available) ||
         (sig_len > (available - hash_len))) {
@@ -4565,8 +5478,10 @@ static int _HandleMlDsaVerify(whServerContext* ctx, uint16_t magic, int devId,
     /* init public key */
     ret = wc_MlDsaKey_Init(key, NULL, devId);
     if (ret == 0) {
-        /* load the public key */
-        ret = wh_Server_MlDsaKeyCacheExport(ctx, key_id, key);
+        /* load the public key, enforcing the verify usage policy against the
+         * same locked snapshot that is exported */
+        ret = _MlDsaKeyCacheExportEnforce(ctx, key_id,
+                                          WH_NVM_FLAGS_USAGE_VERIFY, key);
         if (ret == WH_ERROR_OK) {
             /* verify the signature using appropriate FIPS 204 API */
             if (preHashType != WC_HASH_TYPE_NONE) {
@@ -4582,10 +5497,9 @@ static int _HandleMlDsaVerify(whServerContext* ctx, uint16_t magic, int devId,
         }
         wc_MlDsaKey_Free(key);
     }
-cleanup:
     if (evict != 0) {
         /* User requested to evict from cache, even if the call failed */
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     if (ret == 0) {
         res.res  = result;
@@ -4698,13 +5612,39 @@ static int _HandleMlKemKeyGen(whServerContext* ctx, uint16_t magic, int devId,
                                                   &res_size);
             }
             else {
-                if (WH_KEYID_ISERASED(key_id)) {
-                    ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
-                }
+                /* Hold the NVM lock so id allocation and cache import are
+                 * atomic with respect to other server contexts under
+                 * THREADSAFE. */
+                ret = WH_SERVER_NVM_LOCK(ctx);
                 if (ret == WH_ERROR_OK) {
-                    ret = wh_Server_MlKemKeyCacheImport(ctx, key, key_id,
-                                                        req.flags, label_size,
-                                                        req.label);
+                    if (WH_KEYID_ISERASED(key_id)) {
+                        ret = wh_Server_KeystoreGetUniqueId(ctx, &key_id);
+                    }
+                    if (ret == WH_ERROR_OK) {
+                        ret = wh_Server_MlKemKeyCacheImport(
+                            ctx, key, key_id, req.flags, label_size, req.label);
+                    }
+                    (void)WH_SERVER_NVM_UNLOCK(ctx);
+                } /* WH_SERVER_NVM_LOCK() */
+                if (ret == WH_ERROR_OK) {
+                    /* Best-effort public key export: when the serialized
+                     * public key fits in the response body, return it so the
+                     * client can skip a separate ExportPublicKey call. When it
+                     * does not fit (small comm buffer or a large key), leave the
+                     * body empty and keep the cached key. Plain MakeCacheKey
+                     * callers ignore the body and see no regression;
+                     * MakeCacheKeyAndExportPublic callers detect the empty body
+                     * and evict the key themselves. */
+                    word32 pubSize = 0;
+                    if ((wc_MlKemKey_PublicKeySize(key, &pubSize) == 0) &&
+                        ((uint32_t)pubSize <= (uint32_t)max_size) &&
+                        (wc_MlKemKey_EncodePublicKey(key, res_out, pubSize) ==
+                         0)) {
+                        res_size = (uint16_t)pubSize;
+                    }
+                    else {
+                        res_size = 0;
+                    }
                 }
             }
         }
@@ -4764,14 +5704,6 @@ static int _HandleMlKemEncaps(whServerContext* ctx, uint16_t magic, int devId,
                                           req.keyId);
     evict = !!(req.options & WH_MESSAGE_CRYPTO_MLKEM_ENCAPS_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     if (!_IsMlKemLevelSupported((int)req.level)) {
         ret = WH_ERROR_BADARGS;
         goto cleanup;
@@ -4780,7 +5712,10 @@ static int _HandleMlKemEncaps(whServerContext* ctx, uint16_t magic, int devId,
     ret = wc_MlKemKey_Init(key, (int)req.level, NULL, devId);
     if (ret == 0) {
         keyInited = 1;
-        ret = wh_Server_MlKemKeyCacheExport(ctx, key_id, key);
+        /* Export the key, enforcing the derive usage policy against the same
+         * locked snapshot that is exported */
+        ret = _MlKemKeyCacheExportEnforce(ctx, key_id,
+                                          WH_NVM_FLAGS_USAGE_DERIVE, key);
     }
 
     /* Verify the exported key matches the requested level */
@@ -4825,7 +5760,7 @@ static int _HandleMlKemEncaps(whServerContext* ctx, uint16_t magic, int devId,
     }
 cleanup:
     if (evict != 0) {
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     return ret;
 #endif /* WOLFSSL_MLKEM_NO_ENCAPSULATE */
@@ -4872,14 +5807,6 @@ static int _HandleMlKemDecaps(whServerContext* ctx, uint16_t magic, int devId,
                                           req.keyId);
     evict = !!(req.options & WH_MESSAGE_CRYPTO_MLKEM_DECAPS_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     if (!_IsMlKemLevelSupported((int)req.level)) {
         ret = WH_ERROR_BADARGS;
         goto cleanup;
@@ -4895,7 +5822,10 @@ static int _HandleMlKemDecaps(whServerContext* ctx, uint16_t magic, int devId,
     ret = wc_MlKemKey_Init(key, (int)req.level, NULL, devId);
     if (ret == WH_ERROR_OK) {
         keyInited = 1;
-        ret = wh_Server_MlKemKeyCacheExport(ctx, key_id, key);
+        /* Export the key, enforcing the derive usage policy against the same
+         * locked snapshot that is exported */
+        ret = _MlKemKeyCacheExportEnforce(ctx, key_id,
+                                          WH_NVM_FLAGS_USAGE_DERIVE, key);
     }
 
     /* Verify the exported key matches the requested level */
@@ -4935,7 +5865,7 @@ static int _HandleMlKemDecaps(whServerContext* ctx, uint16_t magic, int devId,
     }
 cleanup:
     if (evict != 0) {
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
     return ret;
 #endif /* WOLFSSL_MLKEM_NO_DECAPSULATE */
@@ -5068,11 +5998,17 @@ int wh_Server_HandleCryptoRequest(whServerContext* ctx, uint16_t magic,
     wh_MessageCrypto_TranslateGenericRequestHeader(
         magic, (whMessageCrypto_GenericRequestHeader*)req_packet, &rqstHeader);
 
+#if defined(WOLFHSM_CFG_CRYPTO_AFFINITY)
     /* Compute devId from the per-message affinity field */
     devId = (rqstHeader.affinity == WH_CRYPTO_AFFINITY_HW &&
              ctx->devId != INVALID_DEVID)
                 ? ctx->devId
                 : INVALID_DEVID;
+#else
+    /* Crypto affinity disabled: always use the server's configured devId and
+     * ignore the request header affinity field. */
+    devId = ctx->devId;
+#endif /* WOLFHSM_CFG_CRYPTO_AFFINITY */
 
     WH_DEBUG_SERVER_VERBOSE("HandleCryptoRequest. Action:%u\n", action);
     WH_DEBUG_VERBOSE_HEXDUMP("[server] Crypto Request:\n", (const uint8_t*)req_packet,
@@ -5166,6 +6102,18 @@ int wh_Server_HandleCryptoRequest(whServerContext* ctx, uint16_t magic,
                                            &cryptoOutSize);
                     break;
 #endif /* HAVE_ECC_VERIFY */
+                case WC_PK_TYPE_EC_MAKE_PUB:
+                    ret = _HandleEccMakePub(ctx, magic, devId, cryptoDataIn,
+                                            cryptoInSize, cryptoDataOut,
+                                            &cryptoOutSize);
+                    break;
+#ifdef HAVE_ECC_CHECK_KEY
+                case WC_PK_TYPE_EC_CHECK_PUB_KEY:
+                    ret = _HandleEccCheckPubKey(ctx, magic, devId, cryptoDataIn,
+                                                cryptoInSize, cryptoDataOut,
+                                                &cryptoOutSize);
+                    break;
+#endif /* HAVE_ECC_CHECK_KEY */
 #endif /* HAVE_ECC */
 
 #ifdef HAVE_CURVE25519
@@ -5317,6 +6265,21 @@ int wh_Server_HandleCryptoRequest(whServerContext* ctx, uint16_t magic,
                     }
                     break;
 #endif /* WOLFSSL_SHA512 */
+#if defined(WOLFSSL_SHA3)
+                case WC_HASH_TYPE_SHA3_224:
+                case WC_HASH_TYPE_SHA3_256:
+                case WC_HASH_TYPE_SHA3_384:
+                case WC_HASH_TYPE_SHA3_512:
+                    WH_DEBUG_SERVER("SHA3 req recv. type:%u\n",
+                                    rqstHeader.algoType);
+                    ret = _HandleSha3(ctx, rqstHeader.algoType, magic, devId,
+                                      cryptoDataIn, cryptoInSize, cryptoDataOut,
+                                      &cryptoOutSize);
+                    if (ret != 0) {
+                        WH_DEBUG_SERVER("SHA3 ret = %d\n", ret);
+                    }
+                    break;
+#endif /* WOLFSSL_SHA3 */
                 default:
                     ret = NOT_COMPILED_IN;
                     break;
@@ -5744,7 +6707,6 @@ static int _HandleSha512Dma(whServerContext* ctx, uint16_t magic, int devId,
     sha512->loLen    = req.resumeState.loLen;
     sha512->hiLen    = req.resumeState.hiLen;
     sha512->buffLen  = 0;
-    sha512->hashType = hashType;
 
     if (ret == 0 && req.inSz > 0) {
         ret = wc_Sha512Update(sha512, inlineData, req.inSz);
@@ -5808,6 +6770,104 @@ static int _HandleSha512Dma(whServerContext* ctx, uint16_t magic, int devId,
 }
 #endif /* WOLFSSL_SHA512 */
 
+#if defined(WOLFSSL_SHA3)
+static int _HandleSha3Dma(whServerContext* ctx, int hashType, uint16_t magic,
+                          int devId, uint16_t seq, const void* cryptoDataIn,
+                          uint16_t inSize, void* cryptoDataOut,
+                          uint16_t* outSize)
+{
+    (void)seq;
+    int                             ret   = 0;
+    int                             preOk = 0;
+    whMessageCrypto_Sha3DmaRequest  req;
+    whMessageCrypto_Sha3DmaResponse res = {0};
+    wc_Sha3                         sha3[1];
+    const uint8_t*                  inlineData;
+    void*                           inAddr = NULL;
+    _Sha3VariantOps                 ops;
+
+    ret = _Sha3LookupOps(hashType, &ops);
+    if (ret != 0) {
+        return ret;
+    }
+
+    if (inSize < sizeof(whMessageCrypto_Sha3DmaRequest)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateSha3DmaRequest(
+        magic, (const whMessageCrypto_Sha3DmaRequest*)cryptoDataIn, &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    if ((uint32_t)req.inSz >
+        (uint32_t)(inSize - sizeof(whMessageCrypto_Sha3DmaRequest))) {
+        return WH_ERROR_BADARGS;
+    }
+    if (!req.isLastBlock && ((req.inSz % ops.blockSize) != 0 ||
+                             (req.input.sz % ops.blockSize) != 0)) {
+        return WH_ERROR_BADARGS;
+    }
+    if (req.isLastBlock && (req.inSz >= ops.blockSize || req.input.sz != 0)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    inlineData =
+        (const uint8_t*)cryptoDataIn + sizeof(whMessageCrypto_Sha3DmaRequest);
+
+    ret = ops.initFn(sha3, NULL, devId);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Restore Keccak state from client. initFn already zeroed t[] and i. */
+    memcpy(sha3->s, req.resumeState.s, sizeof(sha3->s));
+
+    if (ret == 0 && req.inSz > 0) {
+        ret = ops.updateFn(sha3, inlineData, req.inSz);
+    }
+
+    if (ret == 0 && req.input.sz > 0) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, req.input.addr, &inAddr, req.input.sz,
+            WH_DMA_OPER_CLIENT_READ_PRE, (whServerDmaFlags){0});
+        if (ret == WH_ERROR_OK) {
+            preOk = 1;
+            ret   = ops.updateFn(sha3, inAddr, req.input.sz);
+        }
+        if (ret == WH_ERROR_ACCESS) {
+            res.dmaAddrStatus.badAddr = req.input;
+        }
+    }
+    if (preOk) {
+        (void)wh_Server_DmaProcessClientAddress(
+            ctx, req.input.addr, &inAddr, req.input.sz,
+            WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
+    }
+
+    if (ret == 0) {
+        if (req.isLastBlock) {
+            ret = ops.finalFn(sha3, res.hash);
+        }
+        else {
+            if (sha3->i != 0) {
+                ret = WH_ERROR_ABORTED;
+            }
+            else {
+                memcpy(res.resumeState.s, sha3->s, sizeof(res.resumeState.s));
+            }
+        }
+    }
+
+    (void)wh_MessageCrypto_TranslateSha3DmaResponse(
+        magic, &res, (whMessageCrypto_Sha3DmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+
+    return ret;
+}
+#endif /* WOLFSSL_SHA3 */
+
 #if defined(WOLFSSL_HAVE_MLDSA)
 
 static int _HandleMlDsaKeyGenDma(whServerContext* ctx, uint16_t magic,
@@ -5818,6 +6878,7 @@ static int _HandleMlDsaKeyGenDma(whServerContext* ctx, uint16_t magic,
 #ifdef WOLFSSL_MLDSA_NO_MAKE_KEY
     (void)ctx;
     (void)magic;
+    (void)devId;
     (void)cryptoDataIn;
     (void)inSize;
     (void)cryptoDataOut;
@@ -5831,6 +6892,8 @@ static int _HandleMlDsaKeyGenDma(whServerContext* ctx, uint16_t magic,
 
     whMessageCrypto_MlDsaKeyGenDmaRequest req;
     whMessageCrypto_MlDsaKeyGenDmaResponse res;
+
+    memset(&res, 0, sizeof(res));
 
     if (inSize < sizeof(whMessageCrypto_MlDsaKeyGenDmaRequest)) {
         return WH_ERROR_BADARGS;
@@ -5887,29 +6950,67 @@ static int _HandleMlDsaKeyGenDma(whServerContext* ctx, uint16_t magic,
                         whKeyId keyId = wh_KeyId_TranslateFromClient(
                             WH_KEYTYPE_CRYPTO, ctx->comm->client_id, req.keyId);
 
-                        if (WH_KEYID_ISERASED(keyId)) {
-                            /* Generate a new id */
-                            ret = wh_Server_KeystoreGetUniqueId(ctx, &keyId);
-                            WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n",
-                                   keyId, ret);
-                            if (ret != WH_ERROR_OK) {
-                                /* Early return on unique ID generation failure
-                                 */
-                                wc_MlDsaKey_Free(key);
-                                return ret;
+                        /* Hold the NVM lock so id allocation and cache import
+                         * are atomic with respect to other server contexts
+                         * under THREADSAFE. */
+                        ret = WH_SERVER_NVM_LOCK(ctx);
+                        if (ret == WH_ERROR_OK) {
+                            if (WH_KEYID_ISERASED(keyId)) {
+                                /* Generate a new id */
+                                ret =
+                                    wh_Server_KeystoreGetUniqueId(ctx, &keyId);
+                                WH_DEBUG_SERVER("UniqueId: keyId:%u, ret:%d\n",
+                                                keyId, ret);
+                            }
+                            if (ret == WH_ERROR_OK) {
+                                ret = wh_Server_MlDsaKeyCacheImport(
+                                    ctx, key, keyId, req.flags, req.labelSize,
+                                    req.label);
+                                WH_DEBUG_SERVER(
+                                    "CacheImport: keyId:%u, ret:%d\n", keyId,
+                                    ret);
+                            }
+                            (void)WH_SERVER_NVM_UNLOCK(ctx);
+                        } /* WH_SERVER_NVM_LOCK() */
+#ifdef WOLFSSL_MLDSA_PUBLIC_KEY
+                        /* Stream the public key back through the client's DMA
+                         * buffer so it gets the pubkey without a separate
+                         * ExportPublicKey call. A freshly generated key must
+                         * serialize, so treat a failure as fatal: evict the
+                         * just-committed key and propagate the error rather
+                         * than returning a keyId with no public key. */
+                        if (ret == 0) {
+                            int rc = wh_Server_DmaProcessClientAddress(
+                                ctx, req.key.addr, &clientOutAddr, req.key.sz,
+                                WH_DMA_OPER_CLIENT_WRITE_PRE,
+                                (whServerDmaFlags){0});
+                            if (rc == 0) {
+                                int pub_ret = wc_MlDsaKey_PublicKeyToDer(
+                                    key, (byte*)clientOutAddr,
+                                    (word32)req.key.sz, 1);
+                                if (pub_ret > 0) {
+                                    keySize = (uint16_t)pub_ret;
+                                }
+                                else {
+                                    ret = (pub_ret < 0) ? pub_ret
+                                                        : WH_ERROR_ABORTED;
+                                }
+                                (void)wh_Server_DmaProcessClientAddress(
+                                    ctx, req.key.addr, &clientOutAddr, keySize,
+                                    WH_DMA_OPER_CLIENT_WRITE_POST,
+                                    (whServerDmaFlags){0});
+                            }
+                            else {
+                                ret = rc;
+                            }
+                            if (ret != 0) {
+                                _CryptoEvictKeyLocked(ctx, keyId);
                             }
                         }
-
+#endif /* WOLFSSL_MLDSA_PUBLIC_KEY */
                         if (ret == 0) {
-                            ret = wh_Server_MlDsaKeyCacheImport(
-                                ctx, key, keyId, req.flags, req.labelSize,
-                                req.label);
-                            WH_DEBUG_SERVER("CacheImport: keyId:%u, ret:%d\n",
-                                keyId, ret);
-                            if (ret == 0) {
-                                res.keyId   = wh_KeyId_TranslateToClient(keyId);
-                                res.keySize = keySize;
-                            }
+                            res.keyId   = wh_KeyId_TranslateToClient(keyId);
+                            res.keySize = keySize;
                         }
                     }
                 }
@@ -5939,6 +7040,7 @@ static int _HandleMlDsaSignDma(whServerContext* ctx, uint16_t magic, int devId,
 #ifdef WOLFSSL_MLDSA_NO_SIGN
     (void)ctx;
     (void)magic;
+    (void)devId;
     (void)cryptoDataIn;
     (void)inSize;
     (void)cryptoDataOut;
@@ -5995,7 +7097,11 @@ static int _HandleMlDsaSignDma(whServerContext* ctx, uint16_t magic, int devId,
     if (ret == 0) {
         /* Export key from cache */
         /* TODO: sanity check security level against key pulled from cache? */
-        ret = wh_Server_MlDsaKeyCacheExport(ctx, key_id, key);
+        /* Export the key, enforcing the sign usage policy against the same
+         * locked snapshot that is exported. The non-DMA sign handler enforces
+         * the same policy. */
+        ret = _MlDsaKeyCacheExportEnforce(ctx, key_id, WH_NVM_FLAGS_USAGE_SIGN,
+                                          key);
         if (ret == 0) {
             /* Process client message buffer address */
             ret = wh_Server_DmaProcessClientAddress(
@@ -6040,15 +7146,14 @@ static int _HandleMlDsaSignDma(whServerContext* ctx, uint16_t magic, int devId,
                         (whServerDmaFlags){0});
                 }
             }
-
-            /* Evict key if requested */
-            if (evict) {
-                /* User requested to evict from cache, even if the call failed
-                 */
-                (void)wh_Server_KeystoreEvictKey(ctx, key_id);
-            }
         }
         wc_MlDsaKey_Free(key);
+    }
+
+    /* Evict key if requested */
+    if (evict) {
+        /* User requested to evict from cache, even if the call failed */
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     if (ret == 0) {
@@ -6073,6 +7178,7 @@ static int _HandleMlDsaVerifyDma(whServerContext* ctx, uint16_t magic,
 #ifdef WOLFSSL_MLDSA_NO_VERIFY
     (void)ctx;
     (void)magic;
+    (void)devId;
     (void)cryptoDataIn;
     (void)inSize;
     (void)cryptoDataOut;
@@ -6129,8 +7235,11 @@ static int _HandleMlDsaVerifyDma(whServerContext* ctx, uint16_t magic,
         return ret;
     }
 
-    /* Export key from cache */
-    ret = wh_Server_MlDsaKeyCacheExport(ctx, key_id, key);
+    /* Export the key, enforcing the verify usage policy against the same
+     * locked snapshot that is exported. The non-DMA verify handler enforces
+     * the same policy. */
+    ret = _MlDsaKeyCacheExportEnforce(ctx, key_id, WH_NVM_FLAGS_USAGE_VERIFY,
+                                      key);
     if (ret == 0) {
         /* Process client signature buffer address */
         ret = wh_Server_DmaProcessClientAddress(
@@ -6172,12 +7281,12 @@ static int _HandleMlDsaVerifyDma(whServerContext* ctx, uint16_t magic,
                     (whServerDmaFlags){0});
             }
         }
+    }
 
-        /* Evict key if requested */
-        if (evict) {
-            /* User requested to evict from cache, even if the call failed */
-            (void)wh_Server_KeystoreEvictKey(ctx, key_id);
-        }
+    /* Evict key if requested */
+    if (evict) {
+        /* User requested to evict from cache, even if the call failed */
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     if (ret == 0) {
@@ -6329,17 +7438,60 @@ static int _HandleMlKemKeyGenDma(whServerContext* ctx, uint16_t magic,
                     whKeyId keyId = wh_KeyId_TranslateFromClient(
                         WH_KEYTYPE_CRYPTO, ctx->comm->client_id, req.keyId);
 
-                    if (WH_KEYID_ISERASED(keyId)) {
-                        ret = wh_Server_KeystoreGetUniqueId(ctx, &keyId);
+                    /* Hold the NVM lock so id allocation and cache import are
+                     * atomic with respect to other server contexts under
+                     * THREADSAFE. */
+                    ret = WH_SERVER_NVM_LOCK(ctx);
+                    if (ret == WH_ERROR_OK) {
+                        if (WH_KEYID_ISERASED(keyId)) {
+                            ret = wh_Server_KeystoreGetUniqueId(ctx, &keyId);
+                        }
+                        if (ret == WH_ERROR_OK) {
+                            ret = wh_Server_MlKemKeyCacheImport(
+                                ctx, key, keyId, req.flags, req.labelSize,
+                                req.label);
+                        }
+                        (void)WH_SERVER_NVM_UNLOCK(ctx);
+                    } /* WH_SERVER_NVM_LOCK() */
+                    /* Stream the public key back through the client's DMA
+                     * buffer so it gets the pubkey without a separate
+                     * ExportPublicKey call. A freshly generated key must
+                     * serialize, so treat a failure as fatal: evict the
+                     * just-committed key and propagate the error rather than
+                     * returning a keyId with no public key. */
+                    if (ret == WH_ERROR_OK) {
+                        word32 pubSize = 0;
+                        if ((wc_MlKemKey_PublicKeySize(key, &pubSize) != 0) ||
+                            ((uint64_t)pubSize > req.key.sz)) {
+                            ret = WH_ERROR_ABORTED;
+                        }
+                        else {
+                            ret = wh_Server_DmaProcessClientAddress(
+                                ctx, req.key.addr, &clientOutAddr, pubSize,
+                                WH_DMA_OPER_CLIENT_WRITE_PRE,
+                                (whServerDmaFlags){0});
+                            if (ret == WH_ERROR_OK) {
+                                if (wc_MlKemKey_EncodePublicKey(
+                                        key, (uint8_t*)clientOutAddr, pubSize) ==
+                                    0) {
+                                    keySize = (uint16_t)pubSize;
+                                }
+                                else {
+                                    ret = WH_ERROR_ABORTED;
+                                }
+                                (void)wh_Server_DmaProcessClientAddress(
+                                    ctx, req.key.addr, &clientOutAddr, keySize,
+                                    WH_DMA_OPER_CLIENT_WRITE_POST,
+                                    (whServerDmaFlags){0});
+                            }
+                        }
+                        if (ret != WH_ERROR_OK) {
+                            _CryptoEvictKeyLocked(ctx, keyId);
+                        }
                     }
                     if (ret == WH_ERROR_OK) {
-                        ret = wh_Server_MlKemKeyCacheImport(
-                            ctx, key, keyId, req.flags, req.labelSize,
-                            req.label);
-                        if (ret == WH_ERROR_OK) {
-                            res.keyId   = wh_KeyId_TranslateToClient(keyId);
-                            res.keySize = keySize;
-                        }
+                        res.keyId   = wh_KeyId_TranslateToClient(keyId);
+                        res.keySize = keySize;
                     }
                 }
             }
@@ -6402,14 +7554,6 @@ static int _HandleMlKemEncapsDma(whServerContext* ctx, uint16_t magic,
                                           ctx->comm->client_id, req.keyId);
     evict  = !!(req.options & WH_MESSAGE_CRYPTO_MLKEM_ENCAPS_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     if (!_IsMlKemLevelSupported((int)req.level)) {
         ret = WH_ERROR_BADARGS;
         goto cleanup;
@@ -6418,7 +7562,10 @@ static int _HandleMlKemEncapsDma(whServerContext* ctx, uint16_t magic,
     ret = wc_MlKemKey_Init(key, (int)req.level, NULL, devId);
     if (ret == WH_ERROR_OK) {
         keyInited = 1;
-        ret = wh_Server_MlKemKeyCacheExport(ctx, key_id, key);
+        /* Export the key, enforcing the derive usage policy against the same
+         * locked snapshot that is exported */
+        ret = _MlKemKeyCacheExportEnforce(ctx, key_id,
+                                          WH_NVM_FLAGS_USAGE_DERIVE, key);
     }
 
     /* Verify the exported key matches the requested level */
@@ -6486,7 +7633,7 @@ cleanup_key:
     }
 cleanup:
     if (evict != 0) {
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     (void)wh_MessageCrypto_TranslateMlKemEncapsDmaResponse(
@@ -6539,14 +7686,6 @@ static int _HandleMlKemDecapsDma(whServerContext* ctx, uint16_t magic,
                                           ctx->comm->client_id, req.keyId);
     evict  = !!(req.options & WH_MESSAGE_CRYPTO_MLKEM_DECAPS_OPTIONS_EVICT);
 
-    if (!WH_KEYID_ISERASED(key_id)) {
-        ret = wh_Server_KeystoreFindEnforceKeyUsage(ctx, key_id,
-                                                    WH_NVM_FLAGS_USAGE_DERIVE);
-        if (ret != WH_ERROR_OK) {
-            goto cleanup;
-        }
-    }
-
     if (!_IsMlKemLevelSupported((int)req.level)) {
         ret = WH_ERROR_BADARGS;
         goto cleanup;
@@ -6555,7 +7694,10 @@ static int _HandleMlKemDecapsDma(whServerContext* ctx, uint16_t magic,
     ret = wc_MlKemKey_Init(key, (int)req.level, NULL, devId);
     if (ret == WH_ERROR_OK) {
         keyInited = 1;
-        ret = wh_Server_MlKemKeyCacheExport(ctx, key_id, key);
+        /* Export the key, enforcing the derive usage policy against the same
+         * locked snapshot that is exported */
+        ret = _MlKemKeyCacheExportEnforce(ctx, key_id,
+                                          WH_NVM_FLAGS_USAGE_DERIVE, key);
     }
 
     /* Verify the exported key matches the requested level */
@@ -6614,7 +7756,7 @@ static int _HandleMlKemDecapsDma(whServerContext* ctx, uint16_t magic,
     }
 cleanup:
     if (evict != 0) {
-        (void)wh_Server_KeystoreEvictKey(ctx, key_id);
+        _CryptoEvictKeyLocked(ctx, key_id);
     }
 
     (void)wh_MessageCrypto_TranslateMlKemDecapsDmaResponse(
@@ -6664,6 +7806,1131 @@ static int _HandlePqcKemAlgorithmDma(whServerContext* ctx, uint16_t magic,
 }
 #endif /* WOLFSSL_HAVE_MLKEM */
 
+#if defined(WOLFSSL_HAVE_LMS) || defined(WOLFSSL_HAVE_XMSS)
+/* Decode the slot blob's header lengths into the context struct. Sign-path
+ * only, so it is gated out of verify-only builds. */
+#if (defined(WOLFSSL_HAVE_LMS) && !defined(WOLFSSL_LMS_VERIFY_ONLY)) ||      \
+    (defined(WOLFSSL_HAVE_XMSS) && !defined(WOLFSSL_XMSS_VERIFY_ONLY))
+static int _StatefulSigFromSlot(whServerStatefulSigCtx* b,
+                                   whServerContext*           server,
+                                   whKeyId                    keyId,
+                                   uint8_t* slotBuf, whNvmMetadata* meta,
+                                   uint16_t slotCapacity)
+{
+    whCryptoStatefulSigHeader hdr;
+
+    if ((b == NULL) || (server == NULL) || (slotBuf == NULL) || (meta == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    memcpy(&hdr, slotBuf, sizeof(hdr));
+
+    b->server       = server;
+    b->keyId        = keyId;
+    b->meta         = meta;
+    b->slotBuf      = slotBuf;
+    b->hdrSz        = WH_CRYPTO_STATEFUL_SIG_HEADER_SZ;
+    b->paramLen     = hdr.paramLen;
+    b->pubLen       = hdr.pubLen;
+    b->slotCapacity = slotCapacity;
+    return WH_ERROR_OK;
+}
+#endif /* stateful sign path enabled */
+
+/* Keygen persistence context for XMSS. wolfCrypt zeroizes key->sk right after
+ * the keygen write callback returns, so the callback is the only point where
+ * the private key is live. The callback copies the private key it is handed
+ * into the private-key region of the handler-owned cache buffer; the handler
+ * then fills in the public portion and commits to NVM. The cb can only return
+ * wolfCrypt's coarse pass/fail code, so status carries the WH_ERROR_* detail
+ * back to the handler. LMS does not use this: its private state survives
+ * MakeKey, so its handler serializes directly. */
+typedef struct whServerStatefulSigKeygenCtx {
+    uint8_t* slotBuf;       /* handler-owned cache slot buffer */
+    uint16_t slotCapacity;
+    uint16_t privOff;       /* offset of the private-key region in slotBuf */
+    uint16_t privLen;       /* out: private key length the cb received */
+    int      status;        /* WH_ERROR_* from the cb */
+} whServerStatefulSigKeygenCtx;
+#endif /* WOLFSSL_HAVE_LMS || WOLFSSL_HAVE_XMSS */
+
+#ifdef WOLFSSL_HAVE_LMS
+#ifndef WOLFSSL_LMS_VERIFY_ONLY
+/* Capture the private key from wc_LmsKey_MakeKey to mirror the XMSS path.
+ * For LMS, additional private state resides in key->priv_raw, so that is
+ * serialized after the call to wc_LmsKey_MakeKey. */
+static int _LmsKeygenWriteCb(const byte* priv, word32 privSz, void* context)
+{
+    whServerStatefulSigKeygenCtx* b =
+        (whServerStatefulSigKeygenCtx*)context;
+
+    if ((b == NULL) || (priv == NULL) || (b->slotBuf == NULL)) {
+        return WC_LMS_RC_BAD_ARG;
+    }
+
+    /* Copy the private key wolfCrypt handed us into the slot's priv region. */
+    if ((uint32_t)b->privOff + privSz > b->slotCapacity) {
+        b->status = WH_ERROR_BUFFER_SIZE;
+        return WC_LMS_RC_WRITE_FAIL;
+    }
+    memcpy(b->slotBuf + b->privOff, priv, privSz);
+    b->privLen = (uint16_t)privSz;
+    b->status  = WH_ERROR_OK;
+    return WC_LMS_RC_SAVED_TO_NV_MEMORY;
+}
+static int _LmsDummyReadCb(byte* priv, word32 privSz, void* context)
+{
+    (void)priv; (void)privSz; (void)context;
+    return WC_LMS_RC_READ_TO_MEMORY;
+}
+#endif /* !WOLFSSL_LMS_VERIFY_ONLY */
+
+static int _HandleLmsKeyGenDma(whServerContext* ctx, uint16_t magic, int devId,
+                               const void* cryptoDataIn, uint16_t inSize,
+                               void* cryptoDataOut, uint16_t* outSize)
+{
+#ifdef WOLFSSL_LMS_VERIFY_ONLY
+    (void)ctx; (void)magic; (void)devId; (void)cryptoDataIn; (void)inSize;
+    (void)cryptoDataOut; (void)outSize;
+    return WH_ERROR_NOHANDLER;
+#else
+    int                                              ret;
+    LmsKey                                           key[1];
+    void*                                            clientPubAddr = NULL;
+    word32                                           pubLen32 = 0;
+    whKeyId                                          keyId;
+    int                                              locked = 0;
+    uint8_t*                                         cacheBuf;
+    whNvmMetadata*                                   cacheMeta;
+    uint16_t   slotCapacity = WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE;
+    uint16_t   blobSize;
+    whServerStatefulSigKeygenCtx                     sigCtx;
+    whMessageCrypto_PqcStatefulSigKeyGenDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigKeyGenDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigKeyGenDmaRequest(
+        magic, (whMessageCrypto_PqcStatefulSigKeyGenDmaRequest*)cryptoDataIn,
+        &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    /* Reject EPHEMERAL keys since keygen itself is stateful */
+    if ((req.flags & WH_NVM_FLAGS_EPHEMERAL) != 0) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wc_LmsKey_Init(key, NULL, devId);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = wc_LmsKey_SetParameters(key, (int)req.lmsLevels, (int)req.lmsHeight,
+                                  (int)req.lmsWinternitz);
+
+    /* Validate the buffer size and resolve the keyId before keygen. */
+    if (ret == 0) {
+        ret = wc_LmsKey_GetPubLen(key, &pubLen32);
+    }
+    if (ret == 0 && req.pub.sz < pubLen32) {
+        ret = WH_ERROR_BUFFER_SIZE;
+    }
+    if (ret == 0) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.pub.addr, &clientPubAddr, pubLen32,
+            WH_DMA_OPER_CLIENT_WRITE_PRE, (whServerDmaFlags){0});
+        if (ret != 0) {
+            res.dmaAddrStatus.badAddr = req.pub;
+        }
+    }
+    /* Reject labels that won't fit the slot metadata. */
+    if (ret == 0 && req.labelSize > sizeof(cacheMeta->label)) {
+        ret = WH_ERROR_BADARGS;
+    }
+    /* Lock from keyID allocation until the slot is committed to NVM. */
+    if (ret == 0) {
+        ret    = WH_SERVER_NVM_LOCK(ctx);
+        locked = (ret == WH_ERROR_OK);
+    }
+    if (ret == 0) {
+        keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                             ctx->comm->client_id, req.keyId);
+        if (WH_KEYID_ISERASED(keyId)) {
+            ret = wh_Server_KeystoreGetUniqueId(ctx, &keyId);
+        }
+    }
+
+    /* Grab the cache slot up front; the keygen write cb captures priv into it. */
+    if (ret == 0) {
+        ret = wh_Server_KeystoreGetCacheSlotChecked(ctx, keyId, slotCapacity,
+                                                    &cacheBuf, &cacheMeta);
+    }
+
+    /* The write cb copies the private key into the slot's priv region: after
+     * the header, the 3-byte parameter descriptor, and the public key. */
+    if (ret == 0) {
+        sigCtx.slotBuf      = cacheBuf;
+        sigCtx.slotCapacity = slotCapacity;
+        sigCtx.privOff      = (uint16_t)(WH_CRYPTO_STATEFUL_SIG_HEADER_SZ + 3 +
+                                         pubLen32);
+        sigCtx.status       = WH_ERROR_OK;
+        ret = wc_LmsKey_SetWriteCb(key, _LmsKeygenWriteCb);
+    }
+    if (ret == 0) {
+        ret = wc_LmsKey_SetReadCb(key, _LmsDummyReadCb);
+    }
+    if (ret == 0) {
+        ret = wc_LmsKey_SetContext(key, &sigCtx);
+    }
+    if (ret == 0) {
+        ret = wc_LmsKey_MakeKey(key, ctx->crypto->rng);
+        /* MakeKey fails if the cb could not store priv; surface that error. */
+        if ((ret != 0) && (sigCtx.status != WH_ERROR_OK)) {
+            ret = sigCtx.status;
+        }
+    }
+
+    /* Priv state survives in key->priv_raw, so serialize the full slot. */
+    if (ret == 0) {
+        ret = wh_Crypto_LmsSerializeKey(key, slotCapacity, cacheBuf, &blobSize);
+    }
+    if (ret == 0) {
+        cacheMeta->id  = keyId;
+        cacheMeta->len = blobSize;
+        /* Stateful private key state must never leave the HSM; reuse of a
+         * one-time signature index breaks the scheme. Force non-exportable.
+         * Strip server-only flags a client may never set (e.g. trusted KEK). */
+        cacheMeta->flags = (req.flags & ~WH_NVM_FLAGS_SERVER_ONLY) |
+                           WH_NVM_FLAGS_NONEXPORTABLE;
+        cacheMeta->access = WH_NVM_ACCESS_ANY;
+        if (req.labelSize > 0) {
+            memcpy(cacheMeta->label, req.label, req.labelSize);
+        }
+        ret = wh_Server_KeystoreCommitKey(ctx, keyId);
+    }
+
+    if (locked) {
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+        locked = 0;
+    }
+
+    /* Key is committed. Stream the public key out via the pre-validated DMA
+     * buffer; the copy cannot fail, so the client always receives its keyId. */
+    if (ret == 0) {
+        memcpy(clientPubAddr, key->pub, pubLen32);
+        res.keyId   = wh_KeyId_TranslateToClient(keyId);
+        res.pubSize = pubLen32;
+    }
+    if (clientPubAddr != NULL) {
+        (void)wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.pub.addr, &clientPubAddr, pubLen32,
+            WH_DMA_OPER_CLIENT_WRITE_POST, (whServerDmaFlags){0});
+    }
+
+    wc_LmsKey_Free(key);
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigKeyGenDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigKeyGenDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+#endif /* WOLFSSL_LMS_VERIFY_ONLY */
+}
+
+static int _HandleLmsSignDma(whServerContext* ctx, uint16_t magic, int devId,
+                             const void* cryptoDataIn, uint16_t inSize,
+                             void* cryptoDataOut, uint16_t* outSize)
+{
+#ifdef WOLFSSL_LMS_VERIFY_ONLY
+    (void)ctx; (void)magic; (void)devId; (void)cryptoDataIn; (void)inSize;
+    (void)cryptoDataOut; (void)outSize;
+    return WH_ERROR_NOHANDLER;
+#else
+    int                                            ret;
+    LmsKey                                         key[1];
+    int                                            keyInited = 0;
+    void*                                          msgAddr = NULL;
+    void*                                          sigAddr = NULL;
+    word32                                         sigLen;
+    whKeyId                                        keyId;
+    uint8_t*                                       cacheBuf;
+    whNvmMetadata*                                 cacheMeta;
+    whServerStatefulSigCtx                         sigCtx;
+    whMessageCrypto_PqcStatefulSigSignDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigSignDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigSignDmaRequest(
+        magic, (whMessageCrypto_PqcStatefulSigSignDmaRequest*)cryptoDataIn,
+        &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                         ctx->comm->client_id, req.keyId);
+    if (WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    sigLen = (word32)req.sig.sz;
+
+    /* Hold the NVM lock for the entire load -> sign -> commit sequence so
+     * concurrent sign requests on the same keyId can't race past each other.
+     * Pattern from wh_server_counter.c. */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+    if (ret == WH_ERROR_OK) {
+        ret = wc_LmsKey_Init(key, NULL, devId);
+        if (ret == 0) {
+            keyInited = 1;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Crypto_LmsDeserializeKey(cacheBuf, (uint16_t)cacheMeta->len,
+                                          key);
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = _StatefulSigFromSlot(
+            &sigCtx, ctx, keyId, cacheBuf, cacheMeta,
+            WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE);
+    }
+    if (ret == WH_ERROR_OK) {
+        (void)wc_LmsKey_SetWriteCb(key, _LmsSlotWriteCb);
+        (void)wc_LmsKey_SetReadCb(key, _LmsSlotReadCb);
+        (void)wc_LmsKey_SetContext(key, &sigCtx);
+        ret = wc_LmsKey_Reload(key);
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+            WH_DMA_OPER_CLIENT_READ_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.msg;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.sig.addr, &sigAddr, req.sig.sz,
+            WH_DMA_OPER_CLIENT_WRITE_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.sig;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        /* wolfCrypt's flow:
+         *   1. wc_hss_sign computes the signature into sig and advances
+         *      key->priv_raw in memory.
+         *   2. write_private_key (our slot write cb) is called with the new
+         *      priv_raw and atomically commits it to NVM.
+         *   3. If the cb returns anything other than
+         *      WC_LMS_RC_SAVED_TO_NV_MEMORY, wolfCrypt does ForceZero(sig)
+         *      and returns IO_FAILED_E.
+         * Net effect: a signature is exposed to the caller only if the NVM
+         * commit succeeded. A process crash anywhere in the sequence either
+         * (a) leaves the old state in NVM with no signature exposed, or
+         * (b) commits the new state with the signature lost in transit -
+         * one wasted index but never an index reused with a fresh sig. */
+        ret = wc_LmsKey_Sign(key, sigAddr, &sigLen, msgAddr, (int)req.msg.sz);
+        if (ret == 0) {
+            res.sigLen = sigLen;
+        }
+    }
+    if (sigAddr != NULL) {
+        (void)wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.sig.addr, &sigAddr, sigLen,
+            WH_DMA_OPER_CLIENT_WRITE_POST, (whServerDmaFlags){0});
+    }
+    if (msgAddr != NULL) {
+        (void)wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+            WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
+    }
+
+    if (keyInited) {
+        wc_LmsKey_Free(key);
+    }
+
+    if ((req.options & WH_MESSAGE_CRYPTO_STATEFUL_SIG_OPTIONS_EVICT) != 0) {
+        (void)wh_Server_KeystoreEvictKey(ctx, keyId);
+    }
+
+    (void)WH_SERVER_NVM_UNLOCK(ctx);
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigSignDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigSignDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+#endif /* WOLFSSL_LMS_VERIFY_ONLY */
+}
+
+static int _HandleLmsVerifyDma(whServerContext* ctx, uint16_t magic, int devId,
+                               const void* cryptoDataIn, uint16_t inSize,
+                               void* cryptoDataOut, uint16_t* outSize)
+{
+    int                                              ret;
+    LmsKey                                           key[1];
+    int                                              keyInited = 0;
+    void*                                            sigAddr = NULL;
+    void*                                            msgAddr = NULL;
+    whKeyId                                          keyId;
+    whMessageCrypto_PqcStatefulSigVerifyDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigVerifyDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigVerifyDmaRequest(
+        magic, (whMessageCrypto_PqcStatefulSigVerifyDmaRequest*)cryptoDataIn,
+        &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                         ctx->comm->client_id, req.keyId);
+    if (WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wc_LmsKey_Init(key, NULL, devId);
+    if (ret == 0) {
+        keyInited = 1;
+        /* Lock while reading the key in case of concurrent sign op */
+        ret = WH_SERVER_NVM_LOCK(ctx);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_LmsKeyCacheExport(ctx, keyId, key);
+            (void)WH_SERVER_NVM_UNLOCK(ctx);
+        } /* WH_SERVER_NVM_LOCK() */
+    }
+    if (ret == WH_ERROR_OK) {
+        /* Deserialize leaves the key in PARMSET; wc_LmsKey_Verify needs
+         * OK or VERIFYONLY. Pub is populated and that's all verify uses. */
+        key->state = WC_LMS_STATE_VERIFYONLY;
+    }
+
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.sig.addr, &sigAddr, req.sig.sz,
+            WH_DMA_OPER_CLIENT_READ_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.sig;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+            WH_DMA_OPER_CLIENT_READ_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.msg;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        int verifyRet = wc_LmsKey_Verify(key, sigAddr, (word32)req.sig.sz,
+                                         msgAddr, (int)req.msg.sz);
+        if (verifyRet == 0) {
+            res.res = 1;
+        }
+        else if (verifyRet == WC_NO_ERR_TRACE(SIG_VERIFY_E)) {
+            res.res = 0;
+        }
+        else {
+            ret = verifyRet;
+        }
+    }
+
+    (void)wh_Server_DmaProcessClientAddress(
+        ctx, (uintptr_t)req.sig.addr, &sigAddr, req.sig.sz,
+        WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
+    (void)wh_Server_DmaProcessClientAddress(
+        ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+        WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
+
+    if (keyInited) {
+        wc_LmsKey_Free(key);
+    }
+
+    if ((req.options & WH_MESSAGE_CRYPTO_STATEFUL_SIG_OPTIONS_EVICT) != 0) {
+        _CryptoEvictKeyLocked(ctx, keyId);
+    }
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigVerifyDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigVerifyDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+}
+
+/* wc_LmsKey_SigsLeft reads key->priv_raw directly - no key state machine and no
+ * read callback - so deserializing the cached blob into the key is enough; no
+ * Reload is needed. Contrast the heavier _HandleXmssSigsLeftDma. */
+static int _HandleLmsSigsLeftDma(whServerContext* ctx, uint16_t magic,
+                                 int devId, const void* cryptoDataIn,
+                                 uint16_t inSize, void* cryptoDataOut,
+                                 uint16_t* outSize)
+{
+#ifdef WOLFSSL_LMS_VERIFY_ONLY
+    (void)ctx; (void)magic; (void)devId; (void)cryptoDataIn; (void)inSize;
+    (void)cryptoDataOut; (void)outSize;
+    return WH_ERROR_NOHANDLER;
+#else
+    int                                                ret;
+    LmsKey                                             key[1];
+    int                                                keyInited = 0;
+    whKeyId                                            keyId;
+    whMessageCrypto_PqcStatefulSigSigsLeftDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigSigsLeftDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigSigsLeftDmaRequest(
+        magic,
+        (whMessageCrypto_PqcStatefulSigSigsLeftDmaRequest*)cryptoDataIn, &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                         ctx->comm->client_id, req.keyId);
+    if (WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wc_LmsKey_Init(key, NULL, devId);
+    if (ret == 0) {
+        keyInited = 1;
+        /* Lock while reading the key in case of concurrent sign op */
+        ret = WH_SERVER_NVM_LOCK(ctx);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_LmsKeyCacheExport(ctx, keyId, key);
+            (void)WH_SERVER_NVM_UNLOCK(ctx);
+        } /* WH_SERVER_NVM_LOCK() */
+    }
+    if (ret == WH_ERROR_OK) {
+        res.sigsLeft = (uint32_t)wc_LmsKey_SigsLeft(key);
+    }
+
+    if (keyInited) {
+        wc_LmsKey_Free(key);
+    }
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigSigsLeftDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigSigsLeftDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+#endif /* WOLFSSL_LMS_VERIFY_ONLY */
+}
+#endif /* WOLFSSL_HAVE_LMS */
+
+#ifdef WOLFSSL_HAVE_XMSS
+#ifndef WOLFSSL_XMSS_VERIFY_ONLY
+/* Keygen write cb: wc_XmssKey_MakeKey hands us the private key, which it
+ * zeroizes immediately after. Copy it into the slot's priv region and capture
+ * any error into the context for the caller of MakeKey to surface. */
+static enum wc_XmssRc _XmssKeygenWriteCb(const byte* priv, word32 privSz,
+                                         void* context)
+{
+    whServerStatefulSigKeygenCtx* b =
+        (whServerStatefulSigKeygenCtx*)context;
+
+    if ((b == NULL) || (priv == NULL) || (b->slotBuf == NULL)) {
+        return WC_XMSS_RC_BAD_ARG;
+    }
+
+    /* Copy the private key wolfCrypt handed us into the slot's priv region;
+     * the key object is zeroized once this returns, so use priv/privSz here. */
+    if ((uint32_t)b->privOff + privSz > b->slotCapacity) {
+        b->status = WH_ERROR_BUFFER_SIZE;
+        return WC_XMSS_RC_WRITE_FAIL;
+    }
+    memcpy(b->slotBuf + b->privOff, priv, privSz);
+    b->privLen = (uint16_t)privSz;
+    b->status  = WH_ERROR_OK;
+    return WC_XMSS_RC_SAVED_TO_NV_MEMORY;
+}
+static enum wc_XmssRc _XmssDummyReadCb(byte* priv, word32 privSz,
+                                       void* context)
+{
+    (void)priv; (void)privSz; (void)context;
+    return WC_XMSS_RC_READ_TO_MEMORY;
+}
+#endif /* !WOLFSSL_XMSS_VERIFY_ONLY */
+
+static int _HandleXmssKeyGenDma(whServerContext* ctx, uint16_t magic,
+                                int devId, const void* cryptoDataIn,
+                                uint16_t inSize, void* cryptoDataOut,
+                                uint16_t* outSize)
+{
+#ifdef WOLFSSL_XMSS_VERIFY_ONLY
+    (void)ctx; (void)magic; (void)devId; (void)cryptoDataIn; (void)inSize;
+    (void)cryptoDataOut; (void)outSize;
+    return WH_ERROR_NOHANDLER;
+#else
+    int                                              ret;
+    XmssKey                                          key[1];
+    void*                                            clientPubAddr = NULL;
+    word32                                           pubLen32 = 0;
+    whKeyId                                          keyId;
+    int                                              locked = 0;
+    uint8_t*                                         cacheBuf;
+    whNvmMetadata*                                   cacheMeta;
+    uint16_t   slotCapacity = WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE;
+    uint16_t   blobSize;
+    whServerStatefulSigKeygenCtx                     sigCtx;
+    whMessageCrypto_PqcStatefulSigKeyGenDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigKeyGenDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+    memset(&sigCtx, 0, sizeof(sigCtx));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigKeyGenDmaRequest(
+        magic, (whMessageCrypto_PqcStatefulSigKeyGenDmaRequest*)cryptoDataIn,
+        &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    /* Reject EPHEMERAL keys since keygen itself is stateful */
+    if ((req.flags & WH_NVM_FLAGS_EPHEMERAL) != 0) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* xmssParamStr arrives via the request struct (populated by the client in
+     * wh_Client_XmssMakeKeyDma). Defensively enforce NUL-termination before
+     * passing it to wolfCrypt, since it originates from the client. */
+    req.xmssParamStr[sizeof(req.xmssParamStr) - 1] = '\0';
+
+    ret = wc_XmssKey_Init(key, NULL, devId);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = wc_XmssKey_SetParamStr(key, req.xmssParamStr);
+
+    /* Validate the buffer size and resolve the keyId before keygen. */
+    if (ret == 0) {
+        ret = wc_XmssKey_GetPubLen(key, &pubLen32);
+    }
+    if (ret == 0 && req.pub.sz < pubLen32) {
+        ret = WH_ERROR_BUFFER_SIZE;
+    }
+    if (ret == 0) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.pub.addr, &clientPubAddr, pubLen32,
+            WH_DMA_OPER_CLIENT_WRITE_PRE, (whServerDmaFlags){0});
+        if (ret != 0) {
+            res.dmaAddrStatus.badAddr = req.pub;
+        }
+    }
+    /* Reject labels that won't fit the slot metadata. */
+    if (ret == 0 && req.labelSize > sizeof(cacheMeta->label)) {
+        ret = WH_ERROR_BADARGS;
+    }
+    /* Lock from keyID allocation until the slot is committed to NVM. */
+    if (ret == 0) {
+        ret    = WH_SERVER_NVM_LOCK(ctx);
+        locked = (ret == WH_ERROR_OK);
+    }
+    if (ret == 0) {
+        keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                             ctx->comm->client_id, req.keyId);
+        if (WH_KEYID_ISERASED(keyId)) {
+            ret = wh_Server_KeystoreGetUniqueId(ctx, &keyId);
+        }
+    }
+    /* Grab the cache slot up front; the write cb writes priv into it. */
+    if (ret == 0) {
+        ret = wh_Server_KeystoreGetCacheSlotChecked(ctx, keyId, slotCapacity,
+                                                    &cacheBuf, &cacheMeta);
+    }
+
+    /* The write cb copies the private key into the slot's priv region (key->sk
+     * is valid only during that callback). Tell it where that region begins:
+     * after the header, parameter string, and public key. */
+    if (ret == 0) {
+        size_t pStrLen = strlen(req.xmssParamStr);
+        if (pStrLen >= 0xFFFFu) {
+            ret = WH_ERROR_BADARGS;
+        }
+        else {
+            sigCtx.slotBuf      = cacheBuf;
+            sigCtx.slotCapacity = slotCapacity;
+            sigCtx.privOff      = (uint16_t)(WH_CRYPTO_STATEFUL_SIG_HEADER_SZ +
+                                             (pStrLen + 1) + pubLen32);
+            sigCtx.status       = WH_ERROR_OK;
+            ret = wc_XmssKey_SetWriteCb(key, _XmssKeygenWriteCb);
+        }
+    }
+    if (ret == 0) {
+        ret = wc_XmssKey_SetReadCb(key, _XmssDummyReadCb);
+    }
+    if (ret == 0) {
+        ret = wc_XmssKey_SetContext(key, &sigCtx);
+    }
+    if (ret == 0) {
+        ret = wc_XmssKey_MakeKey(key, ctx->crypto->rng);
+        /* MakeKey fails if the cb could not store priv; surface that error. */
+        if ((ret != 0) && (sigCtx.status != WH_ERROR_OK)) {
+            ret = sigCtx.status;
+        }
+    }
+
+    /* Priv is in the slot; fill in the header and public key, then commit. */
+    if (ret == 0) {
+        ret = wh_Crypto_XmssSerializeKeyNoPriv(key, req.xmssParamStr,
+                                               sigCtx.privLen, slotCapacity,
+                                               cacheBuf, &blobSize);
+    }
+    if (ret == 0) {
+        cacheMeta->id  = keyId;
+        cacheMeta->len = blobSize;
+        /* Stateful private key state must never leave the HSM; reuse of a
+         * one-time signature index breaks the scheme. Force non-exportable.
+         * Strip server-only flags a client may never set (e.g. trusted KEK). */
+        cacheMeta->flags = (req.flags & ~WH_NVM_FLAGS_SERVER_ONLY) |
+                           WH_NVM_FLAGS_NONEXPORTABLE;
+        cacheMeta->access = WH_NVM_ACCESS_ANY;
+        if (req.labelSize > 0) {
+            memcpy(cacheMeta->label, req.label, req.labelSize);
+        }
+        ret = wh_Server_KeystoreCommitKey(ctx, keyId);
+    }
+
+    if (locked) {
+        (void)WH_SERVER_NVM_UNLOCK(ctx);
+        locked = 0;
+    }
+
+    /* Key is committed. Stream the public key out via the pre-validated DMA
+     * buffer; the copy cannot fail, so the client always receives its keyId. */
+    if (ret == 0) {
+        memcpy(clientPubAddr, key->pk, pubLen32);
+        res.keyId   = wh_KeyId_TranslateToClient(keyId);
+        res.pubSize = pubLen32;
+    }
+    if (clientPubAddr != NULL) {
+        (void)wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.pub.addr, &clientPubAddr, pubLen32,
+            WH_DMA_OPER_CLIENT_WRITE_POST, (whServerDmaFlags){0});
+    }
+
+    wc_XmssKey_Free(key);
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigKeyGenDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigKeyGenDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+#endif /* WOLFSSL_XMSS_VERIFY_ONLY */
+}
+
+static int _HandleXmssSignDma(whServerContext* ctx, uint16_t magic, int devId,
+                              const void* cryptoDataIn, uint16_t inSize,
+                              void* cryptoDataOut, uint16_t* outSize)
+{
+#ifdef WOLFSSL_XMSS_VERIFY_ONLY
+    (void)ctx; (void)magic; (void)devId; (void)cryptoDataIn; (void)inSize;
+    (void)cryptoDataOut; (void)outSize;
+    return WH_ERROR_NOHANDLER;
+#else
+    int                                            ret;
+    XmssKey                                        key[1];
+    int                                            keyInited = 0;
+    void*                                          msgAddr = NULL;
+    void*                                          sigAddr = NULL;
+    word32                                         sigLen;
+    whKeyId                                        keyId;
+    uint8_t*                                       cacheBuf;
+    whNvmMetadata*                                 cacheMeta;
+    whServerStatefulSigCtx                         sigCtx;
+    whMessageCrypto_PqcStatefulSigSignDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigSignDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigSignDmaRequest(
+        magic, (whMessageCrypto_PqcStatefulSigSignDmaRequest*)cryptoDataIn,
+        &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                         ctx->comm->client_id, req.keyId);
+    if (WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    sigLen = (word32)req.sig.sz;
+
+    /* See _HandleLmsSignDma for the NVM-lock rationale. */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+    if (ret == WH_ERROR_OK) {
+        ret = wc_XmssKey_Init(key, NULL, devId);
+        if (ret == 0) {
+            keyInited = 1;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Crypto_XmssDeserializeKey(cacheBuf, (uint16_t)cacheMeta->len,
+                                           key);
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = _StatefulSigFromSlot(
+            &sigCtx, ctx, keyId, cacheBuf, cacheMeta,
+            WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE);
+    }
+    if (ret == WH_ERROR_OK) {
+        (void)wc_XmssKey_SetWriteCb(key, _XmssSlotWriteCb);
+        (void)wc_XmssKey_SetReadCb(key, _XmssSlotReadCb);
+        (void)wc_XmssKey_SetContext(key, &sigCtx);
+        ret = wc_XmssKey_Reload(key);
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+            WH_DMA_OPER_CLIENT_READ_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.msg;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.sig.addr, &sigAddr, req.sig.sz,
+            WH_DMA_OPER_CLIENT_WRITE_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.sig;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wc_XmssKey_Sign(key, sigAddr, &sigLen, msgAddr, (int)req.msg.sz);
+        if (ret == 0) {
+            res.sigLen = sigLen;
+        }
+    }
+
+    if (sigAddr != NULL) {
+        (void)wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.sig.addr, &sigAddr, sigLen,
+            WH_DMA_OPER_CLIENT_WRITE_POST, (whServerDmaFlags){0});
+    }
+    if (msgAddr != NULL) {
+        (void)wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+            WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
+    }
+
+    if (keyInited) {
+        wc_XmssKey_Free(key);
+    }
+
+    if ((req.options & WH_MESSAGE_CRYPTO_STATEFUL_SIG_OPTIONS_EVICT) != 0) {
+        (void)wh_Server_KeystoreEvictKey(ctx, keyId);
+    }
+
+    (void)WH_SERVER_NVM_UNLOCK(ctx);
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigSignDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigSignDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+#endif /* WOLFSSL_XMSS_VERIFY_ONLY */
+}
+
+static int _HandleXmssVerifyDma(whServerContext* ctx, uint16_t magic,
+                                int devId, const void* cryptoDataIn,
+                                uint16_t inSize, void* cryptoDataOut,
+                                uint16_t* outSize)
+{
+    int                                              ret;
+    XmssKey                                          key[1];
+    int                                              keyInited = 0;
+    void*                                            sigAddr = NULL;
+    void*                                            msgAddr = NULL;
+    whKeyId                                          keyId;
+    whMessageCrypto_PqcStatefulSigVerifyDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigVerifyDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigVerifyDmaRequest(
+        magic, (whMessageCrypto_PqcStatefulSigVerifyDmaRequest*)cryptoDataIn,
+        &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                         ctx->comm->client_id, req.keyId);
+    if (WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wc_XmssKey_Init(key, NULL, devId);
+    if (ret == 0) {
+        keyInited = 1;
+        /* Lock while reading the key in case of concurrent sign op */
+        ret = WH_SERVER_NVM_LOCK(ctx);
+        if (ret == WH_ERROR_OK) {
+            ret = wh_Server_XmssKeyCacheExport(ctx, keyId, key);
+            (void)WH_SERVER_NVM_UNLOCK(ctx);
+        } /* WH_SERVER_NVM_LOCK() */
+    }
+    if (ret == WH_ERROR_OK) {
+        /* Deserialize leaves the key in PARMSET; wc_XmssKey_Verify needs
+         * OK or VERIFYONLY. Pub is populated and that's all verify uses. */
+        key->state = WC_XMSS_STATE_VERIFYONLY;
+    }
+
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.sig.addr, &sigAddr, req.sig.sz,
+            WH_DMA_OPER_CLIENT_READ_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.sig;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Server_DmaProcessClientAddress(
+            ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+            WH_DMA_OPER_CLIENT_READ_PRE, (whServerDmaFlags){0});
+        if (ret != WH_ERROR_OK) {
+            res.dmaAddrStatus.badAddr = req.msg;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        int verifyRet = wc_XmssKey_Verify(key, sigAddr, (word32)req.sig.sz,
+                                          msgAddr, (int)req.msg.sz);
+        if (verifyRet == 0) {
+            res.res = 1;
+        }
+        else if (verifyRet == WC_NO_ERR_TRACE(SIG_VERIFY_E)) {
+            res.res = 0;
+        }
+        else {
+            ret = verifyRet;
+        }
+    }
+
+    (void)wh_Server_DmaProcessClientAddress(
+        ctx, (uintptr_t)req.sig.addr, &sigAddr, req.sig.sz,
+        WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
+    (void)wh_Server_DmaProcessClientAddress(
+        ctx, (uintptr_t)req.msg.addr, &msgAddr, req.msg.sz,
+        WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
+
+    if (keyInited) {
+        wc_XmssKey_Free(key);
+    }
+
+    if ((req.options & WH_MESSAGE_CRYPTO_STATEFUL_SIG_OPTIONS_EVICT) != 0) {
+        _CryptoEvictKeyLocked(ctx, keyId);
+    }
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigVerifyDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigVerifyDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+}
+
+static int _HandleXmssSigsLeftDma(whServerContext* ctx, uint16_t magic,
+                                  int devId, const void* cryptoDataIn,
+                                  uint16_t inSize, void* cryptoDataOut,
+                                  uint16_t* outSize)
+{
+#ifdef WOLFSSL_XMSS_VERIFY_ONLY
+    (void)ctx; (void)magic; (void)devId; (void)cryptoDataIn; (void)inSize;
+    (void)cryptoDataOut; (void)outSize;
+    return WH_ERROR_NOHANDLER;
+#else
+    int                                                ret;
+    XmssKey                                            key[1];
+    int                                                keyInited = 0;
+    whKeyId                                            keyId;
+    uint8_t*                                           cacheBuf;
+    whNvmMetadata*                                     cacheMeta;
+    whServerStatefulSigCtx                             sigCtx;
+    whMessageCrypto_PqcStatefulSigSigsLeftDmaRequest   req;
+    whMessageCrypto_PqcStatefulSigSigsLeftDmaResponse  res;
+
+    memset(&res, 0, sizeof(res));
+
+    if (inSize < sizeof(req)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslatePqcStatefulSigSigsLeftDmaRequest(
+        magic,
+        (whMessageCrypto_PqcStatefulSigSigsLeftDmaRequest*)cryptoDataIn, &req);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    keyId = wh_KeyId_TranslateFromClient(WH_KEYTYPE_CRYPTO,
+                                         ctx->comm->client_id, req.keyId);
+    if (WH_KEYID_ISERASED(keyId)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    /* Lock during load+reload in case of concurrent sign op */
+    ret = WH_SERVER_NVM_LOCK(ctx);
+    if (ret != WH_ERROR_OK) {
+        return ret;
+    }
+
+    ret = wh_Server_KeystoreFreshenKey(ctx, keyId, &cacheBuf, &cacheMeta);
+    if (ret == WH_ERROR_OK) {
+        ret = wc_XmssKey_Init(key, NULL, devId);
+        if (ret == 0) {
+            keyInited = 1;
+        }
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = wh_Crypto_XmssDeserializeKey(cacheBuf, (uint16_t)cacheMeta->len,
+                                           key);
+    }
+    if (ret == WH_ERROR_OK) {
+        ret = _StatefulSigFromSlot(
+            &sigCtx, ctx, keyId, cacheBuf, cacheMeta,
+            WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE);
+    }
+    if (ret == WH_ERROR_OK) {
+        /* Reload uses the slot ReadCb to populate sk from the cached blob,
+         * then transitions state to OK so SigsLeft can run. */
+        (void)wc_XmssKey_SetWriteCb(key, _XmssSlotWriteCb);
+        (void)wc_XmssKey_SetReadCb(key, _XmssSlotReadCb);
+        (void)wc_XmssKey_SetContext(key, &sigCtx);
+        ret = wc_XmssKey_Reload(key);
+    }
+    if (ret == WH_ERROR_OK) {
+        res.sigsLeft = (uint32_t)wc_XmssKey_SigsLeft(key);
+    }
+
+    if (keyInited) {
+        wc_XmssKey_Free(key);
+    }
+
+    (void)WH_SERVER_NVM_UNLOCK(ctx);
+
+    (void)wh_MessageCrypto_TranslatePqcStatefulSigSigsLeftDmaResponse(
+        magic, &res,
+        (whMessageCrypto_PqcStatefulSigSigsLeftDmaResponse*)cryptoDataOut);
+    *outSize = sizeof(res);
+    return ret;
+#endif /* WOLFSSL_XMSS_VERIFY_ONLY */
+}
+#endif /* WOLFSSL_HAVE_XMSS */
+
+#if defined(WOLFSSL_HAVE_LMS) || defined(WOLFSSL_HAVE_XMSS)
+static int _HandlePqcStatefulSigAlgorithmDma(
+    whServerContext* ctx, uint16_t magic, int devId, const void* cryptoDataIn,
+    uint16_t cryptoInSize, void* cryptoDataOut, uint16_t* cryptoOutSize,
+    uint32_t pkAlgoType, uint32_t pqAlgoType)
+{
+    int ret = WH_ERROR_NOHANDLER;
+
+    switch (pqAlgoType) {
+#ifdef WOLFSSL_HAVE_LMS
+        case WC_PQC_STATEFUL_SIG_TYPE_LMS:
+            switch (pkAlgoType) {
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_KEYGEN:
+                    ret = _HandleLmsKeyGenDma(ctx, magic, devId, cryptoDataIn,
+                                              cryptoInSize, cryptoDataOut,
+                                              cryptoOutSize);
+                    break;
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_SIGN:
+                    ret = _HandleLmsSignDma(ctx, magic, devId, cryptoDataIn,
+                                            cryptoInSize, cryptoDataOut,
+                                            cryptoOutSize);
+                    break;
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_VERIFY:
+                    ret = _HandleLmsVerifyDma(ctx, magic, devId, cryptoDataIn,
+                                              cryptoInSize, cryptoDataOut,
+                                              cryptoOutSize);
+                    break;
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_SIGS_LEFT:
+                    ret = _HandleLmsSigsLeftDma(ctx, magic, devId,
+                                                cryptoDataIn, cryptoInSize,
+                                                cryptoDataOut, cryptoOutSize);
+                    break;
+                default:
+                    ret = WH_ERROR_NOHANDLER;
+                    break;
+            }
+            break;
+#endif /* WOLFSSL_HAVE_LMS */
+#ifdef WOLFSSL_HAVE_XMSS
+        case WC_PQC_STATEFUL_SIG_TYPE_XMSS:
+            switch (pkAlgoType) {
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_KEYGEN:
+                    ret = _HandleXmssKeyGenDma(ctx, magic, devId, cryptoDataIn,
+                                               cryptoInSize, cryptoDataOut,
+                                               cryptoOutSize);
+                    break;
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_SIGN:
+                    ret = _HandleXmssSignDma(ctx, magic, devId, cryptoDataIn,
+                                             cryptoInSize, cryptoDataOut,
+                                             cryptoOutSize);
+                    break;
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_VERIFY:
+                    ret = _HandleXmssVerifyDma(ctx, magic, devId, cryptoDataIn,
+                                               cryptoInSize, cryptoDataOut,
+                                               cryptoOutSize);
+                    break;
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_SIGS_LEFT:
+                    ret = _HandleXmssSigsLeftDma(ctx, magic, devId,
+                                                 cryptoDataIn, cryptoInSize,
+                                                 cryptoDataOut, cryptoOutSize);
+                    break;
+                default:
+                    ret = WH_ERROR_NOHANDLER;
+                    break;
+            }
+            break;
+#endif /* WOLFSSL_HAVE_XMSS */
+        default:
+            ret = WH_ERROR_NOHANDLER;
+            break;
+    }
+
+    return ret;
+}
+#endif /* WOLFSSL_HAVE_LMS || WOLFSSL_HAVE_XMSS */
 #if defined(WOLFSSL_CMAC) && !defined(NO_AES) && defined(WOLFSSL_AES_DIRECT)
 static int _HandleCmacDma(whServerContext* ctx, uint16_t magic, int devId,
                           uint16_t seq, const void* cryptoDataIn,
@@ -6851,6 +9118,7 @@ static int _HandleCmacDma(whServerContext* ctx, uint16_t magic, int devId,
         }
     }
 
+    wc_ForceZero(tmpKey, sizeof(tmpKey));
     WH_DEBUG_SERVER_VERBOSE("dma cmac end ret:%d\n", ret);
     return ret;
 }
@@ -6955,11 +9223,17 @@ int wh_Server_HandleCryptoDmaRequest(whServerContext* ctx, uint16_t magic,
     wh_MessageCrypto_TranslateGenericRequestHeader(
         magic, (whMessageCrypto_GenericRequestHeader*)req_packet, &rqstHeader);
 
+#if defined(WOLFHSM_CFG_CRYPTO_AFFINITY)
     /* Compute devId from the per-message affinity field */
     devId = (rqstHeader.affinity == WH_CRYPTO_AFFINITY_HW &&
              ctx->devId != INVALID_DEVID)
                 ? ctx->devId
                 : INVALID_DEVID;
+#else
+    /* Crypto affinity disabled: always use the server's configured devId and
+     * ignore the request header affinity field. */
+    devId = ctx->devId;
+#endif /* WOLFHSM_CFG_CRYPTO_AFFINITY */
 
     switch (action) {
         case WC_ALGO_TYPE_HASH:
@@ -7004,6 +9278,19 @@ int wh_Server_HandleCryptoDmaRequest(whServerContext* ctx, uint16_t magic,
                     }
                     break;
 #endif /* WOLFSSL_SHA512 */
+#if defined(WOLFSSL_SHA3)
+                case WC_HASH_TYPE_SHA3_224:
+                case WC_HASH_TYPE_SHA3_256:
+                case WC_HASH_TYPE_SHA3_384:
+                case WC_HASH_TYPE_SHA3_512:
+                    ret = _HandleSha3Dma(ctx, rqstHeader.algoType, magic, devId,
+                                         seq, cryptoDataIn, cryptoInSize,
+                                         cryptoDataOut, &cryptoOutSize);
+                    if (ret != 0) {
+                        WH_DEBUG_SERVER("DMA SHA3 ret = %d\n", ret);
+                    }
+                    break;
+#endif /* WOLFSSL_SHA3 */
                 default:
                     ret = NOT_COMPILED_IN;
                     break;
@@ -7069,6 +9356,17 @@ int wh_Server_HandleCryptoDmaRequest(whServerContext* ctx, uint16_t magic,
                         rqstHeader.algoSubType);
                     break;
 #endif /* WOLFSSL_HAVE_MLKEM */
+#if defined(WOLFSSL_HAVE_LMS) || defined(WOLFSSL_HAVE_XMSS)
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_KEYGEN:
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_SIGN:
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_VERIFY:
+                case WC_PK_TYPE_PQC_STATEFUL_SIG_SIGS_LEFT:
+                    ret = _HandlePqcStatefulSigAlgorithmDma(
+                        ctx, magic, devId, cryptoDataIn, cryptoInSize,
+                        cryptoDataOut, &cryptoOutSize, rqstHeader.algoType,
+                        rqstHeader.algoSubType);
+                    break;
+#endif /* WOLFSSL_HAVE_LMS || WOLFSSL_HAVE_XMSS */
 #ifdef HAVE_ED25519
                 case WC_PK_TYPE_ED25519_SIGN:
                     ret = _HandleEd25519SignDma(ctx, magic, devId, cryptoDataIn,

@@ -49,26 +49,33 @@ static struct disk_drive Drives[MAX_DISKS] = {0};
 static int disk_open_mbr(struct disk_drive *drive, const uint8_t *mbr_sector)
 {
     uint32_t i;
-    const struct gpt_mbr_part_entry *pte;
+    const uint8_t *pte;
+    uint8_t ptype;
+    uint32_t lba_first, lba_size;
 
     for (i = 0; i < 4; i++) {
-        pte = (const struct gpt_mbr_part_entry *)(mbr_sector +
-                GPT_MBR_ENTRY_START + (i * sizeof(struct gpt_mbr_part_entry)));
+        /* MBR fields are little-endian on disk, so they are read byte-wise
+         * rather than through a packed struct, which would only be correct
+         * on a little-endian host. */
+        pte = mbr_sector + GPT_MBR_ENTRY_START + (i * GPT_MBR_PTE_SIZE);
+        ptype = pte[GPT_MBR_PTE_PTYPE];
+        lba_first = gpt_le32(pte + GPT_MBR_PTE_LBA_FIRST);
+        lba_size = gpt_le32(pte + GPT_MBR_PTE_LBA_SIZE);
 
         /* Skip empty entries (type 0) and extended partition types */
-        if (pte->ptype == 0x00 || pte->ptype == 0x05 || pte->ptype == 0x0F ||
-            pte->ptype == 0x85) {
+        if (ptype == 0x00 || ptype == 0x05 || ptype == 0x0F ||
+            ptype == 0x85) {
             continue;
         }
-        if (pte->lba_first == 0 || pte->lba_size == 0) {
+        if (lba_first == 0 || lba_size == 0) {
             continue;
         }
 
         {
             uint32_t n = drive->n_parts;
-            uint64_t start_bytes = (uint64_t)pte->lba_first * GPT_SECTOR_SIZE;
+            uint64_t start_bytes = (uint64_t)lba_first * GPT_SECTOR_SIZE;
             uint64_t end_bytes = start_bytes +
-                ((uint64_t)pte->lba_size * GPT_SECTOR_SIZE) - 1;
+                ((uint64_t)lba_size * GPT_SECTOR_SIZE) - 1;
 
             if (n >= MAX_PARTITIONS)
                 break;
@@ -80,10 +87,14 @@ static int disk_open_mbr(struct disk_drive *drive, const uint8_t *mbr_sector)
             drive->n_parts++;
 
             wolfBoot_printf("  MBR part %u: type=0x%02x, start=0x%x, "
-                "size=%uMB\r\n", i + 1, pte->ptype,
+                "size=%uMB\r\n", i + 1, ptype,
                 (uint32_t)start_bytes,
-                (uint32_t)(pte->lba_size / 2048));
+                (uint32_t)(lba_size / 2048));
         }
+    }
+
+    if (drive->n_parts == 0) {
+        return -1; /* no usable partition entries */
     }
 
     return drive->n_parts;
@@ -99,7 +110,8 @@ static int disk_open_mbr(struct disk_drive *drive, const uint8_t *mbr_sector)
  * @param[in] drv The drive number to open (0 to `MAX_DISKS - 1`).
  *
  * @return The number of partitions found and initialized on success, or -1 if
- * the drive cannot be opened or no valid GPT partition table is found.
+ * the drive cannot be opened or no valid partition table (GPT or MBR) is
+ * found.
  */
 int disk_open(int drv)
 {
@@ -237,11 +249,11 @@ int disk_open(int drv)
             }
         }
     } else {
-        const uint16_t *boot_sig = (const uint16_t *)(sector +
-            GPT_MBR_BOOTSIG_OFFSET);
-
-        /* Check MBR boot signature (0xAA55) */
-        if (*boot_sig != GPT_MBR_BOOTSIG_VALUE) {
+        /* Check MBR boot signature (0xAA55). Read byte-wise: it is stored
+         * little-endian on disk, so a uint16_t cast reads it swapped on a
+         * big-endian host. */
+        if (gpt_le16(sector + GPT_MBR_BOOTSIG_OFFSET) !=
+                GPT_MBR_BOOTSIG_VALUE) {
             wolfBoot_printf("No valid partition table found\r\n");
             Drives[drv].is_open = 0;
             return -1;
@@ -416,6 +428,51 @@ int disk_find_partition_by_label(int drv, const char *label)
             return i;
     }
     return -1;
+}
+
+/**
+ * @brief Get the size in bytes of a disk partition.
+ *
+ * The partition table stores the first and last valid byte offsets, so the
+ * size is the inclusive difference plus one. Used by the read-only
+ * filesystem layer to bound every offset it computes from on-media
+ * metadata.
+ *
+ * @param[in] drv The drive number (0 to `MAX_DISKS - 1`).
+ * @param[in] part The partition number (0 to `MAX_PARTITIONS - 1`).
+ * @param[out] size The partition size in bytes.
+ *
+ * @return 0 on success, or -1 if the partition is not accessible.
+ */
+int disk_part_size(int drv, int part, uint64_t *size)
+{
+    struct disk_partition *p = open_part(drv, part);
+    if ((p == NULL) || (size == NULL)) {
+        return -1;
+    }
+    if (p->end < p->start) {
+        return -1;
+    }
+    *size = (p->end - p->start) + 1;
+    return 0;
+}
+
+/**
+ * @brief Get the number of partitions found on a drive.
+ *
+ * @param[in] drv The drive number (0 to `MAX_DISKS - 1`).
+ *
+ * @return The number of partitions, or -1 if the drive is not open.
+ */
+int disk_part_count(int drv)
+{
+    if ((drv < 0) || (drv >= MAX_DISKS)) {
+        return -1;
+    }
+    if (Drives[drv].is_open == 0) {
+        return -1;
+    }
+    return Drives[drv].n_parts;
 }
 
 #endif /* _WOLFBOOT_DISK_C_ */

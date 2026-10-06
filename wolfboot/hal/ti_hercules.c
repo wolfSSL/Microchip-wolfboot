@@ -117,14 +117,39 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
         ;
 
     if(len < WRITE_BLOCK_SIZE) {
-        memcpy(temp, (void*)(address - (address%WRITE_BLOCK_SIZE)), WRITE_BLOCK_SIZE);
-        memcpy(temp + (address%WRITE_BLOCK_SIZE), data, len);
-        st = Fapi_issueProgrammingCommand((void*)(address - (address%WRITE_BLOCK_SIZE)),
+        uint32_t blk_off = address % WRITE_BLOCK_SIZE;
+        uint32_t first = WRITE_BLOCK_SIZE - blk_off;
+
+        if ((uint32_t)len < first)
+            first = (uint32_t)len;
+
+        /* Read-modify-write the (partial) block the write starts in */
+        memcpy(temp, (void*)(address - blk_off), WRITE_BLOCK_SIZE);
+        memcpy(temp + blk_off, data, first);
+        st = Fapi_issueProgrammingCommand((void*)(address - blk_off),
                                           (uint8_t*)temp,
                                           WRITE_BLOCK_SIZE,
                                           NULL,
                                           0,
                                           Fapi_AutoEccGeneration);
+
+        /* A write that crosses a block boundary continues in the next
+         * (aligned) block; len < WRITE_BLOCK_SIZE keeps it to one more */
+        if (st == 0 && (uint32_t)len > first) {
+            /* The first program is still in flight: the FSM rejects a
+             * command while busy, and reading a bank under program
+             * returns undefined data. */
+            while(FAPI_CHECK_FSM_READY_BUSY != Fapi_Status_FsmReady)
+                ;
+            memcpy(temp, (void*)(address + first), WRITE_BLOCK_SIZE);
+            memcpy(temp, data + first, len - first);
+            st = Fapi_issueProgrammingCommand((void*)(address + first),
+                                              (uint8_t*)temp,
+                                              WRITE_BLOCK_SIZE,
+                                              NULL,
+                                              0,
+                                              Fapi_AutoEccGeneration);
+        }
     } else {
         off = 0;
         blk_size = WRITE_BLOCK_SIZE;
@@ -209,11 +234,22 @@ int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
 
     uint32_t cur = 0;
     uint32_t end = address + len;
+    uint32_t bank_end = 0;
     Fapi_StatusType st = Fapi_getBankSectors(bank, &bank_sectors);
     if (st != Fapi_Status_Success) {
         return -1;
     }
     cur = bank_sectors.u32BankStartAddress;
+
+    /* Cross-bank erase is not supported: reject a range that extends
+     * past the end of the starting bank before erasing anything. */
+    bank_end = cur;
+    for (i = 0; i < (int)bank_sectors.u32NumberOfSectors; i++) {
+        bank_end += (uint32_t)bank_sectors.au16SectorSizes[i] * 1024U;
+    }
+    if (end > bank_end) {
+        return -1;
+    }
 
     hal_flash_unlock_helper(address);
     for(i=0; i < bank_sectors.u32NumberOfSectors; i++) {

@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -128,9 +128,18 @@
 #define WOLFSSL_SHA3
 #define WOLFSSL_SHAKE128
 #define WOLFSSL_SHAKE256
+/* Enables wc_Sha3_SetFlags so the SHA3 Keccak-mode reject/fallback paths are
+ * compiled and exercised by the test suite. */
+#define WOLFSSL_HASH_FLAGS
 
 /* ML-KEM Options */
 #define WOLFSSL_HAVE_MLKEM
+/* LMS / HSS Options (RFC 8554, NIST SP 800-208) */
+#define WOLFSSL_HAVE_LMS
+
+/* XMSS / XMSS^MT Options (RFC 8391, NIST SP 800-208) */
+#define WOLFSSL_HAVE_XMSS
+
 
 /* Ed25519 Options */
 #define HAVE_ED25519

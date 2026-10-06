@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE)
 
@@ -198,7 +198,10 @@ static int wolfpsa_key_agreement_alg_permitted(psa_algorithm_t key_alg,
  *    any concrete hash variant of the same family.
  *  - For VERIFY usages, PSA_ALG_ECDSA(h) in the policy permits
  *    PSA_ALG_DETERMINISTIC_ECDSA(h) requests and vice versa (same hash), per
- *    PSA 1.4 verify-equivalence. */
+ *    PSA 1.4 verify-equivalence. The two HashML-DSA families are
+ *    interchangeable for VERIFY usages the same way: FIPS 204
+ *    verification is family-independent, so the dispatch (and this
+ *    function) accepts either family when the hash matches. */
 static int wolfpsa_sign_alg_permitted(psa_algorithm_t key_alg,
                                       psa_algorithm_t alg,
                                       psa_key_usage_t requested_usage)
@@ -212,12 +215,16 @@ static int wolfpsa_sign_alg_permitted(psa_algorithm_t key_alg,
         return (PSA_ALG_SIGN_GET_HASH(alg) != PSA_ALG_ANY_HASH) &&
                ((key_alg & ~PSA_ALG_HASH_MASK) == (alg & ~PSA_ALG_HASH_MASK));
     }
-    /* PSA_ALG_ANY_HASH wildcard for HashML-DSA and DeterministicHashML-DSA */
-    if (PSA_ALG_IS_HASH_ML_DSA(alg) &&
-        PSA_ALG_IS_HASH_ML_DSA(key_alg) &&
+    /* PSA_ALG_ANY_HASH wildcard for HashML-DSA and DeterministicHashML-DSA.
+     * PSA_ALG_IS_HASH_ML_DSA matches both families (its mask covers the
+     * 0x100 family selector bit), so gate on the hedged predicate and
+     * compare with the hash-only mask: a wildcard policy must not cross
+     * the hedged/deterministic boundary. */
+    if (PSA_ALG_IS_HEDGED_HASH_ML_DSA(alg) &&
+        PSA_ALG_IS_HEDGED_HASH_ML_DSA(key_alg) &&
         PSA_ALG_GET_HASH(key_alg) == PSA_ALG_ANY_HASH) {
         return (PSA_ALG_GET_HASH(alg) != PSA_ALG_ANY_HASH) &&
-               ((key_alg & ~0x000001ffU) == (alg & ~0x000001ffU));
+               ((key_alg & ~0x000000ffU) == (alg & ~0x000000ffU));
     }
     if (PSA_ALG_IS_DETERMINISTIC_HASH_ML_DSA(alg) &&
         PSA_ALG_IS_DETERMINISTIC_HASH_ML_DSA(key_alg) &&
@@ -226,13 +233,31 @@ static int wolfpsa_sign_alg_permitted(psa_algorithm_t key_alg,
                ((key_alg & ~0x000000ffU) == (alg & ~0x000000ffU));
     }
     /* PSA 1.4 ECDSA verify-equivalence: for verify usages, ECDSA and
-     * DETERMINISTIC_ECDSA with the same hash are interchangeable. */
+     * DETERMINISTIC_ECDSA with the same hash are interchangeable.
+     * PSA_ALG_IS_HASH_ML_DSA is true for both the hedged and the
+     * deterministic family (its mask ~0x1ff covers the family
+     * selector bit), so the test below is the cross-family
+     * verify-equivalence: a wildcard policy of either family, or a
+     * concrete policy with a matching hash, admits the other family.
+     * This applies to verify usages only; signing stays strict, since
+     * hedged and deterministic signing are different operations. */
     if ((requested_usage & (PSA_KEY_USAGE_VERIFY_HASH |
                             PSA_KEY_USAGE_VERIFY_MESSAGE)) != 0) {
         if (PSA_ALG_IS_ECDSA(alg) && PSA_ALG_IS_ECDSA(key_alg)) {
             /* Same hash, different determinism bit */
             if ((PSA_ALG_GET_HASH(alg) == PSA_ALG_GET_HASH(key_alg)) &&
                 (PSA_ALG_GET_HASH(alg) != PSA_ALG_NONE)) {
+                return 1;
+            }
+        }
+        if (PSA_ALG_IS_HASH_ML_DSA(alg) &&
+            PSA_ALG_IS_HASH_ML_DSA(key_alg) &&
+            PSA_ALG_GET_HASH(alg) != PSA_ALG_ANY_HASH) {
+            /* A wildcard is a policy placeholder, not an executable
+             * algorithm: the request must name a concrete hash, the
+             * same invariant the wildcard blocks above enforce. */
+            if (PSA_ALG_GET_HASH(key_alg) == PSA_ALG_ANY_HASH ||
+                PSA_ALG_GET_HASH(key_alg) == PSA_ALG_GET_HASH(alg)) {
                 return 1;
             }
         }
@@ -257,7 +282,7 @@ static psa_status_t wolfpsa_asymmetric_check_key(psa_key_id_t key,
     }
 
     key_usage = psa_get_key_usage_flags(attributes);
-    if ((key_usage & usage) == 0) {
+    if ((key_usage & usage) != usage) {
         wolfpsa_forcezero_free_key_data(*key_data, *key_data_length);
         *key_data = NULL;
         *key_data_length = 0;
@@ -291,15 +316,15 @@ static psa_status_t wolfpsa_asymmetric_check_key(psa_key_id_t key,
     return PSA_SUCCESS;
 }
 
-/* Validate context parameter against algorithm/key constraints.
+/* Validate context parameter against algorithm constraints.
  * context_length > 255 is always rejected (RFC 8032 / FIPS 204 limit).
  * A non-empty context is only permitted for:
  *   PSA_ALG_EDDSA_CTX, PSA_ALG_ED25519PH, PSA_ALG_ED448PH,
- *   PSA_ALG_PURE_EDDSA when the key is Ed448 (bits==448),
  *   PSA_ALG_IS_ML_DSA / PSA_ALG_IS_HASH_ML_DSA /
  *     PSA_ALG_IS_DETERMINISTIC_HASH_ML_DSA families.
- * All other algorithms with context_length != 0 return
- * PSA_ERROR_INVALID_ARGUMENT. */
+ * PSA_ALG_PURE_EDDSA is context-free (a non-empty context requires
+ * PSA_ALG_EDDSA_CTX). All other algorithms with context_length != 0
+ * return PSA_ERROR_INVALID_ARGUMENT. */
 static psa_status_t wolfpsa_check_context(psa_algorithm_t alg,
                                           psa_key_type_t key_type,
                                           size_t key_bits,
@@ -307,6 +332,8 @@ static psa_status_t wolfpsa_check_context(psa_algorithm_t alg,
                                           size_t context_length)
 {
     (void)context;
+    (void)key_type;
+    (void)key_bits;
 
     if (context_length > 255) {
         return PSA_ERROR_INVALID_ARGUMENT;
@@ -319,15 +346,6 @@ static psa_status_t wolfpsa_check_context(psa_algorithm_t alg,
         alg == PSA_ALG_ED25519PH  ||
         alg == PSA_ALG_ED448PH) {
         return PSA_SUCCESS;
-    }
-    if (alg == PSA_ALG_PURE_EDDSA) {
-        /* Ed448 pure EdDSA accepts a context per RFC 8032 */
-        if ((key_type == PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_TWISTED_EDWARDS) ||
-             key_type == PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_TWISTED_EDWARDS)) &&
-            key_bits == 448) {
-            return PSA_SUCCESS;
-        }
-        return PSA_ERROR_INVALID_ARGUMENT;
     }
 #if defined(WOLFSSL_HAVE_MLDSA)
     if (PSA_ALG_IS_ML_DSA(alg) ||
@@ -365,7 +383,10 @@ psa_status_t psa_asymmetric_encrypt(psa_key_id_t key,
     }
 
     if (PSA_KEY_TYPE_IS_RSA(attributes.type)) {
-        if (output == NULL) {
+        /* A NULL output pointer is only an error when the caller declared a
+         * nonzero capacity; (NULL, 0) must reach the required-size check in
+         * the backend worker. */
+        if (output == NULL && output_size != 0) {
             wolfpsa_forcezero_free_key_data(key_data, key_data_length);
             return PSA_ERROR_INVALID_ARGUMENT;
         }
@@ -410,7 +431,10 @@ psa_status_t psa_asymmetric_decrypt(psa_key_id_t key,
     }
 
     if (PSA_KEY_TYPE_IS_RSA(attributes.type)) {
-        if (output == NULL) {
+        /* A NULL output pointer is only an error when the caller declared a
+         * nonzero capacity; (NULL, 0) must reach the required-size check in
+         * the backend worker. */
+        if (output == NULL && output_size != 0) {
             wolfpsa_forcezero_free_key_data(key_data, key_data_length);
             return PSA_ERROR_INVALID_ARGUMENT;
         }
@@ -443,9 +467,18 @@ static psa_status_t wolfpsa_sign_hash_worker(psa_key_id_t key,
     psa_key_attributes_t attributes;
     uint8_t *key_data = NULL;
     size_t key_data_length = 0;
+    size_t sig_size;
     psa_status_t status;
 
-    if (hash == NULL || signature == NULL || signature_length == NULL) {
+    if (signature_length == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    /* The CTF suite (test_c041) requires a NULL hash pointer to be
+     * rejected even when hash_length is zero. */
+    if (hash == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    if (signature == NULL && signature_size != 0) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -490,6 +523,16 @@ static psa_status_t wolfpsa_sign_hash_worker(psa_key_id_t key,
     }
 #endif /* WOLFSSL_HAVE_MLDSA */
 
+    /* The hash workers only accept SIGN_HASH algorithms (ECDSA, RSA,
+     * Ed25519ph, Ed448ph). Message-only EdDSA (PSA_ALG_PURE_EDDSA /
+     * PSA_ALG_EDDSA_CTX) is not a hash algorithm; the Ed25519/Ed448
+     * helpers would interpret the hash buffer as a raw message. MLDSA is
+     * handled above (it returns before reaching this check). */
+    if (!PSA_ALG_IS_SIGN_HASH(alg)) {
+        wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
 #if defined(WOLFSSL_HAVE_LMS)
     if (attributes.type == PSA_KEY_TYPE_LMS_PUBLIC_KEY ||
         attributes.type == PSA_KEY_TYPE_HSS_PUBLIC_KEY) {
@@ -504,6 +547,16 @@ static psa_status_t wolfpsa_sign_hash_worker(psa_key_id_t key,
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 #endif
+
+    /* Required signature capacity, so a zero-capacity buffer gets the
+     * contract status for every signature family. Checked after the
+     * algorithm and key-type rejections above: a call that can never succeed
+     * must report why, not a buffer problem. */
+    sig_size = PSA_SIGN_OUTPUT_SIZE(attributes.type, attributes.bits, alg);
+    if (sig_size != 0 && signature_size < sig_size) {
+        wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+        return PSA_ERROR_BUFFER_TOO_SMALL;
+    }
 
     if (PSA_KEY_TYPE_IS_RSA(attributes.type)) {
         status = psa_asymmetric_sign_rsa(attributes.type, attributes.bits,
@@ -572,7 +625,10 @@ static psa_status_t wolfpsa_verify_hash_worker(psa_key_id_t key,
     size_t key_data_length = 0;
     psa_status_t status;
 
-    if (hash == NULL || signature == NULL) {
+    if (hash == NULL && hash_length != 0) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    if (signature == NULL && signature_length != 0) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -580,6 +636,14 @@ static psa_status_t wolfpsa_verify_hash_worker(psa_key_id_t key,
                                           &attributes, &key_data, &key_data_length);
     if (status != PSA_SUCCESS) {
         return status;
+    }
+
+    /* After the key check, so a bad handle or a missing usage flag still
+     * outranks the signature verdict. */
+    if (signature_length == 0) {
+        /* An empty signature cannot verify. */
+        wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+        return PSA_ERROR_INVALID_SIGNATURE;
     }
 
     status = wolfpsa_check_context(alg, attributes.type, attributes.bits,
@@ -611,6 +675,16 @@ static psa_status_t wolfpsa_verify_hash_worker(psa_key_id_t key,
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 #endif /* WOLFSSL_HAVE_MLDSA */
+
+    /* The hash workers only accept SIGN_HASH algorithms (ECDSA, RSA,
+     * Ed25519ph, Ed448ph). Message-only EdDSA (PSA_ALG_PURE_EDDSA /
+     * PSA_ALG_EDDSA_CTX) is not a hash algorithm; the Ed25519/Ed448
+     * helpers would interpret the hash buffer as a raw message. MLDSA is
+     * handled above (it returns before reaching this check). */
+    if (!PSA_ALG_IS_SIGN_HASH(alg)) {
+        wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
 
 #if defined(WOLFSSL_HAVE_LMS)
     if (attributes.type == PSA_KEY_TYPE_LMS_PUBLIC_KEY ||
@@ -755,11 +829,20 @@ static psa_status_t wolfpsa_sign_message_worker(psa_key_id_t key,
     uint8_t *key_data = NULL;
     size_t key_data_length = 0;
     psa_algorithm_t hash_alg;
-    uint8_t hash[PSA_HASH_MAX_SIZE];
+    uint8_t hash[WOLFPSA_HASH_MAX_SIZE];
     size_t hash_length = 0;
+    size_t sig_size;
     psa_status_t status;
 
-    if (input == NULL || signature == NULL || signature_length == NULL) {
+    if (signature_length == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    /* The CTF suite (test_c052) requires a NULL input pointer to be
+     * rejected even when input_length is zero. */
+    if (input == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    if (signature == NULL && signature_size != 0) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -774,6 +857,14 @@ static psa_status_t wolfpsa_sign_message_worker(psa_key_id_t key,
     if (status != PSA_SUCCESS) {
         wolfpsa_forcezero_free_key_data(key_data, key_data_length);
         return status;
+    }
+
+    /* Required signature capacity, so a zero-capacity buffer gets the
+     * contract status for every signature family. */
+    sig_size = PSA_SIGN_OUTPUT_SIZE(attributes.type, attributes.bits, alg);
+    if (sig_size != 0 && signature_size < sig_size) {
+        wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+        return PSA_ERROR_BUFFER_TOO_SMALL;
     }
 
 #if defined(WOLFSSL_HAVE_MLDSA)
@@ -799,7 +890,7 @@ static psa_status_t wolfpsa_sign_message_worker(psa_key_id_t key,
         }
         else {
             /* HashML-DSA: pre-hash the message then pass digest */
-            uint8_t mldsa_hash[PSA_HASH_MAX_SIZE];
+            uint8_t mldsa_hash[WOLFPSA_HASH_MAX_SIZE];
             size_t mldsa_hash_length = 0;
 
             hash_alg = PSA_ALG_GET_HASH(alg);
@@ -879,7 +970,11 @@ static psa_status_t wolfpsa_sign_message_worker(psa_key_id_t key,
             status = PSA_ERROR_INVALID_ARGUMENT;
             goto cleanup;
         }
-        XMEMCPY(hash, input, hash_length);
+        if (hash_length > 0) {
+            /* memcpy's pointers are declared nonnull, so a (NULL, 0) input
+             * must not reach it. */
+            XMEMCPY(hash, input, hash_length);
+        }
     }
     else {
         hash_alg = PSA_ALG_SIGN_GET_HASH(alg);
@@ -962,11 +1057,14 @@ static psa_status_t wolfpsa_verify_message_worker(psa_key_id_t key,
     uint8_t *key_data = NULL;
     size_t key_data_length = 0;
     psa_algorithm_t hash_alg;
-    uint8_t hash[PSA_HASH_MAX_SIZE];
+    uint8_t hash[WOLFPSA_HASH_MAX_SIZE];
     size_t hash_length = 0;
     psa_status_t status;
 
-    if (input == NULL || signature == NULL) {
+    if (input == NULL && input_length != 0) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    if (signature == NULL && signature_length != 0) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -974,6 +1072,14 @@ static psa_status_t wolfpsa_verify_message_worker(psa_key_id_t key,
                                           &attributes, &key_data, &key_data_length);
     if (status != PSA_SUCCESS) {
         return status;
+    }
+
+    /* After the key check, so a bad handle or a missing usage flag still
+     * outranks the signature verdict. */
+    if (signature_length == 0) {
+        /* An empty signature cannot verify. */
+        wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+        return PSA_ERROR_INVALID_SIGNATURE;
     }
 
     status = wolfpsa_check_context(alg, attributes.type, attributes.bits,
@@ -1001,7 +1107,7 @@ static psa_status_t wolfpsa_verify_message_worker(psa_key_id_t key,
         }
         else {
             /* HashML-DSA: pre-hash the message then pass digest */
-            uint8_t mldsa_hash[PSA_HASH_MAX_SIZE];
+            uint8_t mldsa_hash[WOLFPSA_HASH_MAX_SIZE];
             size_t mldsa_hash_length = 0;
 
             hash_alg = PSA_ALG_GET_HASH(alg);
@@ -1114,7 +1220,11 @@ static psa_status_t wolfpsa_verify_message_worker(psa_key_id_t key,
             status = PSA_ERROR_INVALID_ARGUMENT;
             goto cleanup;
         }
-        XMEMCPY(hash, input, hash_length);
+        if (hash_length > 0) {
+            /* memcpy's pointers are declared nonnull, so a (NULL, 0) input
+             * must not reach it. */
+            XMEMCPY(hash, input, hash_length);
+        }
     }
     else {
         hash_alg = PSA_ALG_SIGN_GET_HASH(alg);
@@ -1259,11 +1369,19 @@ psa_status_t wolfpsa_key_agreement_secret(psa_algorithm_t alg,
     uint8_t *key_data = NULL;
     size_t key_data_length = 0;
     psa_status_t status;
+#if defined(HAVE_ECC) && defined(HAVE_ECC_DHE)
     int ret;
     ecc_key priv;
     ecc_key pub;
+#if defined(ECC_TIMING_RESISTANT) && !defined(WC_NO_RNG)
+    /* Attached to the private key for blinding in wc_ecc_shared_secret;
+     * only needed when wolfCrypt blinding is compiled in and an RNG
+     * exists. */
+    WC_RNG rng;
+#endif
     int curve_id;
     word32 out_len;
+#endif
 
     if (PSA_ALG_KEY_AGREEMENT_GET_BASE(alg) != PSA_ALG_ECDH) {
         return PSA_ERROR_NOT_SUPPORTED;
@@ -1315,6 +1433,17 @@ psa_status_t wolfpsa_key_agreement_secret(psa_algorithm_t alg,
         return status;
     }
 
+#ifdef HAVE_ECC
+#if !defined(HAVE_ECC_DHE)
+    /* Generic (Weierstrass) ECDH needs wc_ecc_shared_secret(), which
+     * settings.h only declares when HAVE_ECC_DHE is set. That macro is
+     * off in WC_NO_RNG builds (blinding needs an RNG), so exclude the
+     * body at compile time and report the combination as unsupported
+     * up front instead of failing to compile or dying late with
+     * MISSING_RNG_E. Montgomery X25519/X448 is handled above. */
+    wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+    return PSA_ERROR_NOT_SUPPORTED;
+#else
     curve_id = wc_psa_get_ecc_curve_id(attributes.type, attributes.bits);
     if (curve_id == ECC_CURVE_INVALID) {
         wolfpsa_forcezero_free_key_data(key_data, key_data_length);
@@ -1351,27 +1480,52 @@ psa_status_t wolfpsa_key_agreement_secret(psa_algorithm_t alg,
         }
     }
 
-    ret = wc_ecc_init(&priv);
+    ret = wc_ecc_init_ex(&priv, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wolfpsa_forcezero_free_key_data(key_data, key_data_length);
         return wc_error_to_psa_status(ret);
     }
-    ret = wc_ecc_init(&pub);
+    ret = wc_ecc_init_ex(&pub, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_ecc_free(&priv);
         wolfpsa_forcezero_free_key_data(key_data, key_data_length);
         return wc_error_to_psa_status(ret);
     }
 
+#if defined(ECC_TIMING_RESISTANT) && !defined(WC_NO_RNG)
+    ret = wc_InitRng(&rng);
+    if (ret != 0) {
+        wc_ecc_free(&pub);
+        wc_ecc_free(&priv);
+        wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+        return wc_error_to_psa_status(ret);
+    }
+#endif
+
     ret = wc_ecc_import_private_key_ex(key_data, (word32)key_data_length,
                                        NULL, 0, &priv, curve_id);
+#if defined(ECC_TIMING_RESISTANT) && !defined(WC_NO_RNG)
+    if (ret == 0) {
+        /* The ECDH scalar multiplication uses the key's RNG for blinding
+         * under ECC_TIMING_RESISTANT, so the imported private key needs
+         * one attached. */
+        ret = wc_ecc_set_rng(&priv, &rng);
+    }
+#endif
     if (ret == 0) {
         ret = wc_ecc_make_pub_ex(&priv, NULL, NULL);
     }
     if (ret == 0) {
-        ret = wc_ecc_import_x963(peer_key, (word32)peer_key_length, &pub);
+        /* Pin the peer point to the local key's curve: a point that is
+         * not on this curve must fail, not be reinterpreted on the
+         * default curve for the coordinate size. */
+        ret = wc_ecc_import_x963_ex(peer_key, (word32)peer_key_length,
+                                    &pub, curve_id);
     }
     if (ret != 0) {
+#if defined(ECC_TIMING_RESISTANT) && !defined(WC_NO_RNG)
+        wc_FreeRng(&rng);
+#endif
         wc_ecc_free(&pub);
         wc_ecc_free(&priv);
         wolfpsa_forcezero_free_key_data(key_data, key_data_length);
@@ -1380,6 +1534,9 @@ psa_status_t wolfpsa_key_agreement_secret(psa_algorithm_t alg,
 
     out_len = (word32)output_size;
     ret = wc_ecc_shared_secret(&priv, &pub, output, &out_len);
+#if defined(ECC_TIMING_RESISTANT) && !defined(WC_NO_RNG)
+    wc_FreeRng(&rng);
+#endif
     wc_ecc_free(&pub);
     wc_ecc_free(&priv);
     wolfpsa_forcezero_free_key_data(key_data, key_data_length);
@@ -1389,6 +1546,13 @@ psa_status_t wolfpsa_key_agreement_secret(psa_algorithm_t alg,
 
     *output_length = (size_t)out_len;
     return PSA_SUCCESS;
+#endif /* HAVE_ECC_DHE */
+#else
+    /* Generic (Weierstrass) ECDH needs wolfCrypt ECC (HAVE_ECC), which this
+     * build does not enable. Montgomery X25519/X448 is handled above. */
+    wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+    return PSA_ERROR_NOT_SUPPORTED;
+#endif /* HAVE_ECC */
 }
 
 psa_status_t psa_raw_key_agreement(psa_algorithm_t alg,
@@ -1402,7 +1566,7 @@ psa_status_t psa_raw_key_agreement(psa_algorithm_t alg,
     wolfpsa_trace("psa_raw_key_agreement(alg=0x%08x key=%u peer_len=%zu)",
                   (unsigned)alg, (unsigned)private_key, peer_key_length);
 
-    if (output == NULL || output_length == NULL) {
+    if (output_length == NULL || (output == NULL && output_size != 0)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
     if (!PSA_ALG_IS_RAW_KEY_AGREEMENT(alg)) {

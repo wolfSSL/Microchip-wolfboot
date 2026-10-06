@@ -21,6 +21,7 @@
 int test_dtls13_bad_epoch_ch(void);
 int test_wolfSSL_dtls13_null_cipher(void);
 int test_dtls13_frag_ch_pq(void);
+int test_dtls13_frag_ch_pq_no_cookie(void);
 int test_dtls_frag_ch(void);
 int test_dtls_empty_keyshare_with_cookie(void);
 int test_dtls13_missing_finished_client(void);
@@ -33,6 +34,7 @@ int test_dtls13_basic_connection_id(void);
 int test_dtls13_hrr_want_write(void);
 int test_dtls13_every_write_want_write(void);
 int test_dtls13_epochs(void);
+int test_dtls13_alert_with_pending_output(void);
 int test_dtls13_ack_order(void);
 int test_dtls13_ack_overflow(void);
 int test_dtls13_ack_dup_write_counter(void);
@@ -42,12 +44,19 @@ int test_dtls_srtp(void);
 int test_dtls13_min_rtx_interval(void);
 int test_dtls13_no_session_id_echo(void);
 int test_dtls13_5_9_0_compat(void);
-int test_dtls13_oversized_cert_chain(void);
+int test_dtls13_5_9_0_compat_bad_echo(void);
+int test_dtls13_5_9_0_compat_empty_echo(void);
+int test_dtls13_reuse_after_clear(void);
+int test_dtls13_epoch_slot_reuse_replay(void);
+int test_dtls13_epoch_slot_reuse_decrypt_epoch(void);
+int test_dtls13_plaintext_ack_after_handshake(void);
+int test_dtls13_reset_clears_alert_history(void);
 
 #define TEST_DTLS13_DECLS                                                      \
     TEST_DECL_GROUP("dtls13", test_dtls13_bad_epoch_ch),                       \
     TEST_DECL_GROUP("dtls13", test_wolfSSL_dtls13_null_cipher),                \
     TEST_DECL_GROUP("dtls13", test_dtls13_frag_ch_pq),                         \
+    TEST_DECL_GROUP("dtls13", test_dtls13_frag_ch_pq_no_cookie),               \
     TEST_DECL_GROUP("dtls13", test_dtls_frag_ch),                              \
     TEST_DECL_GROUP("dtls13", test_dtls_empty_keyshare_with_cookie),           \
     TEST_DECL_GROUP("dtls13", test_dtls13_missing_finished_client),            \
@@ -57,6 +66,7 @@ int test_dtls13_oversized_cert_chain(void);
     TEST_DECL_GROUP("dtls13", test_dtls13_hrr_want_write),                     \
     TEST_DECL_GROUP("dtls13", test_dtls13_every_write_want_write),             \
     TEST_DECL_GROUP("dtls13", test_dtls13_epochs),                             \
+    TEST_DECL_GROUP("dtls13", test_dtls13_alert_with_pending_output),          \
     TEST_DECL_GROUP("dtls13", test_dtls13_ack_order),                          \
     TEST_DECL_GROUP("dtls13", test_dtls13_ack_overflow),                       \
     TEST_DECL_GROUP("dtls13", test_dtls13_ack_dup_write_counter),              \
@@ -66,6 +76,12 @@ int test_dtls13_oversized_cert_chain(void);
     TEST_DECL_GROUP("dtls13", test_dtls13_min_rtx_interval),                   \
     TEST_DECL_GROUP("dtls13", test_dtls13_no_session_id_echo),                 \
     TEST_DECL_GROUP("dtls13", test_dtls13_5_9_0_compat),                       \
-    TEST_DECL_GROUP("dtls13", test_dtls13_oversized_cert_chain)
+    TEST_DECL_GROUP("dtls13", test_dtls13_5_9_0_compat_bad_echo),              \
+    TEST_DECL_GROUP("dtls13", test_dtls13_5_9_0_compat_empty_echo),            \
+    TEST_DECL_GROUP("dtls13", test_dtls13_reuse_after_clear),                  \
+    TEST_DECL_GROUP("dtls13", test_dtls13_epoch_slot_reuse_replay),            \
+    TEST_DECL_GROUP("dtls13", test_dtls13_epoch_slot_reuse_decrypt_epoch),     \
+    TEST_DECL_GROUP("dtls13", test_dtls13_plaintext_ack_after_handshake), \
+    TEST_DECL_GROUP("dtls13", test_dtls13_reset_clears_alert_history)
 
 #endif /* TESTS_API_DTLS13_H */

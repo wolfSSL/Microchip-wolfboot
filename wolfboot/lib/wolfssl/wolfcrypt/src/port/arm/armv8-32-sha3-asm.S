@@ -15,7 +15,16 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-sha3-asm.S
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_32_SHA3_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+
+/* Honor WC_SHA3_NO_ASM as sha3.c does: suppress this NEON BlockSha3 so it
+ * doesn't multiply-define against sha3.c's C BlockSha3 on arm32. */
+#ifdef WC_SHA3_NO_ASM
+    #undef WOLFSSL_ARMASM
+#endif
 
 #ifdef WOLFSSL_ARMASM
 #if !defined(__aarch64__) && !defined(WOLFSSL_ARMASM_THUMB2)
@@ -51,6 +60,7 @@ L_sha3_arm32_neon_rt:
 	.text
 	.align	4
 	.globl	BlockSha3
+	WC_ASM_ATT_HIDDEN(BlockSha3)
 	.type	BlockSha3, %function
 BlockSha3:
 	vpush	{d8-d15}
@@ -345,6 +355,7 @@ L_sha3_arm32_rt:
 	.text
 	.align	4
 	.globl	BlockSha3
+	WC_ASM_ATT_HIDDEN(BlockSha3)
 	.type	BlockSha3, %function
 BlockSha3:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -2315,10 +2326,10 @@ L_sha3_arm32_begin:
 	.size	BlockSha3,.-BlockSha3
 #endif /* WOLFSSL_ARMASM_NO_NEON */
 #endif /* WOLFSSL_SHA3 */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

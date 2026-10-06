@@ -1,8 +1,8 @@
 /* tpm_io_zephyr.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -144,6 +144,7 @@ int TPM2_IoCb_Zephyr_I2C(TPM2_CTX* ctx, int isRead, word32 addr,
             printf("Failed to write to TPM at register 0x%02X! Error: %d\n", addr, ret);
         }
 
+        TPM2_ForceZero(tempBuf, size + 1);
         XFREE(tempBuf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     }
 

@@ -371,6 +371,47 @@ int wolfSSL_X509_get_cert_items(char* CERT_TAG,
 } /* wolfSSL_X509_show_cert */
 
 
+/* wolfSSL_X509_verify_cert() for the cert the store is reporting an error for.
+ * The other peer certs are passed in as untrusted intermediates: with alt cert
+ * chains ProcessPeerCerts() keeps them out of the Certificate Manager, leaving
+ * nothing to build a path from. The store ctx given to the callback belongs to
+ * the TLS layer, so verify through a private one. */
+static CB_INLINE int store_verify_peer(WOLFSSL_X509_STORE_CTX* store)
+{
+    int ret = WOLFSSL_FAILURE;
+    int i;
+    WOLFSSL_X509* this_cert;
+    WOLFSSL_X509_STORE_CTX* peer_store;
+    WOLF_STACK_OF(WOLFSSL_X509)* untrusted;
+
+    untrusted = wolfSSL_sk_X509_new_null();
+    peer_store = wolfSSL_X509_STORE_CTX_new();
+    if ((untrusted == NULL) || (peer_store == NULL)) {
+        ESP_LOGE(TAG, "store_verify_peer out of memory");
+    }
+    else {
+        for (i = store->error_depth + 1; i < store->totalCerts; i++) {
+            /* A cert missing here can only make the verify below fail. */
+            this_cert = wolfSSL_X509_d2i(NULL, store->certs[i].buffer,
+                                         (int)store->certs[i].length);
+            if ((this_cert != NULL) &&
+                (wolfSSL_sk_X509_push(untrusted, this_cert) <= 0)) {
+                wolfSSL_X509_free(this_cert);
+            }
+        }
+
+        if (wolfSSL_X509_STORE_CTX_init(peer_store, store->store,
+                        store->current_cert, untrusted) == WOLFSSL_SUCCESS) {
+            ret = wolfSSL_X509_verify_cert(peer_store);
+        }
+    }
+
+    wolfSSL_X509_STORE_CTX_free(peer_store);
+    wolfSSL_sk_X509_pop_free(untrusted, NULL);
+
+    return ret;
+}
+
 /*
  * cert_manager_load()
  *
@@ -440,9 +481,8 @@ static CB_INLINE int cert_manager_load(int preverify,
     ret = wolfSSL_CertManagerLoadCABuffer(cm, der, derSz,
                                           WOLFSSL_FILETYPE_ASN1);
     if (ret == WOLFSSL_SUCCESS) {
-        /* Attempt to validate the certificate again */
-        ret = wolfSSL_CertManagerVerifyBuffer(cm, der, derSz,
-            WOLFSSL_FILETYPE_ASN1);
+        /* Attempt to validate the peer certificate again */
+        ret = store_verify_peer(store);
 
         if (ret == WOLFSSL_SUCCESS) {
             ESP_LOGCBI(TAG, "Successfully validated cert: %s\n", subject->name);
@@ -973,14 +1013,12 @@ static CB_INLINE int wolfssl_ssl_conf_verify_cb_no_signer(int preverify,
     /* Clean up and exit */
     if ((_crt_found == 0) && (bundle_cert != NULL)) {
         ESP_LOGW(TAG, "Cert not found, free bundle_cert");
+        /* this_subject and this_issuer are a part of bundle_cert and will be
+         * freed here */
         wolfSSL_X509_free(bundle_cert);
         bundle_cert = NULL;
-        /* this_subject and this_issuer are pointers into cert used.
-         * Don't free if the cert was found. */
-        wolfSSL_X509_NAME_free(this_subject);
-        this_subject = NULL;
-        wolfSSL_X509_NAME_free(this_issuer);
         this_issuer = NULL;
+        this_subject = NULL;
     }
 
     /* We don't clean up the store_cert and x509 as we are in a callback,
@@ -1371,6 +1409,13 @@ static esp_err_t wolfssl_esp_crt_bundle_init(const uint8_t *x509_bundle,
             cert_len = cur_crt[0] << 8 | cur_crt[1];
             ESP_LOGCBI(TAG, "- This certificate at 0x%x, length: %u",
                              (intptr_t)cur_crt, cert_len);
+
+            if (cur_crt + CRT_HEADER_OFFSET + cert_len > bundle_end) {
+                ESP_LOGE(TAG, "Invalid certificate bundle cert length");
+                _esp_crt_bundle_is_valid = ESP_FAIL;
+                ret = ESP_ERR_INVALID_ARG;
+                break;
+            }
 
             /* TODO: optional gate out serial check for performance.       */
             /* Useful only for custom cert bundle, known to have no zeros. */

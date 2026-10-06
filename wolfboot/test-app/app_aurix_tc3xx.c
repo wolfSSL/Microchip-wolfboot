@@ -27,6 +27,29 @@
 #ifdef TC3_CFG_HAVE_TRICORE
 #include "tc3/tc3tc.h"
 
+#if defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) && \
+    defined(WOLFBOOT_TC3_CLIENT_TRIGGER_HSM_UPDATE)
+#include "tchsm_hh_host.h"
+
+/* On the base version, also triggers the update staged for the HSM, which
+ * wolfBoot on the HSM installs at the next reset */
+static void hsmUpdate(void)
+{
+    int rc;
+
+    if (wolfBoot_current_firmware_version() > BASE_FW_VERSION) {
+        return;
+    }
+    rc = tchsmHhHost_HsmUpdateTrigger();
+    if (rc == 0) {
+        wolfBoot_printf("HSM update triggered\n");
+    }
+    else {
+        wolfBoot_printf("HSM update trigger failed: %d\n", rc);
+    }
+}
+#endif /* WOLFHSM_CLIENT && WOLFBOOT_TC3_CLIENT_TRIGGER_HSM_UPDATE */
+
 /* Invoked by wolfLLD CRT before main, but after CSA and stack pointer setup */
 void tc3tc_crt_PreInit(void)
 {
@@ -57,7 +80,9 @@ void tc3tc_main(void)
     /* disable external WATCHDOG on the board */
     bsp_board_wdg_Disable();
 
+#ifdef DEBUG_UART
     uart_init();
+#endif
     wolfBoot_printf("TC3xx Test Application\n");
     wolfBoot_printf("Version: %d\n", wolfBoot_current_firmware_version());
 
@@ -80,6 +105,9 @@ void tc3tc_main(void)
 
         rc = hal_hsm_init_connect();
         if (rc == 0) {
+#ifdef WOLFBOOT_TC3_CLIENT_TRIGGER_HSM_UPDATE
+            hsmUpdate();
+#endif
             wolfBoot_printf("wolfHSM Echo: sending %d bytes\n",
                             sizeof(echoMsg));
             rc = wh_Client_Echo(&hsmClientCtx, sizeof(echoMsg), echoMsg,
@@ -113,7 +141,9 @@ void tc3arm_main(void)
     /* disable external WATCHDOG on the board */
     bsp_board_wdg_Disable();
 
+#ifdef DEBUG_UART
     uart_init();
+#endif
     wolfBoot_printf("TC3xx HSM Test Application\n");
     wolfBoot_printf("Version: %d\n", wolfBoot_current_firmware_version());
 

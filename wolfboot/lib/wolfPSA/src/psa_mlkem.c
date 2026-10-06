@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE) && defined(WOLFSSL_HAVE_MLKEM)
 
@@ -220,7 +220,7 @@ psa_status_t wolfpsa_mlkem_encapsulate(size_t bits, psa_key_type_t key_type,
         return PSA_ERROR_BUFFER_TOO_SMALL;
     }
 
-    ret = wc_InitRng(&rng);
+    ret = wc_InitRng_ex(&rng, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_MlKemKey_Free(&key);
         return wc_error_to_psa_status(ret);

@@ -31,8 +31,8 @@ int main(int argc, char** argv)
     int                ret;
 
     /* declare wolfSSL objects */
-    WOLFSSL_CTX* ctx;
-    WOLFSSL*     ssl;
+    WOLFSSL_CTX* ctx = NULL;
+    WOLFSSL*     ssl = NULL;
 
 
 
@@ -62,14 +62,14 @@ int main(int argc, char** argv)
     if (inet_pton(AF_INET, argv[1], &servAddr.sin_addr, sizeof(servAddr.sin_addr)) != 1) {
         fprintf(stderr, "ERROR: invalid address\n");
         ret = -1;
-        goto end;
+        goto socket_cleanup;
     }
 
     /* Connect to the server */
     if ((ret = connect(sockfd, (struct sockaddr*) &servAddr, sizeof(servAddr)))
          == -1) {
         fprintf(stderr, "ERROR: failed to connect\n");
-        goto end;
+        goto socket_cleanup;
     }
 
     /*---------------------------------*/
@@ -85,7 +85,7 @@ int main(int argc, char** argv)
     if ((ctx = wolfSSL_CTX_new(wolfTLSv1_2_client_method())) == NULL) {
         fprintf(stderr, "ERROR: failed to create WOLFSSL_CTX\n");
         ret = -1;
-        goto socket_cleanup;
+        goto ctx_cleanup;
     }
 
     /* Load client certificates into WOLFSSL_CTX */

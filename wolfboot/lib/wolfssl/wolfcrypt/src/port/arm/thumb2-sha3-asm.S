@@ -15,7 +15,16 @@
  *       thumb2 ../wolfssl/wolfcrypt/src/port/arm/thumb2-sha3-asm.S
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_THUMB2_SHA3_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+
+/* Honor WC_SHA3_NO_ASM as sha3.c does: suppress this BlockSha3 so it
+ * doesn't multiply-define against sha3.c's C BlockSha3 on thumb2. */
+#ifdef WC_SHA3_NO_ASM
+    #undef WOLFSSL_ARMASM
+#endif
 
 #ifdef WOLFSSL_ARMASM
 #ifdef WOLFSSL_ARMASM_THUMB2
@@ -52,12 +61,13 @@ L_sha3_thumb2_rt:
 	.text
 	.align	4
 	.globl	BlockSha3
+	WC_ASM_ATT_HIDDEN(BlockSha3)
 	.type	BlockSha3, %function
 BlockSha3:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
 	SUB	sp, sp, #0xcc
 	ADR	r1, L_sha3_thumb2_rt
-	MOV	r2, #0xc
+	MOV	r2, #12
 L_sha3_thumb2_begin:
 	STR	r2, [sp, #200]
 	/* Round even */
@@ -326,7 +336,7 @@ L_sha3_thumb2_begin:
 	STR	lr, [sp, #36]
 	/* Get constant */
 	LDRD	r10, r11, [r1]
-	ADD	r1, r1, #0x8
+	ADD	r1, r1, #8
 	BIC	r12, r6, r4
 	BIC	lr, r7, r5
 	EOR	r12, r12, r2
@@ -854,7 +864,7 @@ L_sha3_thumb2_begin:
 	STR	lr, [r0, #36]
 	/* Get constant */
 	LDRD	r10, r11, [r1]
-	ADD	r1, r1, #0x8
+	ADD	r1, r1, #8
 	BIC	r12, r6, r4
 	BIC	lr, r7, r5
 	EOR	r12, r12, r2
@@ -1117,7 +1127,7 @@ L_sha3_thumb2_begin:
 	STR	r12, [r0, #160]
 	STR	lr, [r0, #164]
 	LDR	r2, [sp, #200]
-	SUBS	r2, r2, #0x1
+	SUBS	r2, r2, #1
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_sha3_thumb2_begin
 #else
@@ -1128,10 +1138,10 @@ L_sha3_thumb2_begin:
 	/* Cycle Count = 1505 */
 	.size	BlockSha3,.-BlockSha3
 #endif /* WOLFSSL_SHA3 */
-#endif /* WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

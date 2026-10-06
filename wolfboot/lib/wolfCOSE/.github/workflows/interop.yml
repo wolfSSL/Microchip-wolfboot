@@ -1,0 +1,164 @@
+name: Interop
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '**' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TCOSE_SHA: ff4c5f7c6fbbe27bb582214ff1878bf58ebc6c43
+  QCBOR_SHA: 930708bb86481e88879eb1d87fd4d664f1d69503
+
+jobs:
+  discover:
+    uses: ./.github/workflows/_resolve-wolfssl.yml
+
+  interop:
+    name: COSE and PSA/EAT interoperability (OpenSSL, wolfSSL ${{ matrix.wolfssl-version }})
+    needs: discover
+    runs-on: ubuntu-latest
+    # All external peers share this job and its wolfSSL build. Keeping them
+    # together avoids repeating the matrix setup for short interop commands.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go for go-cose interop
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.x'
+        cache-dependency-path: tests/interop/go_cose/go.sum
+
+    - name: Set up Python for python-cwt interop
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: tests/interop/python_cwt/requirements.txt
+
+    - name: Set up Rust for coset interop
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool libssl-dev
+
+    - name: Install python-cwt peer
+      run: |
+        python -m pip install --disable-pip-version-check \
+            --requirement tests/interop/python_cwt/requirements.txt
+
+    - name: Cache wolfSSL (${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version != 'master'
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-interop-${{ matrix.wolfssl-version }}-v1
+
+    - name: Build wolfSSL (${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version == 'master' || steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} \
+            https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-hkdf --enable-aeskeywrap \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    # QCBOR and t_cose are BSD-3-Clause; fetched at pinned SHAs, not vendored.
+    - name: Build QCBOR @ pinned SHA
+      run: |
+        cd ~
+        mkdir -p interop-deps/QCBOR && cd interop-deps/QCBOR
+        git init -q
+        git fetch --depth 1 -q https://github.com/laurencelundblade/QCBOR.git $QCBOR_SHA
+        git checkout -q FETCH_HEAD
+        make libqcbor.a
+
+    - name: Build t_cose @ pinned SHA (OpenSSL adapter)
+      run: |
+        cd ~/interop-deps
+        mkdir -p t_cose && cd t_cose
+        git init -q
+        git fetch --depth 1 -q https://github.com/laurencelundblade/t_cose.git $TCOSE_SHA
+        git checkout -q FETCH_HEAD
+        make -f Makefile.ossl libt_cose.a \
+             QCBOR_INC="-I $HOME/interop-deps/QCBOR/inc" \
+             QCBOR_LIB="$HOME/interop-deps/QCBOR/libqcbor.a"
+
+    - name: Build wolfCOSE
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        make WOLFSSL_CFLAGS="-isystem $WOLFSSL_DIR/include" \
+             WOLFSSL_LIBS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Verify RFC 9783 Appendix A PSA/EAT vectors
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-test \
+             CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run t_cose and PSA/EAT profile interop
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make interop-tcose \
+             TCOSE_DIR=$HOME/interop-deps/t_cose \
+             QCBOR_DIR=$HOME/interop-deps/QCBOR \
+             TCOSE_CRYPTO_LIB="-lcrypto" \
+             WOLFSSL_CFLAGS="-isystem $WOLFSSL_DIR/include" \
+             WOLFSSL_LIBS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run go-cose interop
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make interop-go-cose \
+             WOLFSSL_CFLAGS="-isystem $WOLFSSL_DIR/include" \
+             WOLFSSL_LIBS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run python-cwt interop
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make interop-python-cwt \
+             WOLFSSL_CFLAGS="-isystem $WOLFSSL_DIR/include" \
+             WOLFSSL_LIBS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run Rust coset interop
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make interop-rust-coset \
+             WOLFSSL_CFLAGS="-isystem $WOLFSSL_DIR/include" \
+             WOLFSSL_LIBS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    # This is intentionally separate from interop-tcose: these are t_cose's
+    # own API-level tests, while interop-tcose exercises wolfCOSE wire format.
+    - name: Run complete upstream t_cose suite
+      run: |
+        make tcose-upstream \
+             TCOSE_DIR=$HOME/interop-deps/t_cose \
+             QCBOR_DIR=$HOME/interop-deps/QCBOR

@@ -1,8 +1,8 @@
 /* activate_credential.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -129,6 +129,7 @@ int TPM2_ActivateCredential_Example(void* userCtx, int argc, char *argv[])
     rc = readKeyBlob(keyblob, &akKey);
     if (rc != TPM_RC_SUCCESS) {
         printf("Failure to read keyblob.\n");
+        goto exit;
     }
     rc = wolfTPM2_LoadKey(&dev, &akKey, &primary->handle);
     if (rc != TPM_RC_SUCCESS) {

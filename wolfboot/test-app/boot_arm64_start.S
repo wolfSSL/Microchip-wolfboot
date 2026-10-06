@@ -16,6 +16,10 @@
 .type _start, @function
 
 _start:
+    /* Preserve the handoff x0 (DTB pointer, per the arm64 boot protocol) so
+     * the data/bss init below can use x0; restored before the jump to main. */
+    mov x19, x0
+
     /* Set up stack pointer */
     ldr x0, =__stack
     mov sp, x0
@@ -46,7 +50,10 @@ _start:
     b.lt 3b
 4:
 
-    /* Jump to main - never returns */
+    /* Restore x0 and jump to main - never returns. main(void) ignores it, but
+     * the tegra234 and imx8qm payloads read x0 to recover the DTB
+     * pointer. */
+    mov x0, x19
     bl main
 
     /* If main returns, loop forever */
@@ -56,9 +63,10 @@ _start:
 
 .size _start, . - _start
 
-/* Provide _exit stub for bare-metal builds (required by some standard library code) */
+/* _exit stub for bare-metal builds (some libc code needs it). Weak so
+ * syscalls.c (wolfCrypt test/benchmark) can supply the strong _exit. */
 .section .text, "ax"
-.global _exit
+.weak _exit
 .type _exit, @function
 
 _exit:

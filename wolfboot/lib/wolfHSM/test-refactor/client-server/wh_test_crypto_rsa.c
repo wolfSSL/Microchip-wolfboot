@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -10,7 +10,8 @@
 /*
  * test-refactor/client-server/wh_test_crypto_rsa.c
  *
- * RSA encrypt/decrypt round-trips routed through the server via WH_DEV_ID:
+ * RSA encrypt/decrypt round-trips routed through the server via the
+ * per-client devId (WH_CLIENT_DEVID):
  * ephemeral key, server-exported key, and server-cached key paths.
  */
 
@@ -24,6 +25,7 @@
 #include "wolfssl/wolfcrypt/settings.h"
 #include "wolfssl/wolfcrypt/types.h"
 #include "wolfssl/wolfcrypt/rsa.h"
+#include "wolfssl/wolfcrypt/asn.h"
 #include "wolfssl/wolfcrypt/random.h"
 
 #include "wolfhsm/wh_error.h"
@@ -43,7 +45,7 @@
 
 static int _whTest_CryptoRsa(whClientContext* ctx)
 {
-    int     devId = WH_DEV_ID;
+    int     devId = WH_CLIENT_DEVID(ctx);
     int     ret   = WH_ERROR_OK;
     WC_RNG  rng[1];
     RsaKey  rsa[1];
@@ -100,7 +102,7 @@ static int _whTest_CryptoRsa(whClientContext* ctx)
         /* Using client export key */
         memset(cipherText, 0, sizeof(cipherText));
         memset(finalText, 0, sizeof(finalText));
-        ret = wc_InitRsaKey_ex(rsa, NULL, WH_DEV_ID);
+        ret = wc_InitRsaKey_ex(rsa, NULL, WH_CLIENT_DEVID(ctx));
         if (ret != 0) {
             WH_ERROR_PRINT("Failed to wc_InitRsaKey_ex %d\n", ret);
         }
@@ -149,7 +151,7 @@ static int _whTest_CryptoRsa(whClientContext* ctx)
             WH_ERROR_PRINT("Failed to make cached key %d\n", ret);
         }
         else {
-            ret = wc_InitRsaKey_ex(rsa, NULL, WH_DEV_ID);
+            ret = wc_InitRsaKey_ex(rsa, NULL, WH_CLIENT_DEVID(ctx));
             if (ret != 0) {
                 WH_ERROR_PRINT("Failed to wc_InitRsaKey_ex %d\n", ret);
             }
@@ -208,7 +210,7 @@ static int _whTest_CryptoRsa(whClientContext* ctx)
  * trip proves the exported public key matches the cached private. */
 static int _whTest_CryptoRsaExportPublicKey(whClientContext* ctx)
 {
-    int      devId = WH_DEV_ID;
+    int      devId = WH_CLIENT_DEVID(ctx);
     int      ret   = WH_ERROR_OK;
     WC_RNG   rng[1];
     RsaKey   rsaPub[1];
@@ -312,10 +314,118 @@ static int _whTest_CryptoRsaExportPublicKey(whClientContext* ctx)
     return ret;
 }
 
+/* One keygen call caches the private key and returns the public key. Verify
+ * the returned public key byte-matches a separate wh_Client_RsaExportPublicKey
+ * and that it round-trips against the cached private key. */
+static int _whTest_CryptoRsaCacheKeyAndExportPublic(whClientContext* ctx)
+{
+    int      devId = WH_CLIENT_DEVID(ctx);
+    int      ret   = WH_ERROR_OK;
+    WC_RNG   rng[1];
+    RsaKey   genPub[1];
+    RsaKey   refPub[1] = {0};
+    char     plainText[sizeof(WH_TEST_RSA_PLAINTEXT)] = WH_TEST_RSA_PLAINTEXT;
+    char     cipherText[RSA_KEY_BYTES];
+    char     finalText[RSA_KEY_BYTES];
+    whKeyId  keyId    = WH_KEYID_ERASED;
+    byte     genDer[2048];
+    byte     refDer[2048];
+    int      genDerSz = 0;
+    int      refDerSz = 0;
+    int      encLen   = 0;
+    int      decLen;
+
+    memset(cipherText, 0, sizeof(cipherText));
+    memset(finalText, 0, sizeof(finalText));
+
+    ret = wc_InitRng_ex(rng, NULL, devId);
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed to wc_InitRng_ex %d\n", ret);
+        return ret;
+    }
+
+    ret = wc_InitRsaKey_ex(genPub, NULL, INVALID_DEVID);
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed to wc_InitRsaKey_ex %d\n", ret);
+        (void)wc_FreeRng(rng);
+        return ret;
+    }
+
+    ret = wh_Client_RsaMakeCacheKeyAndExportPublic(
+        ctx, RSA_KEY_BITS, RSA_EXPONENT, &keyId,
+        WH_NVM_FLAGS_USAGE_ENCRYPT | WH_NVM_FLAGS_USAGE_DECRYPT, 0, NULL,
+        genPub);
+    if (ret != 0) {
+        WH_ERROR_PRINT("RsaMakeCacheKeyAndExportPublic failed %d\n", ret);
+    }
+
+    /* Cross-check against a separate public export of the same keyId. */
+    if (ret == 0) {
+        ret = wc_InitRsaKey_ex(refPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wh_Client_RsaExportPublicKey(ctx, keyId, refPub, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("wh_Client_RsaExportPublicKey failed %d\n", ret);
+            }
+            else {
+                genDerSz =
+                    wc_RsaKeyToPublicDer(genPub, genDer, sizeof(genDer));
+                refDerSz =
+                    wc_RsaKeyToPublicDer(refPub, refDer, sizeof(refDer));
+                if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+                    (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+                    WH_ERROR_PRINT("keygen pubkey mismatch vs export\n");
+                    ret = -1;
+                }
+            }
+        }
+    }
+
+    /* Encrypt locally with the independently exported public key (refPub) the
+     * client holds. */
+    if (ret == 0) {
+        encLen = wc_RsaPublicEncrypt((byte*)plainText, sizeof(plainText),
+                                     (byte*)cipherText, sizeof(cipherText),
+                                     refPub, rng);
+        if (encLen < 0) {
+            WH_ERROR_PRINT("PublicEncrypt with keygen pub failed %d\n", encLen);
+            ret = encLen;
+        }
+    }
+
+    /* Decrypt on the HSM using genPub directly as the HSM private-key handle
+     * (no separate key object). */
+    if (ret == 0) {
+        decLen = wc_RsaPrivateDecrypt((byte*)cipherText, encLen,
+                                      (byte*)finalText, sizeof(finalText),
+                                      genPub);
+        if (decLen < 0) {
+            WH_ERROR_PRINT("HSM PrivateDecrypt failed %d\n", decLen);
+            ret = decLen;
+        }
+        else if (memcmp(plainText, finalText, sizeof(plainText)) != 0) {
+            WH_ERROR_PRINT("RSA keygen-pub round-trip mismatch\n");
+            ret = -1;
+        }
+    }
+
+    (void)wc_FreeRsaKey(refPub);
+    (void)wc_FreeRsaKey(genPub);
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+    (void)wc_FreeRng(rng);
+
+    if (ret == 0) {
+        WH_TEST_PRINT("RSA CACHE-AND-EXPORT-PUBLIC DEVID=0x%X SUCCESS\n", devId);
+    }
+    return ret;
+}
+
 /* Exercises wh_Client_RsaFunction with an undersized output buffer. */
 static int _whTest_CryptoRsaBufferTooSmall(whClientContext* ctx)
 {
-    const int  devId         = WH_DEV_ID;
+    const int  devId         = WH_CLIENT_DEVID(ctx);
     const int  rsa_key_bits  = 2048;
     const int  rsa_key_bytes = rsa_key_bits / 8;
     int        ret;
@@ -379,6 +489,7 @@ int whTest_Crypto_Rsa(whClientContext* ctx)
 {
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoRsa(ctx));
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoRsaExportPublicKey(ctx));
+    WH_TEST_RETURN_ON_FAIL(_whTest_CryptoRsaCacheKeyAndExportPublic(ctx));
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoRsaBufferTooSmall(ctx));
     return 0;
 }

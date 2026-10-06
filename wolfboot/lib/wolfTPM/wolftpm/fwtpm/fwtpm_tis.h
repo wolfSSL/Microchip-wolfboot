@@ -1,8 +1,8 @@
 /* fwtpm_tis.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -40,6 +40,18 @@
 /* Magic and version for shared memory validation */
 #define FWTPM_TIS_MAGIC         0x57544953UL  /* "WTIS" */
 #define FWTPM_TIS_VERSION       1
+
+/* Publish/observe the magic sentinel with release/acquire ordering so a client
+ * never sees FWTPM_TIS_MAGIC before the header it guards (wc_port.h ladder). */
+#if !defined(WOLFSSL_NO_ATOMICS) && defined(__GNUC__) && \
+    defined(__ATOMIC_RELEASE)
+    #define FWTPM_TIS_ATOMIC_STORE(x, val) \
+        __atomic_store_n(&(x), (val), __ATOMIC_RELEASE)
+    #define FWTPM_TIS_ATOMIC_LOAD(x) __atomic_load_n(&(x), __ATOMIC_ACQUIRE)
+#else
+    #define FWTPM_TIS_ATOMIC_STORE(x, val) ((x) = (val))
+    #define FWTPM_TIS_ATOMIC_LOAD(x) (x)
+#endif
 
 /* Default burst count (bytes per FIFO transfer) */
 #ifndef FWTPM_TIS_BURST_COUNT
@@ -107,13 +119,18 @@ typedef struct FWTPM_TIS_REGS {
     UINT32 version;             /* Protocol version */
 
     /* Register access request (client writes, server reads) */
-    UINT32 reg_addr;            /* Register offset (locality stripped) */
+    UINT32 reg_addr;            /* Full TIS address: base | offset |
+                                 * (locality << 12). Server extracts both. */
     UINT32 reg_len;             /* Transfer length in bytes */
     BYTE   reg_is_write;        /* 1=write, 0=read */
     BYTE   reg_data[64];        /* Data for write or read result */
 
     /* TIS register shadow state (server owns, client reads) */
-    UINT32 access;              /* TPM_ACCESS register */
+    UINT32 access;              /* Reserved/unused: the TPM_ACCESS register is
+                                 * now served dynamically per read from
+                                 * ctx->tisLocality (see
+                                 * FWTPM_TIS_HandleRegAccess). Kept for
+                                 * shared-memory ABI layout stability. */
     UINT32 sts;                 /* TPM_STS register (low byte = status,
                                  * upper 16 bits = burst count) */
     UINT32 int_enable;          /* TPM_INT_ENABLE register */

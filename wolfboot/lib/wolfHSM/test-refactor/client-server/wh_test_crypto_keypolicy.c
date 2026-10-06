@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -46,7 +46,7 @@
 
 static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
 {
-    int      devId          = WH_DEV_ID;
+    int      devId          = WH_CLIENT_DEVID(client);
     int      ret            = 0;
     WC_RNG   rng[1];
     uint8_t  plaintext[16]  = {0};
@@ -91,7 +91,7 @@ static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
                                    (uint8_t*)"aes-no-enc", strlen("aes-no-enc"),
                                    key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -134,7 +134,7 @@ static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
                                    (uint8_t*)"aes-enc-only",
                                    strlen("aes-enc-only"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -155,7 +155,7 @@ static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
                 client, WH_NVM_FLAGS_USAGE_ENCRYPT, (uint8_t*)"aes-no-dec",
                 strlen("aes-no-dec"), key, keyLen, &keyId);
             if (ret == 0) {
-                ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+                ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
                 if (ret == 0) {
                     ret = wh_Client_AesSetKeyId(aes, keyId);
                     if (ret == 0) {
@@ -203,7 +203,7 @@ static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
             client, 32, ECC_SECP256R1, &keyId, WH_NVM_FLAGS_NONE,
             strlen("ecc-no-sign"), (uint8_t*)"ecc-no-sign");
         if (ret == 0) {
-            ret = wc_ecc_init_ex(eccKey, NULL, WH_DEV_ID);
+            ret = wc_ecc_init_ex(eccKey, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wc_ecc_set_curve(eccKey, 32, ECC_SECP256R1);
                 if (ret == 0) {
@@ -251,7 +251,7 @@ static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
             client, 32, ECC_SECP256R1, &keyId, WH_NVM_FLAGS_NONE,
             strlen("ecc-no-derive"), (uint8_t*)"ecc-no-derive");
         if (ret == 0) {
-            ret = wc_ecc_init_ex(privKey, NULL, WH_DEV_ID);
+            ret = wc_ecc_init_ex(privKey, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wc_ecc_set_curve(privKey, 32, ECC_SECP256R1);
                 if (ret == 0) {
@@ -363,13 +363,13 @@ static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
         }
         if (ret == 0) {
             ret = wc_InitCmac_ex(&cmac, NULL, 0, WC_CMAC_AES, NULL, NULL,
-                                 WH_DEV_ID);
+                                 WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_CmacSetKeyId(&cmac, cmacKeyId);
                 if (ret == 0) {
                     ret = wc_AesCmacGenerate_ex(&cmac, tag, &tagLen, message,
                                                 sizeof(message), NULL, 0, NULL,
-                                                WH_DEV_ID);
+                                                WH_CLIENT_DEVID(client));
                     if (ret == WH_ERROR_USAGE) {
                         WH_TEST_PRINT(
                             "    PASS: Correctly denied CMAC generate\n");
@@ -412,13 +412,13 @@ static int _whTest_CryptoKeyUsagePolicies(whClientContext* client)
         }
         if (ret == 0) {
             ret = wc_InitCmac_ex(&cmac, NULL, 0, WC_CMAC_AES, NULL, NULL,
-                                 WH_DEV_ID);
+                                 WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_CmacSetKeyId(&cmac, cmacKeyId);
                 if (ret == 0) {
                     ret = wc_AesCmacVerify_ex(&cmac, tag, tagLen, message,
                                               sizeof(message), NULL, 0, NULL,
-                                              WH_DEV_ID);
+                                              WH_CLIENT_DEVID(client));
                     if (ret == WH_ERROR_USAGE) {
                         WH_TEST_PRINT(
                             "    PASS: Correctly denied CMAC verify\n");
@@ -515,7 +515,7 @@ static int whTest_RevocationTryAESEncrypt(whKeyId keyId, WC_RNG* rng,
                        ret);
         return ret;
     }
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_ERROR_PRINT("Failed to init AES for revoked key test: %d\n", ret);
         return ret;
@@ -542,7 +542,7 @@ static int whTest_RevocationTryAESEncrypt(whKeyId keyId, WC_RNG* rng,
 
 static int _whTest_CryptoKeyRevocationAesCbc(whClientContext* client)
 {
-    int           devId            = WH_DEV_ID;
+    int           devId            = WH_CLIENT_DEVID(client);
     int           ret              = 0;
     WC_RNG        rng[1];
     uint8_t       key[32]          = {0};
@@ -683,6 +683,9 @@ static int _whTest_CryptoKeyRevocationAesCbc(whClientContext* client)
 
 int whTest_Crypto_KeyPolicy(whClientContext* ctx)
 {
+    /* A preceding suite may leave the DMA-preferred dispatch mode set; reset
+     * to the std path so this suite runs the same way in every config. */
+    (void)wh_Client_SetDmaMode(ctx, 0);
     WH_TEST_RETURN_ON_FAIL(_whTest_CryptoKeyUsagePolicies(ctx));
 #if !defined(NO_AES) && defined(HAVE_AES_CBC) && \
     defined(WOLFHSM_CFG_TEST_ALLOW_PERSISTENT_NVM_ARTIFACTS)

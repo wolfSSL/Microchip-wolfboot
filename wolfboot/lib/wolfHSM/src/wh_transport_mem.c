@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -141,8 +141,11 @@ int wh_TransportMem_RecvResponse(void* c, uint16_t* out_len, void* data)
     whTransportMemCsr req;
     whTransportMemCsr resp;
 
+    /* A destination without a capacity (out_len) can't be clamped, so reject
+     * it rather than copy a peer-controlled length unbounded. */
     if (    (context == NULL) ||
-            (context->initialized == 0)) {
+            (context->initialized == 0) ||
+            ((data != NULL) && (out_len == NULL))) {
         return WH_ERROR_BADARGS;
     }
 
@@ -161,7 +164,20 @@ int wh_TransportMem_RecvResponse(void* c, uint16_t* out_len, void* data)
     }
 
     if ((data != NULL) && (resp.s.len != 0)) {
-        wh_Utils_memcpy_invalidate(data, context->resp_data, resp.s.len);
+        /* Clamp to the destination capacity so a corrupt/oversized resp.s.len
+         * can't overflow `data`, and to the shared response buffer so it can't
+         * over-read past resp_data. The true length is still reported below. */
+        uint16_t copy_len = resp.s.len;
+        size_t   src_max  = (context->resp_size > sizeof(whTransportMemCsr))
+                          ? (size_t)context->resp_size - sizeof(whTransportMemCsr)
+                          : 0;
+        if (copy_len > *out_len) {
+            copy_len = *out_len;
+        }
+        if (copy_len > src_max) {
+            copy_len = (uint16_t)src_max;
+        }
+        wh_Utils_memcpy_invalidate(data, context->resp_data, copy_len);
     }
 
     if (out_len != NULL) {
@@ -225,8 +241,11 @@ int wh_TransportMem_RecvRequest(void* c, uint16_t* out_len, void* data)
     whTransportMemCsr req;
     whTransportMemCsr resp;
 
+    /* A destination without a capacity (out_len) can't be clamped, so reject
+     * it rather than copy a peer-controlled length unbounded. */
     if (    (context == NULL) ||
-            (context->initialized == 0)) {
+            (context->initialized == 0) ||
+            ((data != NULL) && (out_len == NULL))) {
         return WH_ERROR_BADARGS;
     }
 
@@ -245,7 +264,22 @@ int wh_TransportMem_RecvRequest(void* c, uint16_t* out_len, void* data)
     }
 
     if ((data != NULL) && (req.s.len != 0)) {
-        wh_Utils_memcpy_invalidate(data, context->req_data, req.s.len);
+        /* req.s.len is peer-controlled. Clamp to the destination capacity so an
+         * oversized len can't overflow `data`, and to the shared request buffer
+         * so it can't over-read past req_data. The true length is still reported
+         * below, so the comm layer rejects an over-length request rather than
+         * acting on a truncation. */
+        uint16_t copy_len = req.s.len;
+        size_t   src_max  = (context->req_size > sizeof(whTransportMemCsr))
+                          ? (size_t)context->req_size - sizeof(whTransportMemCsr)
+                          : 0;
+        if (copy_len > *out_len) {
+            copy_len = *out_len;
+        }
+        if (copy_len > src_max) {
+            copy_len = (uint16_t)src_max;
+        }
+        wh_Utils_memcpy_invalidate(data, context->req_data, copy_len);
     }
     if (out_len != NULL) {
         *out_len = req.s.len;

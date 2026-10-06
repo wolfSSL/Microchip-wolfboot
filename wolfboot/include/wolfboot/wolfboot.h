@@ -20,6 +20,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <limits.h>   /* CHAR_BIT */
 #ifdef __WOLFBOOT
 /* Either hand-craft a device target.h file in [WOLFBOOT_ROOT]/include
  * or let build process auto-create one from .config file or cmake presets.
@@ -31,6 +32,15 @@ extern "C" {
 #endif
 #include "wolfboot/version.h"
 #include "wolfboot/wc_secure.h"
+
+/* Partition trailers (magic + state flags) are persisted in flash only when
+ * the target has fixed partitions or supplies a custom trailer backend.
+ * Without either, get/set_trailer_at() are no-op stubs and the
+ * wolfBoot_{get,set}_partition_state() API is absent, so the fallback
+ * decision must be made on version + image validity alone. */
+#if defined(WOLFBOOT_FIXED_PARTITIONS) || defined(CUSTOM_PARTITION_TRAILER)
+    #define HAVE_PARTITION_TRAILERS 1
+#endif
 
 
 #ifndef RAMFUNCTION
@@ -49,6 +59,12 @@ extern "C" {
 #      endif
 #    elif defined(ARCH_PPC)
 #      define RAMFUNCTION __attribute__((used,section(".ramcode"),longcall))
+#    elif defined(__TMS320C28XX__)
+       /* TI C2000 cl2000: place in .TI.ramfunc; the linker LOAD/RUN pair + the
+        * device startup Ramfuncs memcpy relocate it to RAM (see hal/f28p55x.ld).
+        * Gated to the C28x specifically so the ti_hercules (armcl) .ramcode
+        * path above is not affected. */
+#      define RAMFUNCTION __attribute__((ramfunc))
 #    else
 #      define RAMFUNCTION __attribute__((used,section(".ramcode")))
 #    endif
@@ -58,7 +74,7 @@ extern "C" {
 #endif
 
 #ifndef WEAKFUNCTION
-#  if defined(__GNUC__) || defined(__CC_ARM)
+#  if defined(__GNUC__) || defined(__CC_ARM) || defined(__TMS320C28XX__)
 #    define WEAKFUNCTION __attribute__((weak))
 #  else
 #    define WEAKFUNCTION
@@ -91,7 +107,7 @@ extern "C" {
 /* Helpers for memory alignment */
 #ifndef XALIGNED
     #if defined(__GNUC__) || defined(__llvm__) || \
-            defined(__IAR_SYSTEMS_ICC__)
+            defined(__IAR_SYSTEMS_ICC__) || defined(__TMS320C28XX__)
         #define XALIGNED(x) __attribute__ ( (aligned (x)))
     #elif defined(__KEIL__)
         #define XALIGNED(x) __align(x)
@@ -158,7 +174,48 @@ extern "C" {
 #   endif
 
 #endif /* IMAGE_HEADER_SIZE */
-#define IMAGE_HEADER_OFFSET (2 * sizeof(uint32_t))
+
+/* Image-header fixed-field access.
+ *
+ * The header's serialized 32-/16-bit fields (magic, size, version, type) are a
+ * little-endian octet stream.  On normal targets one octet == one addressable
+ * byte; on the C28x (CHAR_BIT==16, header stored one octet per 16-bit cell) a
+ * u32 field spans 4 octets == 4 cells even though sizeof(uint32_t) is only 2
+ * cells.  So reconstruct each field from individually masked cells rather than
+ * a single (possibly unaligned) load:
+ *  - on the C28x a cell may carry non-octet upper bits - the & 0xFF keeps the
+ *    value octet-exact;
+ *  - on every other target the & 0xFF is a no-op and the byte reconstruction
+ *    avoids an unaligned 32/16-bit load (wolfBoot_find_header only guarantees
+ *    2-byte alignment) and is endian-neutral.
+ * The _SZ macros are the field's octet width (4 octets == 4 cells on the C28x),
+ * used for both pointer offsets and find_header() length checks.
+ *
+ * Only the wide-byte target needs the reconstruction.  Where one octet is one
+ * byte the field is read exactly as it always was, for two reasons: the
+ * assembled form costs code size on every target (it pushed the SIGN=NONE
+ * footprint build over its limit), and callers wrap these in im2n()/im2ns(),
+ * which convert little-endian to native - so an already-native result would be
+ * byte-swapped a second time on a big-endian target. */
+#define WOLFBOOT_HDR_U32_SZ 4
+#define WOLFBOOT_HDR_U16_SZ 2
+#if CHAR_BIT != 8
+/* A cell may carry non-octet upper bits, so mask each one; the result is
+ * native order already, and these parts are little-endian so the caller's
+ * im2n()/im2ns() is a no-op. */
+#define WOLFBOOT_HDR_GET_U32(p) \
+    (((uint32_t)(((const uint8_t*)(p))[0] & 0xFF))       | \
+     ((uint32_t)(((const uint8_t*)(p))[1] & 0xFF) << 8)  | \
+     ((uint32_t)(((const uint8_t*)(p))[2] & 0xFF) << 16) | \
+     ((uint32_t)(((const uint8_t*)(p))[3] & 0xFF) << 24))
+#define WOLFBOOT_HDR_GET_U16(p) \
+    ((uint16_t)((((const uint8_t*)(p))[0] & 0xFF) | \
+               ((((const uint8_t*)(p))[1] & 0xFF) << 8)))
+#else
+#define WOLFBOOT_HDR_GET_U32(p) (*(const uint32_t*)(const void*)(p))
+#define WOLFBOOT_HDR_GET_U16(p) (*(const uint16_t*)(const void*)(p))
+#endif
+#define IMAGE_HEADER_OFFSET (2 * WOLFBOOT_HDR_U32_SZ)
 
 #ifndef FLASHBUFFER_SIZE
 #    ifdef NVM_FLASH_WRITEONCE
@@ -198,6 +255,14 @@ extern "C" {
 #error "WOLFBOOT_SKIP_BOOT_VERIFY requires WOLFBOOT_SELF_UPDATE_MONOLITHIC"
 #endif
 
+#if defined(WOLFBOOT_SKIP_BOOT_VERIFY) && defined(WOLFBOOT_SECURE_APP)
+#error "WOLFBOOT_SECURE_APP handoff requires wolfBoot image verification"
+#endif
+
+#if defined(WOLFBOOT_NO_SIGN) && defined(WOLFBOOT_SECURE_APP)
+#error "WOLFBOOT_SECURE_APP handoff requires signed images"
+#endif
+
 #ifdef BIG_ENDIAN_ORDER
 #    define WOLFBOOT_MAGIC          0x574F4C46 /* WOLF */
 #    define WOLFBOOT_MAGIC_TRAIL    0x424F4F54 /* BOOT */
@@ -225,6 +290,13 @@ extern "C" {
 #define HDR_POLICY_SIGNATURE        0x21
 #define HDR_SECONDARY_SIGNATURE     0x22
 #define HDR_CERT_CHAIN              0x23
+/* OS command line (ASCII), a wolfBoot-reserved tag in the custom range
+ * (0x0030-0xFEFE). Signature-covered, unlike an external cmdline file; consumed
+ * by the EFI targets and passed to the kernel via LoadOptions. */
+#define HDR_CMDLINE                 0x0034
+/* Signature-covered digest of a raw (non-FIT) device tree, binding it to this
+ * image. Length = image hash size (WOLFBOOT_SHA_DIGEST_SIZE). */
+#define HDR_DEVICE_TREE_DIGEST      0x35
 #define HDR_PADDING                 0xFF
 
 /* Auth Key types */
@@ -530,6 +602,21 @@ extern "C" {
   #endif
 #endif
 
+/* The UPDATE partition may be sized independently of BOOT, but only in
+ * monolithic self-update mode: the swap-based update machinery requires
+ * equal-size partitions. Defaults to the symmetric layout. */
+#ifndef WOLFBOOT_PARTITION_UPDATE_SIZE
+#define WOLFBOOT_PARTITION_UPDATE_SIZE WOLFBOOT_PARTITION_SIZE
+#endif
+#if !defined(WOLFBOOT_SELF_UPDATE_MONOLITHIC) && \
+    ((WOLFBOOT_PARTITION_UPDATE_SIZE + 0) != (WOLFBOOT_PARTITION_SIZE + 0))
+  #error "WOLFBOOT_PARTITION_UPDATE_SIZE != WOLFBOOT_PARTITION_SIZE requires SELF_UPDATE_MONOLITHIC=1"
+#endif
+#if defined(EXT_ENCRYPTED) && \
+    ((WOLFBOOT_PARTITION_UPDATE_SIZE + 0) != (WOLFBOOT_PARTITION_SIZE + 0))
+  #error "Asymmetric WOLFBOOT_PARTITION_UPDATE_SIZE is not supported with ENCRYPT"
+#endif
+
 #if defined(DISABLE_BACKUP) && defined(DELTA_UPDATES)
   #error "DELTA_UPDATES requires swap partition (incompatible with DISABLE_BACKUP)"
 #endif
@@ -550,8 +637,12 @@ extern "C" {
 /* now just an intermediary state, update state will always be either new or
  * updating before the application boots*/
 #define IMG_STATE_FINAL_FLAGS 0x30
-/* ELF loading state - only valid on boot partition so doesn't conflict with
- * IMAGE_STATE_UPDATING */
+/* Set on the BOOT partition after a swap, cleared by wolfBoot_success().
+ * If still present at the next boot, the previous boot attempt did not
+ * confirm success and a rollback to the alternate partition is
+ * triggered. Only valid on the boot partition so it doesn't conflict
+ * with IMAGE_STATE_UPDATING (which is only valid on the update
+ * partition). Not related to ELF loading. */
 #define IMG_STATE_TESTING   0x10
 #define IMG_STATE_SUCCESS   0x00
 #define FLASH_BYTE_ERASED   0xFF

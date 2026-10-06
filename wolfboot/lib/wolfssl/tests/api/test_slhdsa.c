@@ -24,8 +24,12 @@
 #include <wolfssl/wolfcrypt/types.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
+#include <wolfssl/ssl.h>
+#include <wolfssl/internal.h>
 #include <tests/api/api.h>
 #include <tests/api/test_slhdsa.h>
+#include <tests/utils.h>
+#include <wolfssl/wolfcrypt/cryptocb.h>
 
 
 #ifdef WOLFSSL_HAVE_SLHDSA
@@ -35,12 +39,14 @@
  * variants in the same order. */
 #if defined(WOLFSSL_SLHDSA_PARAM_128S)
     #define TEST_SLHDSA_DEFAULT_PARAM     SLHDSA_SHAKE128S
+    #define TEST_SLHDSA_DEFAULT_CAT1
     #define TEST_SLHDSA_DEFAULT_SIG_LEN   WC_SLHDSA_SHAKE128S_SIG_LEN
     #define TEST_SLHDSA_DEFAULT_PRIV_LEN  WC_SLHDSA_SHAKE128S_PRIV_LEN
     #define TEST_SLHDSA_DEFAULT_PUB_LEN   WC_SLHDSA_SHAKE128S_PUB_LEN
     #define TEST_SLHDSA_DEFAULT_SEED_LEN  WC_SLHDSA_SHAKE128S_SEED_LEN
 #elif defined(WOLFSSL_SLHDSA_PARAM_128F)
     #define TEST_SLHDSA_DEFAULT_PARAM     SLHDSA_SHAKE128F
+    #define TEST_SLHDSA_DEFAULT_CAT1
     #define TEST_SLHDSA_DEFAULT_SIG_LEN   WC_SLHDSA_SHAKE128F_SIG_LEN
     #define TEST_SLHDSA_DEFAULT_PRIV_LEN  WC_SLHDSA_SHAKE128F_PRIV_LEN
     #define TEST_SLHDSA_DEFAULT_PUB_LEN   WC_SLHDSA_SHAKE128F_PUB_LEN
@@ -71,12 +77,14 @@
     #define TEST_SLHDSA_DEFAULT_SEED_LEN  WC_SLHDSA_SHAKE256F_SEED_LEN
 #elif defined(WOLFSSL_SLHDSA_PARAM_SHA2_128S)
     #define TEST_SLHDSA_DEFAULT_PARAM     SLHDSA_SHA2_128S
+    #define TEST_SLHDSA_DEFAULT_CAT1
     #define TEST_SLHDSA_DEFAULT_SIG_LEN   WC_SLHDSA_SHA2_128S_SIG_LEN
     #define TEST_SLHDSA_DEFAULT_PRIV_LEN  WC_SLHDSA_SHA2_128S_PRIV_LEN
     #define TEST_SLHDSA_DEFAULT_PUB_LEN   WC_SLHDSA_SHA2_128S_PUB_LEN
     #define TEST_SLHDSA_DEFAULT_SEED_LEN  WC_SLHDSA_SHA2_128S_SEED_LEN
 #elif defined(WOLFSSL_SLHDSA_PARAM_SHA2_128F)
     #define TEST_SLHDSA_DEFAULT_PARAM     SLHDSA_SHA2_128F
+    #define TEST_SLHDSA_DEFAULT_CAT1
     #define TEST_SLHDSA_DEFAULT_SIG_LEN   WC_SLHDSA_SHA2_128F_SIG_LEN
     #define TEST_SLHDSA_DEFAULT_PRIV_LEN  WC_SLHDSA_SHA2_128F_PRIV_LEN
     #define TEST_SLHDSA_DEFAULT_PUB_LEN   WC_SLHDSA_SHA2_128F_PUB_LEN
@@ -105,6 +113,31 @@
     #define TEST_SLHDSA_DEFAULT_PRIV_LEN  WC_SLHDSA_SHA2_256F_PRIV_LEN
     #define TEST_SLHDSA_DEFAULT_PUB_LEN   WC_SLHDSA_SHA2_256F_PUB_LEN
     #define TEST_SLHDSA_DEFAULT_SEED_LEN  WC_SLHDSA_SHA2_256F_SEED_LEN
+#endif
+
+/* FIPS 205 sec. 10.2.2 allows SHA-256 and SHAKE128 only at category 1, so a
+ * build whose default parameter set is larger needs a stronger pre-hash. */
+/* The hash, its digest size, the last byte of its FIPS 205 Algorithm 23 OID
+ * and the call that produces the digest are chosen together here, so they
+ * cannot disagree. */
+#ifdef TEST_SLHDSA_DEFAULT_CAT1
+    #define TEST_SLHDSA_PH      WC_HASH_TYPE_SHA256
+    #define TEST_SLHDSA_PH_SZ   32
+    #define TEST_SLHDSA_PH_OID  0x01
+    #define TEST_SLHDSA_PH_HASH(in, inSz, out) \
+        wc_Sha256Hash((in), (inSz), (out))
+#elif defined(WOLFSSL_SHA512)
+    #define TEST_SLHDSA_PH      WC_HASH_TYPE_SHA512
+    #define TEST_SLHDSA_PH_SZ   64
+    #define TEST_SLHDSA_PH_OID  0x03
+    #define TEST_SLHDSA_PH_HASH(in, inSz, out) \
+        wc_Sha512Hash((in), (inSz), (out))
+#else
+    #define TEST_SLHDSA_PH      WC_HASH_TYPE_SHAKE256
+    #define TEST_SLHDSA_PH_SZ   64
+    #define TEST_SLHDSA_PH_OID  0x0C
+    #define TEST_SLHDSA_PH_HASH(in, inSz, out) \
+        wc_Shake256Hash((in), (inSz), (out), TEST_SLHDSA_PH_SZ)
 #endif
 #endif /* WOLFSSL_HAVE_SLHDSA */
 
@@ -1012,7 +1045,9 @@ int test_wc_slhdsa_sign_hash(void)
 #if defined(WOLFSSL_HAVE_SLHDSA) && !defined(WOLFSSL_SLHDSA_VERIFY_ONLY)
     SlhDsaKey key;
     WC_RNG rng;
-    byte hash[64];
+    /* 64 for the SHA-512 and SHAKE256 cases, plus one for the deliberate
+     * too-long case. */
+    byte hash[65];
     byte* sig = NULL;
     word32 sigLen;
     word32 expSigLen;
@@ -1032,83 +1067,89 @@ int test_wc_slhdsa_sign_hash(void)
     expSigLen = TEST_SLHDSA_DEFAULT_SIG_LEN;
     ExpectIntEQ(wc_SlhDsaKey_MakeKey(&key, &rng), 0);
 
-    /* Test SignHash NULL parameter handling. Use 32-byte hash length so the
-     * NULL check trips before the digest-length check (HashSLH-DSA expects
-     * SHA-256 digest = 32 bytes). */
+    /* Test SignHash NULL parameter handling. Use the right digest length so
+     * the NULL check trips before the length check. */
     sigLen = WC_SLHDSA_MAX_SIG_LEN;
     ExpectIntEQ(wc_SlhDsaKey_SignHash(NULL, ctx, sizeof(ctx), hash,
-        32, WC_HASH_TYPE_SHA256, sig, &sigLen, &rng),
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, &rng),
         WC_NO_ERR_TRACE(BAD_FUNC_ARG));
     ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), NULL,
-        32, WC_HASH_TYPE_SHA256, sig, &sigLen, &rng),
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, &rng),
         WC_NO_ERR_TRACE(BAD_FUNC_ARG));
     ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
-        32, WC_HASH_TYPE_SHA256, NULL, &sigLen, &rng),
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, NULL, &sigLen, &rng),
         WC_NO_ERR_TRACE(BAD_FUNC_ARG));
     ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
-        32, WC_HASH_TYPE_SHA256, sig, NULL, &rng),
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, NULL, &rng),
         WC_NO_ERR_TRACE(BAD_FUNC_ARG));
     ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
-        32, WC_HASH_TYPE_SHA256, sig, &sigLen, NULL),
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, NULL),
         WC_NO_ERR_TRACE(BAD_FUNC_ARG));
 
     /* HashSLH-DSA must reject digest lengths that don't match hashType. */
     sigLen = WC_SLHDSA_MAX_SIG_LEN;
-    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash, 31,
-        WC_HASH_TYPE_SHA256, sig, &sigLen, &rng),
+    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ - 1, TEST_SLHDSA_PH, sig, &sigLen, &rng),
         WC_NO_ERR_TRACE(BAD_LENGTH_E));
-    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash, 33,
-        WC_HASH_TYPE_SHA256, sig, &sigLen, &rng),
+    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ + 1, TEST_SLHDSA_PH, sig, &sigLen, &rng),
         WC_NO_ERR_TRACE(BAD_LENGTH_E));
     /* Generate a real signature first so VerifyHash gets to its length check
      * rather than failing on signature size. */
-    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_SHA256, sig, &sigLen, &rng), 0);
-    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash, 31,
-        WC_HASH_TYPE_SHA256, sig, sigLen),
+    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, &rng), 0);
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ - 1, TEST_SLHDSA_PH, sig, sigLen),
         WC_NO_ERR_TRACE(BAD_LENGTH_E));
-    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash, 33,
-        WC_HASH_TYPE_SHA256, sig, sigLen),
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ + 1, TEST_SLHDSA_PH, sig, sigLen),
         WC_NO_ERR_TRACE(BAD_LENGTH_E));
+    /* Verify rejects the no-pre-hash sentinel too. Done while sigLen is
+     * still a real length, or the length check fires first and hides it. */
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ, WC_HASH_TYPE_NONE, sig, sigLen),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
 
-    /* Unsupported hashType (FIPS 205 doesn't list WC_HASH_TYPE_NONE) hits
-     * the default branch of slhdsakey_validate_prehash. */
+    /* WC_HASH_TYPE_NONE means "no pre-hash", so it is never valid here. */
     sigLen = WC_SLHDSA_MAX_SIG_LEN;
-    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_NONE, sig, &sigLen, &rng),
-        WC_NO_ERR_TRACE(NOT_COMPILED_IN));
+    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ, WC_HASH_TYPE_NONE, sig, &sigLen, &rng),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
 
-    /* Test SignHash with SHA-256. */
+    /* Round trip with the parameter set's own pre-hash. */
     sigLen = WC_SLHDSA_MAX_SIG_LEN;
-    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_SHA256, sig, &sigLen, &rng), 0);
+    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, &rng), 0);
     ExpectIntEQ(sigLen, expSigLen);
-    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_SHA256, sig, sigLen), 0);
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, sigLen), 0);
 
     /* Test VerifyHash NULL parameter handling. */
-    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(NULL, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_SHA256, sig, sigLen), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
-    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), NULL, 32,
-        WC_HASH_TYPE_SHA256, sig, sigLen), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
-    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_SHA256, NULL, sigLen), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(NULL, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ,
+        TEST_SLHDSA_PH, sig, sigLen), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), NULL,
+        TEST_SLHDSA_PH_SZ,
+        TEST_SLHDSA_PH, sig, sigLen), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ,
+        TEST_SLHDSA_PH, NULL, sigLen), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
 
     /* Test VerifyHash with wrong hash. */
     hash[0] ^= 0xFF;
-    ExpectIntNE(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_SHA256, sig, sigLen), 0);
+    ExpectIntNE(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, sigLen), 0);
     hash[0] ^= 0xFF;
 
     /* Test SignHashDeterministic. */
     sigLen = WC_SLHDSA_MAX_SIG_LEN;
     ExpectIntEQ(wc_SlhDsaKey_SignHashDeterministic(NULL, ctx, sizeof(ctx),
-        hash, 32, WC_HASH_TYPE_SHA256, sig, &sigLen),
+        hash, TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen),
         WC_NO_ERR_TRACE(BAD_FUNC_ARG));
     ExpectIntEQ(wc_SlhDsaKey_SignHashDeterministic(&key, ctx, sizeof(ctx),
-        hash, 32, WC_HASH_TYPE_SHA256, sig, &sigLen), 0);
-    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash, 32,
-        WC_HASH_TYPE_SHA256, sig, sigLen), 0);
+        hash, TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen), 0);
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+        TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, sigLen), 0);
 
     /* Test SignHashWithRandom. */
     {
@@ -1117,15 +1158,15 @@ int test_wc_slhdsa_sign_hash(void)
 
         sigLen = WC_SLHDSA_MAX_SIG_LEN;
         ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(NULL, ctx, sizeof(ctx),
-            hash, 32, WC_HASH_TYPE_SHA256, sig, &sigLen, addRnd),
+            hash, TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, addRnd),
             WC_NO_ERR_TRACE(BAD_FUNC_ARG));
         ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, ctx, sizeof(ctx),
-            hash, 32, WC_HASH_TYPE_SHA256, sig, &sigLen, NULL),
+            hash, TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, NULL),
             WC_NO_ERR_TRACE(BAD_FUNC_ARG));
         ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, ctx, sizeof(ctx),
-            hash, 32, WC_HASH_TYPE_SHA256, sig, &sigLen, addRnd), 0);
-        ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash, 32,
-            WC_HASH_TYPE_SHA256, sig, sigLen), 0);
+            hash, TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, &sigLen, addRnd), 0);
+        ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, sizeof(ctx), hash,
+            TEST_SLHDSA_PH_SZ, TEST_SLHDSA_PH, sig, sigLen), 0);
     }
 
 #ifdef WOLFSSL_SHA512
@@ -1141,8 +1182,8 @@ int test_wc_slhdsa_sign_hash(void)
         WC_NO_ERR_TRACE(BAD_LENGTH_E));
 #endif
 
-#ifdef WOLFSSL_SHAKE128
-    /* SHAKE128 PHM is fixed at 256 bits per FIPS 205 Section 10.2.2. */
+#if defined(WOLFSSL_SHAKE128) && defined(TEST_SLHDSA_DEFAULT_CAT1)
+    /* SHAKE128 digest is fixed at 256 bits, and is category 1 only. */
     sigLen = WC_SLHDSA_MAX_SIG_LEN;
     ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, sizeof(ctx), hash, 32,
         WC_HASH_TYPE_SHAKE128, sig, &sigLen, &rng), 0);
@@ -1263,26 +1304,29 @@ int test_wc_slhdsa_sign_msg(void)
     ExpectIntEQ(wc_SlhDsaKey_VerifyMsg(&key, mprime, sizeof(mprime), NULL,
         sigLen), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
 
-    /* Equivalence cross-check: build M' = 0x01 || ctxSz || OID(SHA-256) ||
-     * SHA256(orig) externally, sign it via SignMsgDeterministic, and verify
-     * via VerifyHash with the same SHA-256 digest. Both paths must agree. */
+    /* Equivalence cross-check: build M' = 0x01 || ctxSz || OID || digest
+     * externally, sign it via SignMsgDeterministic, and verify via VerifyHash
+     * with the same digest. Both paths must agree. The OID must match the
+     * pre-hash the parameter set allows. */
     {
-        static const byte sha256_oid[] = {
+        /* FIPS 205 Algorithm 23 OID for TEST_SLHDSA_PH. */
+        static const byte ph_oid[] = {
             0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
-            0x04, 0x02, 0x01
+            0x04, 0x02, TEST_SLHDSA_PH_OID
         };
         static const byte orig[] = "Hello World!";
-        byte digest[WC_SHA256_DIGEST_SIZE];
-        byte built_mprime[2 + sizeof(sha256_oid) + WC_SHA256_DIGEST_SIZE];
+        byte digest[TEST_SLHDSA_PH_SZ];
+        byte built_mprime[2 + sizeof(ph_oid) + TEST_SLHDSA_PH_SZ];
         word32 idx = 0;
         word32 sigLen2;
 
-        ExpectIntEQ(wc_Sha256Hash(orig, (word32)sizeof(orig) - 1, digest), 0);
+        ExpectIntEQ(TEST_SLHDSA_PH_HASH(orig, (word32)sizeof(orig) - 1,
+            digest), 0);
 
         built_mprime[idx++] = 0x01;        /* HashSLH-DSA domain separator */
         built_mprime[idx++] = 0;           /* ctxSz = 0 */
-        XMEMCPY(built_mprime + idx, sha256_oid, sizeof(sha256_oid));
-        idx += (word32)sizeof(sha256_oid);
+        XMEMCPY(built_mprime + idx, ph_oid, sizeof(ph_oid));
+        idx += (word32)sizeof(ph_oid);
         XMEMCPY(built_mprime + idx, digest, sizeof(digest));
         idx += (word32)sizeof(digest);
 
@@ -1292,7 +1336,7 @@ int test_wc_slhdsa_sign_msg(void)
 
         /* The same signature must verify via the HashSLH-DSA external API. */
         ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, NULL, 0, digest,
-            sizeof(digest), WC_HASH_TYPE_SHA256, sig, sigLen), 0);
+            sizeof(digest), TEST_SLHDSA_PH, sig, sigLen), 0);
 
         /* And the deterministic HashSLH-DSA path must produce the SAME
          * signature bytes (this is the strongest interop check). */
@@ -1302,7 +1346,7 @@ int test_wc_slhdsa_sign_msg(void)
                 DYNAMIC_TYPE_TMP_BUFFER);
             ExpectNotNull(sig2);
             ExpectIntEQ(wc_SlhDsaKey_SignHashDeterministic(&key, NULL, 0,
-                digest, sizeof(digest), WC_HASH_TYPE_SHA256, sig2,
+                digest, sizeof(digest), TEST_SLHDSA_PH, sig2,
                 &sigLen2), 0);
             ExpectIntEQ(sigLen2, sigLen);
             ExpectIntEQ(XMEMCMP(sig2, sig, sigLen), 0);
@@ -1316,6 +1360,243 @@ int test_wc_slhdsa_sign_msg(void)
 #endif
     return EXPECT_RESULT();
 }
+
+/*
+ * Cross-check that the signing randomness and the externally built M' reach
+ * the signer unchanged. Under WOLF_CRYPTO_CB_ONLY_SLHDSA every call below
+ * runs on the registered device, so this is what catches a callback that
+ * drops addRnd or mishandles the internal interface: a device that quietly
+ * substituted its own randomness would still produce a signature that
+ * verifies, and every round-trip test would still pass.
+ *
+ * M' for a pure signature is toByte(0,1) || toByte(|ctx|,1) || ctx || M
+ * (FIPS 205 Algorithm 22 Step 8), so signing that M' through the internal
+ * interface must reproduce the external signature byte for byte.
+ */
+int test_wc_slhdsa_sign_addrnd(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_HAVE_SLHDSA) && !defined(WOLFSSL_SLHDSA_VERIFY_ONLY)
+    SlhDsaKey key;
+    byte  seed[3 * WC_SLHDSA_MAX_SEED];
+    byte  addRnd[WC_SLHDSA_MAX_SEED];
+    byte  mprime[2 + 4 + 12];
+    const byte ctx[4] = { 'c', 't', 'x', '!' };
+    const byte msg[] = "hello slhdsa";
+    byte* sigExt = NULL;
+    byte* sigInt = NULL;
+    word32 sigExtLen;
+    word32 sigIntLen;
+    word32 n = (word32)TEST_SLHDSA_DEFAULT_SEED_LEN;
+    word32 idx = 0;
+
+    sigExt = (byte*)XMALLOC(WC_SLHDSA_MAX_SIG_LEN, NULL,
+        DYNAMIC_TYPE_TMP_BUFFER);
+    sigInt = (byte*)XMALLOC(WC_SLHDSA_MAX_SIG_LEN, NULL,
+        DYNAMIC_TYPE_TMP_BUFFER);
+    ExpectNotNull(sigExt);
+    ExpectNotNull(sigInt);
+
+    XMEMSET(seed, 0x2B, sizeof(seed));
+    XMEMSET(addRnd, 0x55, sizeof(addRnd));
+
+    /* M' = 0x00 || ctxSz || ctx || msg */
+    mprime[idx++] = 0x00;
+    mprime[idx++] = (byte)sizeof(ctx);
+    XMEMCPY(mprime + idx, ctx, sizeof(ctx));
+    idx += (word32)sizeof(ctx);
+    XMEMCPY(mprime + idx, msg, sizeof(msg) - 1);
+    idx += (word32)sizeof(msg) - 1;
+
+    /* A seeded key so the whole test is reproducible. */
+    ExpectIntEQ(wc_SlhDsaKey_Init(&key, TEST_SLHDSA_DEFAULT_PARAM, NULL,
+        INVALID_DEVID), 0);
+    ExpectIntEQ(wc_SlhDsaKey_MakeKeyWithRandom(&key, seed, n, seed + n, n,
+        seed + 2 * n, n), 0);
+
+    /* Deterministic: addRnd is PK.seed on both paths, so the two signatures
+     * must be identical. */
+    sigExtLen = WC_SLHDSA_MAX_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignDeterministic(&key, ctx, (byte)sizeof(ctx),
+        msg, (word32)sizeof(msg) - 1, sigExt, &sigExtLen), 0);
+    sigIntLen = WC_SLHDSA_MAX_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignMsgDeterministic(&key, mprime, idx, sigInt,
+        &sigIntLen), 0);
+    ExpectIntEQ(sigIntLen, sigExtLen);
+    ExpectBufEQ(sigInt, sigExt, sigExtLen);
+
+    /* Both must verify through their own interface. */
+    ExpectIntEQ(wc_SlhDsaKey_Verify(&key, ctx, (byte)sizeof(ctx), msg,
+        (word32)sizeof(msg) - 1, sigExt, sigExtLen), 0);
+    ExpectIntEQ(wc_SlhDsaKey_VerifyMsg(&key, mprime, idx, sigInt, sigIntLen),
+        0);
+
+    /* A different addRnd must change the signature. This is what proves the
+     * value is honoured rather than replaced with fresh randomness. */
+    sigIntLen = WC_SLHDSA_MAX_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&key, ctx, (byte)sizeof(ctx), msg,
+        (word32)sizeof(msg) - 1, sigInt, &sigIntLen, addRnd), 0);
+    ExpectIntEQ(sigIntLen, sigExtLen);
+    ExpectIntNE(XMEMCMP(sigInt, sigExt, sigExtLen), 0);
+    ExpectIntEQ(wc_SlhDsaKey_Verify(&key, ctx, (byte)sizeof(ctx), msg,
+        (word32)sizeof(msg) - 1, sigInt, sigIntLen), 0);
+
+    /* The same explicit addRnd on the internal interface reproduces it. */
+    sigExtLen = WC_SLHDSA_MAX_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignMsgWithRandom(&key, mprime, idx, sigExt,
+        &sigExtLen, addRnd), 0);
+    ExpectIntEQ(sigExtLen, sigIntLen);
+    ExpectBufEQ(sigExt, sigInt, sigIntLen);
+
+    wc_SlhDsaKey_Free(&key);
+    XFREE(sigExt, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(sigInt, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* A key that lives on a device carries only a device id: no key material is
+ * imported and none of its flags are set. Every operation has to reach the
+ * callback rather than stop at the host side "do we hold a key" check.
+ *
+ * The pre-hash calls use a digest algorithm the host never approves, which
+ * likewise must not keep the device from a pre-hash it does support. */
+#if defined(WOLFSSL_HAVE_SLHDSA) && defined(WOLF_CRYPTO_CB) && \
+    !defined(WOLFSSL_SLHDSA_VERIFY_ONLY)
+    #define TEST_SLHDSA_DEV_ONLY
+    #define TEST_SLHDSA_DEV_ONLY_DEVID 0x51484431
+#endif
+
+#ifdef TEST_SLHDSA_DEV_ONLY
+/* Stands in for a device holding the whole key. Counts what it was asked to
+ * do so the test can tell a dispatched operation from a skipped one. */
+static int slhdsa_dev_only_cb(int devIdArg, wc_CryptoInfo* info, void* ctx)
+{
+    int* calls = (int*)ctx;
+
+    (void)devIdArg;
+
+    if ((info == NULL) || (info->algo_type != WC_ALGO_TYPE_PK)) {
+        return WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE);
+    }
+
+    switch (info->pk.type) {
+    case WC_PK_TYPE_PQC_SIG_SIGN:
+    case WC_PK_TYPE_PQC_SIG_SIGN_MSG:
+        if (info->pk.pqc_sign.type != WC_PQC_SIG_TYPE_SLHDSA) {
+            return WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE);
+        }
+        break;
+    case WC_PK_TYPE_PQC_SIG_VERIFY:
+    case WC_PK_TYPE_PQC_SIG_VERIFY_MSG:
+        if (info->pk.pqc_verify.type != WC_PQC_SIG_TYPE_SLHDSA) {
+            return WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE);
+        }
+        *info->pk.pqc_verify.res = 1;
+        break;
+    case WC_PK_TYPE_PQC_SIG_CHECK_PRIV_KEY:
+        if (info->pk.pqc_sig_check.type != WC_PQC_SIG_TYPE_SLHDSA) {
+            return WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE);
+        }
+        break;
+    default:
+        return WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE);
+    }
+
+    if (calls != NULL) {
+        (*calls)++;
+    }
+    return 0;
+}
+#endif /* TEST_SLHDSA_DEV_ONLY */
+
+int test_wc_slhdsa_dev_only_key(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_SLHDSA_DEV_ONLY
+    SlhDsaKey key;
+    WC_RNG rng;
+    byte  addRnd[WC_SLHDSA_MAX_SEED];
+    byte  hash[32];
+    const byte ctx[3] = { 'd', 'e', 'v' };
+    const byte msg[] = "device held key";
+    byte* sig = NULL;
+    word32 sigLen;
+    int calls = 0;
+
+    XMEMSET(&rng, 0, sizeof(rng));
+    XMEMSET(addRnd, 0x7C, sizeof(addRnd));
+    XMEMSET(hash, 0x3D, sizeof(hash));
+
+    sig = (byte*)XMALLOC(TEST_SLHDSA_DEFAULT_SIG_LEN, NULL,
+        DYNAMIC_TYPE_TMP_BUFFER);
+    ExpectNotNull(sig);
+
+    ExpectIntEQ(wc_CryptoCb_RegisterDevice(TEST_SLHDSA_DEV_ONLY_DEVID,
+        slhdsa_dev_only_cb, &calls), 0);
+    ExpectIntEQ(wc_InitRng(&rng), 0);
+
+    /* No import and no key generation: the key holds a device id and nothing
+     * else. */
+    ExpectIntEQ(wc_SlhDsaKey_Init(&key, TEST_SLHDSA_DEFAULT_PARAM, NULL,
+        TEST_SLHDSA_DEV_ONLY_DEVID), 0);
+
+    sigLen = TEST_SLHDSA_DEFAULT_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_Sign(&key, ctx, (byte)sizeof(ctx), msg,
+        (word32)sizeof(msg) - 1, sig, &sigLen, &rng), 0);
+    ExpectIntEQ(calls, 1);
+
+    sigLen = TEST_SLHDSA_DEFAULT_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&key, ctx, (byte)sizeof(ctx), msg,
+        (word32)sizeof(msg) - 1, sig, &sigLen, addRnd), 0);
+    ExpectIntEQ(calls, 2);
+
+    sigLen = TEST_SLHDSA_DEFAULT_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignMsgWithRandom(&key, msg,
+        (word32)sizeof(msg) - 1, sig, &sigLen, addRnd), 0);
+    ExpectIntEQ(calls, 3);
+
+    /* MD5 is not an approved SLH-DSA pre-hash, so the host would reject it.
+     * The device decides instead. */
+    sigLen = TEST_SLHDSA_DEFAULT_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, ctx, (byte)sizeof(ctx), hash,
+        (word32)sizeof(hash), WC_HASH_TYPE_MD5, sig, &sigLen, &rng), 0);
+    ExpectIntEQ(calls, 4);
+
+    sigLen = TEST_SLHDSA_DEFAULT_SIG_LEN;
+    ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, ctx, (byte)sizeof(ctx),
+        hash, (word32)sizeof(hash), WC_HASH_TYPE_MD5, sig, &sigLen, addRnd),
+        0);
+    ExpectIntEQ(calls, 5);
+
+    ExpectIntEQ(wc_SlhDsaKey_Verify(&key, ctx, (byte)sizeof(ctx), msg,
+        (word32)sizeof(msg) - 1, sig, TEST_SLHDSA_DEFAULT_SIG_LEN), 0);
+    ExpectIntEQ(calls, 6);
+
+    ExpectIntEQ(wc_SlhDsaKey_VerifyMsg(&key, msg, (word32)sizeof(msg) - 1, sig,
+        TEST_SLHDSA_DEFAULT_SIG_LEN), 0);
+    ExpectIntEQ(calls, 7);
+
+    ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, ctx, (byte)sizeof(ctx), hash,
+        (word32)sizeof(hash), WC_HASH_TYPE_MD5, sig,
+        TEST_SLHDSA_DEFAULT_SIG_LEN), 0);
+    ExpectIntEQ(calls, 8);
+
+    ExpectIntEQ(wc_SlhDsaKey_CheckKey(&key), 0);
+    ExpectIntEQ(calls, 9);
+
+    wc_SlhDsaKey_Free(&key);
+    wc_FreeRng(&rng);
+    wc_CryptoCb_UnRegisterDevice(TEST_SLHDSA_DEV_ONLY_DEVID);
+    XFREE(sig, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif /* TEST_SLHDSA_DEV_ONLY */
+    return EXPECT_RESULT();
+}
+
+#ifdef TEST_SLHDSA_DEV_ONLY
+    #undef TEST_SLHDSA_DEV_ONLY
+    #undef TEST_SLHDSA_DEV_ONLY_DEVID
+#endif
 
 /*
  * Test export and import for SLH-DSA keys.
@@ -2033,6 +2314,92 @@ int test_wc_slhdsa_der_negative(void)
             wc_SlhDsaKey_Free(&k);
         }
 
+        /* Version field independence: mutate the single-byte INTEGER at
+         * goodDer[4] (encoded by SetMyVersion(0, ...) as 02 01 <version>,
+         * right after the 2-byte outer SEQUENCE header) without touching
+         * any length byte. version==1 is accepted (RFC 5958 allows 0 or 1);
+         * version==2 is rejected -- independence pairs for both operands of
+         * "version != 0 && version != 1". */
+        {
+            byte mut[260];
+            word32 idx2 = 0;
+            SlhDsaKey k;
+            int decRet;
+
+            ExpectIntEQ((int)goodDer[2], 0x02);   /* INTEGER tag  */
+            ExpectIntEQ((int)goodDer[3], 0x01);   /* length == 1  */
+            ExpectIntEQ((int)goodDer[4], 0x00);   /* version == 0 */
+
+            XMEMSET(&k, 0, sizeof(k));
+            XMEMCPY(mut, goodDer, (size_t)goodLen);
+            mut[4] = 1; /* version == 1: accepted */
+            ExpectIntEQ(wc_SlhDsaKey_Init(&k, SLHDSA_SHAKE128S, NULL,
+                INVALID_DEVID), 0);
+            decRet = wc_SlhDsaKey_PrivateKeyDecode(mut, &idx2, &k,
+                (word32)goodLen);
+            ExpectIntEQ(decRet, 0);
+            wc_SlhDsaKey_Free(&k);
+
+            XMEMSET(&k, 0, sizeof(k));
+            idx2 = 0;
+            mut[4] = 2; /* version == 2: rejected */
+            ExpectIntEQ(wc_SlhDsaKey_Init(&k, SLHDSA_SHAKE128S, NULL,
+                INVALID_DEVID), 0);
+            decRet = wc_SlhDsaKey_PrivateKeyDecode(mut, &idx2, &k,
+                (word32)goodLen);
+            ExpectIntEQ(decRet, WC_NO_ERR_TRACE(ASN_PARSE_E));
+            wc_SlhDsaKey_Free(&k);
+        }
+
+        /* Trailing-length independence: shrink the outer SEQUENCE's
+         * declared length by 1 (no trailing bytes appended) so that after
+         * consuming the mandatory version/AlgorithmIdentifier/privateKey
+         * fields, *inOutIdx lands 1 byte PAST the (now too-small) declared
+         * end -- independence pair for "*inOutIdx != seqEnd" alongside
+         * cases[4] above (which lands exactly ON seqEnd, ret==0). */
+        {
+            byte mut[260];
+            word32 idx2 = 0;
+            SlhDsaKey k;
+            int decRet;
+
+            XMEMSET(&k, 0, sizeof(k));
+            XMEMCPY(mut, goodDer, (size_t)goodLen);
+            mut[1] = (byte)(goodDer[1] - 1);
+            ExpectIntEQ(wc_SlhDsaKey_Init(&k, SLHDSA_SHAKE128S, NULL,
+                INVALID_DEVID), 0);
+            decRet = wc_SlhDsaKey_PrivateKeyDecode(mut, &idx2, &k,
+                (word32)goodLen);
+            ExpectIntEQ(decRet, WC_NO_ERR_TRACE(ASN_PARSE_E));
+            wc_SlhDsaKey_Free(&k);
+        }
+
+        /* wc_SlhDsaKey_PublicKeyDecode: "key->params != NULL && savedIdx <
+         * inSz" -- the raw-import fast path's second operand. Every
+         * successful decode elsewhere in this file already runs with
+         * savedIdx < inSz on a params-initialised key; pairing that with an
+         * empty window (*inOutIdx == inSz on entry) shows the operand's
+         * independence: the fast path is skipped and parsing falls through
+         * to (and fails) SPKI parsing on zero remaining bytes. */
+        {
+            byte pub[WC_SLHDSA_MAX_PUB_LEN];
+            word32 pubLen = (word32)sizeof(pub);
+            SlhDsaKey pubKey;
+            word32 idx2;
+            int decRet;
+
+            ExpectIntEQ(wc_SlhDsaKey_ExportPublic(&srcKey, pub, &pubLen), 0);
+
+            XMEMSET(&pubKey, 0, sizeof(pubKey));
+            ExpectIntEQ(wc_SlhDsaKey_Init(&pubKey, SLHDSA_SHAKE128S, NULL,
+                INVALID_DEVID), 0);
+            idx2 = pubLen; /* savedIdx == inSz: window is empty */
+            decRet = wc_SlhDsaKey_PublicKeyDecode(pub, &idx2, &pubKey,
+                pubLen);
+            ExpectIntNE(decRet, 0);
+            wc_SlhDsaKey_Free(&pubKey);
+        }
+
         wc_SlhDsaKey_Free(&srcKey);
         wc_FreeRng(&rng);
     }
@@ -2724,6 +3091,480 @@ int test_wc_slhdsa_decoder_disabled_oid(void)
     return EXPECT_RESULT();
 }
 
+/*
+ * MC/DC DecisionCoverage: exercise the argument-check / short-buffer /
+ * compound-guard independence pairs of the SLH-DSA public API without any
+ * (slow) key generation or signing. Each negative call isolates ONE operand
+ * of a compound decision so unique-cause MC/DC can be shown:
+ *   - wc_SlhDsaKey_Init: key==NULL vs an unknown param (loop falls through,
+ *     idx==-1 -> NOT_COMPILED_IN).
+ *   - wc_SlhDsaKey_ImportPublic / _ExportPublic (and the private variants):
+ *     each operand of the "(key==NULL)||(key->params==NULL)||(ptr==NULL)[||
+ *     (lenPtr==NULL)]" OR is driven true alone (a zeroed key gives
+ *     key!=NULL with key->params==NULL), plus the no-key MISSING_KEY arm
+ *     and the length else-if arm.
+ *   - size getters: key==NULL vs params==NULL independence.
+ *   - wc_SlhDsaKey_CheckKey: NULL / params==NULL / MISSING_KEY (no private).
+ *   - wc_SlhDsaKey_Init_id / _Init_label compound guards (WOLF_PRIVATE_KEY_ID).
+ */
+int test_wc_SlhdsaDecisionCoverage(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_HAVE_SLHDSA) && defined(TEST_SLHDSA_DEFAULT_PARAM)
+    SlhDsaKey key;
+    SlhDsaKey zkey;   /* zeroed: key != NULL but key->params == NULL */
+    byte  pub[TEST_SLHDSA_DEFAULT_PUB_LEN] = {0};
+    word32 pubLen;
+#ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+    byte  priv[TEST_SLHDSA_DEFAULT_PRIV_LEN] = {0};
+    word32 privLen;
+#endif
+
+    XMEMSET(&zkey, 0, sizeof(zkey));
+
+    /* wc_SlhDsaKey_Init: NULL key vs unknown-parameter fall-through. */
+    ExpectIntEQ(wc_SlhDsaKey_Init(NULL, TEST_SLHDSA_DEFAULT_PARAM, NULL,
+        INVALID_DEVID), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    /* key != NULL but param absent from table: for-loop never matches so
+     * idx stays -1 -> NOT_COMPILED_IN (the loop's compare-false path and the
+     * idx==-1 true path). */
+    ExpectIntEQ(wc_SlhDsaKey_Init(&key, (enum SlhDsaParam)0x7fff, NULL,
+        INVALID_DEVID), WC_NO_ERR_TRACE(NOT_COMPILED_IN));
+
+    /* One good key for the pointer-operand pairs below. */
+    ExpectIntEQ(wc_SlhDsaKey_Init(&key, TEST_SLHDSA_DEFAULT_PARAM, NULL,
+        INVALID_DEVID), 0);
+
+    /* wc_SlhDsaKey_ImportPublic: 3-operand OR + length else-if. */
+    ExpectIntEQ(wc_SlhDsaKey_ImportPublic(NULL, pub, (word32)sizeof(pub)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));                    /* key==NULL   */
+    ExpectIntEQ(wc_SlhDsaKey_ImportPublic(&zkey, pub, (word32)sizeof(pub)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));                    /* params==NULL */
+    ExpectIntEQ(wc_SlhDsaKey_ImportPublic(&key, NULL, (word32)sizeof(pub)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));                    /* pub==NULL   */
+    ExpectIntEQ(wc_SlhDsaKey_ImportPublic(&key, pub, (word32)sizeof(pub) + 1),
+        WC_NO_ERR_TRACE(BAD_LENGTH_E));                    /* wrong len   */
+
+    /* wc_SlhDsaKey_ExportPublic: 4-operand OR + no-key + length else-if. */
+    pubLen = (word32)sizeof(pub);
+    ExpectIntEQ(wc_SlhDsaKey_ExportPublic(NULL, pub, &pubLen),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));                    /* key==NULL     */
+    ExpectIntEQ(wc_SlhDsaKey_ExportPublic(&zkey, pub, &pubLen),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));                    /* params==NULL  */
+    ExpectIntEQ(wc_SlhDsaKey_ExportPublic(&key, NULL, &pubLen),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));                    /* pub==NULL     */
+    ExpectIntEQ(wc_SlhDsaKey_ExportPublic(&key, pub, NULL),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));                    /* pubLen==NULL  */
+    ExpectIntEQ(wc_SlhDsaKey_ExportPublic(&key, pub, &pubLen),
+        WC_NO_ERR_TRACE(MISSING_KEY));                     /* no public key */
+    /* Import (cheap - no key generation) so the length arm is reachable. */
+    ExpectIntEQ(wc_SlhDsaKey_ImportPublic(&key, pub, (word32)sizeof(pub)), 0);
+    pubLen = 1;                                            /* too small     */
+    ExpectIntEQ(wc_SlhDsaKey_ExportPublic(&key, pub, &pubLen),
+        WC_NO_ERR_TRACE(BAD_LENGTH_E));
+
+    /* Size getters: key==NULL vs params==NULL independence. */
+    ExpectIntEQ(wc_SlhDsaKey_PublicSize(NULL), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_PublicSize(&zkey), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_SigSize(NULL), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_SigSize(&zkey), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+#ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+    ExpectIntEQ(wc_SlhDsaKey_PrivateSize(NULL), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_PrivateSize(&zkey), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+    /* wc_SlhDsaKey_ImportPrivate: 3-operand OR + length else-if. */
+    ExpectIntEQ(wc_SlhDsaKey_ImportPrivate(NULL, priv, (word32)sizeof(priv)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_ImportPrivate(&zkey, priv, (word32)sizeof(priv)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_ImportPrivate(&key, NULL, (word32)sizeof(priv)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_ImportPrivate(&key, priv, (word32)sizeof(priv) + 1),
+        WC_NO_ERR_TRACE(BAD_LENGTH_E));
+
+    /* wc_SlhDsaKey_CheckKey: NULL / params==NULL / no-private MISSING_KEY.
+     * Done before importing a private key below. */
+    ExpectIntEQ(wc_SlhDsaKey_CheckKey(NULL), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_CheckKey(&zkey), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_CheckKey(&key), WC_NO_ERR_TRACE(MISSING_KEY));
+
+    /* wc_SlhDsaKey_ExportPrivate: 4-operand OR + no-key + length else-if. */
+    privLen = (word32)sizeof(priv);
+    ExpectIntEQ(wc_SlhDsaKey_ExportPrivate(NULL, priv, &privLen),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_ExportPrivate(&zkey, priv, &privLen),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_ExportPrivate(&key, NULL, &privLen),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_ExportPrivate(&key, priv, NULL),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wc_SlhDsaKey_ExportPrivate(&key, priv, &privLen),
+        WC_NO_ERR_TRACE(MISSING_KEY));                     /* no private key */
+    /* Import (cheap - no key generation) so the length arm is reachable. */
+    ExpectIntEQ(wc_SlhDsaKey_ImportPrivate(&key, priv, (word32)sizeof(priv)),
+        0);
+    privLen = 1;
+    ExpectIntEQ(wc_SlhDsaKey_ExportPrivate(&key, priv, &privLen),
+        WC_NO_ERR_TRACE(BAD_LENGTH_E));
+
+    /* MakeKey / MakeKeyWithRandom / Sign-family: key->params==NULL
+     * independence (key==NULL and the other pointer/length operands are
+     * already covered in test_wc_slhdsa_make_key / _sign / _sign_hash /
+     * _sign_msg), plus the ctx==NULL&&ctxSz>0 compound-guard pairs. Every
+     * call here is arg-check-only: a too-small sigSz (or, for MakeKeyWith
+     * Random, a too-short seed) forces the NEXT quick error (BAD_LENGTH_E)
+     * once the OR itself is false, so none of this reaches the (very slow)
+     * WOTS+/FORS/hypertree signing -- no keygen/sign roundtrip needed. */
+    {
+        WC_RNG dummyRng; /* never inited/dereferenced: only checked != NULL
+                           * before every earlier arg-check that matters
+                           * here short-circuits first. */
+        byte dummyMsg[8] = {0};
+        byte dummySig[8] = {0};
+        byte dummyAddRnd[32] = {0};
+        word32 tinySigSz;
+
+        ExpectIntEQ(wc_SlhDsaKey_MakeKey(&zkey, &dummyRng),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+        ExpectIntEQ(wc_SlhDsaKey_MakeKeyWithRandom(&zkey, dummyMsg,
+            sizeof(dummyMsg), dummyMsg, sizeof(dummyMsg), dummyMsg,
+            sizeof(dummyMsg)), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        {
+            byte sk_seed[TEST_SLHDSA_DEFAULT_SEED_LEN] = {0};
+            byte sk_prf[TEST_SLHDSA_DEFAULT_SEED_LEN] = {0};
+            byte pk_seed[TEST_SLHDSA_DEFAULT_SEED_LEN] = {0};
+
+            /* sk_prf wrong length (sk_seed already right-length). */
+            ExpectIntEQ(wc_SlhDsaKey_MakeKeyWithRandom(&key, sk_seed,
+                sizeof(sk_seed), sk_prf, sizeof(sk_prf) - 1, pk_seed,
+                sizeof(pk_seed)), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+            /* pk_seed wrong length (sk_seed, sk_prf already right-length). */
+            ExpectIntEQ(wc_SlhDsaKey_MakeKeyWithRandom(&key, sk_seed,
+                sizeof(sk_seed), sk_prf, sizeof(sk_prf), pk_seed,
+                sizeof(pk_seed) - 1), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        }
+
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignDeterministic(&zkey, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_Sign(&zkey, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz, &dummyRng),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_Sign(&key, NULL, 5, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz, &dummyRng),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* ctx==NULL && ctxSz>0 */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_Sign(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz, &dummyRng),
+            WC_NO_ERR_TRACE(BAD_LENGTH_E));     /* ctx==NULL, ctxSz==0 */
+
+        ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&zkey, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&key, dummyMsg, 0, NULL,
+            sizeof(dummyMsg), dummySig, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* msg==NULL */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), NULL, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* sig==NULL */
+        ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, NULL, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* sigSz==NULL */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&key, NULL, 5, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* ctx==NULL && ctxSz>0 */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignWithRandom(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_LENGTH_E));     /* ctx==NULL, ctxSz==0 */
+
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignMsgDeterministic(&zkey, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignMsgWithRandom(&zkey, dummyMsg,
+            sizeof(dummyMsg), dummySig, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignMsgWithRandom(&key, NULL,
+            sizeof(dummyMsg), dummySig, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* mprime==NULL */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignMsgWithRandom(&key, dummyMsg,
+            sizeof(dummyMsg), NULL, &tinySigSz, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* sig==NULL */
+        ExpectIntEQ(wc_SlhDsaKey_SignMsgWithRandom(&key, dummyMsg,
+            sizeof(dummyMsg), dummySig, NULL, dummyAddRnd),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* sigSz==NULL */
+
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHashDeterministic(&zkey, NULL, 0,
+            dummyMsg, sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig,
+            &tinySigSz), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+        ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&zkey, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, &tinySigSz,
+            dummyAddRnd), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, NULL, 5, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, &tinySigSz,
+            dummyAddRnd), WC_NO_ERR_TRACE(BAD_FUNC_ARG));  /* ctx&&ctxSz>0 */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, &tinySigSz,
+            dummyAddRnd), WC_NO_ERR_TRACE(BAD_LENGTH_E)); /* ctxSz==0 */
+        /* hash/sig/sigSz==NULL: wc_SlhDsaKey_SignHashWithRandom bypasses the
+         * wrapper checks wc_SlhDsaKey_SignHash performs for these same
+         * operands (already covered in test_wc_slhdsa_sign_hash), so
+         * slhdsakey_signhash_external's own copies are otherwise dead. */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, dummyMsg, 0, NULL,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, &tinySigSz,
+            dummyAddRnd), WC_NO_ERR_TRACE(BAD_FUNC_ARG));  /* hash==NULL */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, dummyMsg, 0,
+            dummyMsg, sizeof(dummyMsg), WC_HASH_TYPE_SHA256, NULL,
+            &tinySigSz, dummyAddRnd), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+                                                            /* sig==NULL */
+        ExpectIntEQ(wc_SlhDsaKey_SignHashWithRandom(&key, dummyMsg, 0,
+            dummyMsg, sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, NULL,
+            dummyAddRnd), WC_NO_ERR_TRACE(BAD_FUNC_ARG));  /* sigSz==NULL */
+
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHash(&zkey, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, &tinySigSz,
+            &dummyRng), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, NULL, 5, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, &tinySigSz,
+            &dummyRng), WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* ctx&&ctxSz>0 */
+        tinySigSz = 1;
+        ExpectIntEQ(wc_SlhDsaKey_SignHash(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, &tinySigSz,
+            &dummyRng), WC_NO_ERR_TRACE(BAD_LENGTH_E));    /* ctxSz==0 */
+    }
+#endif /* !WOLFSSL_SLHDSA_VERIFY_ONLY */
+
+    /* Verify-family + DER-export: key->params==NULL independence (these
+     * public functions are NOT stripped by WOLFSSL_SLHDSA_VERIFY_ONLY), plus
+     * the same cheap ctx==NULL&&ctxSz>0 pairs via a signature-length
+     * mismatch (BAD_LENGTH_E) instead of a real verify. */
+    {
+        byte dummyMsg[8] = {0};
+        byte dummySig[8] = {0};
+        word32 wrongSigSz = 1;
+
+        ExpectIntEQ(wc_SlhDsaKey_Verify(&zkey, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, wrongSigSz),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        ExpectIntEQ(wc_SlhDsaKey_Verify(&key, NULL, 5, dummyMsg,
+            sizeof(dummyMsg), dummySig, wrongSigSz),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* ctx==NULL && ctxSz>0 */
+        ExpectIntEQ(wc_SlhDsaKey_Verify(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), dummySig, wrongSigSz),
+            WC_NO_ERR_TRACE(BAD_LENGTH_E));     /* ctx==NULL, ctxSz==0 */
+
+        ExpectIntEQ(wc_SlhDsaKey_VerifyMsg(&zkey, dummyMsg, sizeof(dummyMsg),
+            dummySig, wrongSigSz), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+#ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+        ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&zkey, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, wrongSigSz),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, NULL, 5, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, wrongSigSz),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));    /* ctx==NULL && ctxSz>0 */
+        ExpectIntEQ(wc_SlhDsaKey_VerifyHash(&key, NULL, 0, dummyMsg,
+            sizeof(dummyMsg), WC_HASH_TYPE_SHA256, dummySig, wrongSigSz),
+            WC_NO_ERR_TRACE(BAD_LENGTH_E));     /* ctx==NULL, ctxSz==0 */
+#endif
+
+#ifdef WC_ENABLE_ASYM_KEY_EXPORT
+        {
+            byte derBuf[16];
+            ExpectIntEQ(wc_SlhDsaKey_PublicKeyToDer(&zkey, derBuf,
+                sizeof(derBuf), 1), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        }
+#ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+        {
+            byte derBuf[16];
+            ExpectIntEQ(wc_SlhDsaKey_KeyToDer(&zkey, derBuf, sizeof(derBuf)),
+                WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        }
+#endif
+#endif /* WC_ENABLE_ASYM_KEY_EXPORT */
+    }
+
+    wc_SlhDsaKey_Free(&key);
+
+#ifdef WOLF_PRIVATE_KEY_ID
+    {
+        byte idbuf[4];
+        XMEMSET(idbuf, 0xAB, sizeof(idbuf));
+
+        /* wc_SlhDsaKey_Init_id compound guards. */
+        /* key==NULL (first operand true). */
+        ExpectIntEQ(wc_SlhDsaKey_Init_id(NULL, TEST_SLHDSA_DEFAULT_PARAM,
+            idbuf, (int)sizeof(idbuf), NULL, INVALID_DEVID),
+            WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        /* id==NULL && len>0 : id operand independence (key!=NULL). */
+        ExpectIntEQ(wc_SlhDsaKey_Init_id(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            NULL, 4, NULL, INVALID_DEVID), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        /* len<0 : (len<0) true, (len>MAX) false. */
+        ExpectIntEQ(wc_SlhDsaKey_Init_id(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            idbuf, -1, NULL, INVALID_DEVID), WC_NO_ERR_TRACE(BUFFER_E));
+        /* len>MAX : (len<0) false, (len>MAX) true. */
+        ExpectIntEQ(wc_SlhDsaKey_Init_id(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            idbuf, SLHDSA_MAX_ID_LEN + 1, NULL, INVALID_DEVID),
+            WC_NO_ERR_TRACE(BUFFER_E));
+        /* id==NULL && len==0 : (len>0) false -> falls through to Init OK. */
+        ExpectIntEQ(wc_SlhDsaKey_Init_id(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            NULL, 0, NULL, INVALID_DEVID), 0);
+        wc_SlhDsaKey_Free(&key);
+        /* Valid id -> success (id!=NULL && len>0 copy path). */
+        ExpectIntEQ(wc_SlhDsaKey_Init_id(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            idbuf, (int)sizeof(idbuf), NULL, INVALID_DEVID), 0);
+        wc_SlhDsaKey_Free(&key);
+
+        /* wc_SlhDsaKey_Init_label: (key==NULL)||(label==NULL) independence,
+         * empty-label BUFFER_E, then success. */
+        ExpectIntEQ(wc_SlhDsaKey_Init_label(NULL, TEST_SLHDSA_DEFAULT_PARAM,
+            "lbl", NULL, INVALID_DEVID), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        ExpectIntEQ(wc_SlhDsaKey_Init_label(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            NULL, NULL, INVALID_DEVID), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+        ExpectIntEQ(wc_SlhDsaKey_Init_label(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            "", NULL, INVALID_DEVID), WC_NO_ERR_TRACE(BUFFER_E));
+        /* labelLen > SLHDSA_MAX_LABEL_LEN (32): (labelLen==0) false,
+         * (labelLen>MAX) true -- independence pair for the second operand. */
+        ExpectIntEQ(wc_SlhDsaKey_Init_label(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            "0123456789012345678901234567890123456789", NULL, INVALID_DEVID),
+            WC_NO_ERR_TRACE(BUFFER_E));
+        ExpectIntEQ(wc_SlhDsaKey_Init_label(&key, TEST_SLHDSA_DEFAULT_PARAM,
+            "lbl", NULL, INVALID_DEVID), 0);
+        wc_SlhDsaKey_Free(&key);
+    }
+#endif /* WOLF_PRIVATE_KEY_ID */
+
+#endif /* WOLFSSL_HAVE_SLHDSA && TEST_SLHDSA_DEFAULT_PARAM */
+    return EXPECT_RESULT();
+}
+
+/* Positive size-from-param switch-arm coverage. Each compiled-in parameter
+ * set hits its own case label in wc_SlhDsaKey_{Public,Sig,Private}SizeFromParam;
+ * an unknown param hits the default (NOT_COMPILED_IN) arm. No keygen/sign. */
+int test_wc_SlhdsaFeatureCoverage(void)
+{
+    EXPECT_DECLS;
+#ifdef WOLFSSL_HAVE_SLHDSA
+    /* SHAKE family switch arms. */
+#ifdef WOLFSSL_SLHDSA_PARAM_128S
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHAKE128S),
+        WC_SLHDSA_SHAKE128S_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHAKE128S),
+        WC_SLHDSA_SHAKE128S_SIG_LEN);
+#ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+    ExpectIntEQ(wc_SlhDsaKey_PrivateSizeFromParam(SLHDSA_SHAKE128S),
+        WC_SLHDSA_SHAKE128S_PRIV_LEN);
+#endif
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_128F
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHAKE128F),
+        WC_SLHDSA_SHAKE128F_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHAKE128F),
+        WC_SLHDSA_SHAKE128F_SIG_LEN);
+#ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+    ExpectIntEQ(wc_SlhDsaKey_PrivateSizeFromParam(SLHDSA_SHAKE128F),
+        WC_SLHDSA_SHAKE128F_PRIV_LEN);
+#endif
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_192S
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHAKE192S),
+        WC_SLHDSA_SHAKE192S_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHAKE192S),
+        WC_SLHDSA_SHAKE192S_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_192F
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHAKE192F),
+        WC_SLHDSA_SHAKE192F_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHAKE192F),
+        WC_SLHDSA_SHAKE192F_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_256S
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHAKE256S),
+        WC_SLHDSA_SHAKE256S_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHAKE256S),
+        WC_SLHDSA_SHAKE256S_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_256F
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHAKE256F),
+        WC_SLHDSA_SHAKE256F_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHAKE256F),
+        WC_SLHDSA_SHAKE256F_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_SHA2
+    /* SHA-2 family switch arms. */
+#ifdef WOLFSSL_SLHDSA_PARAM_SHA2_128S
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHA2_128S),
+        WC_SLHDSA_SHA2_128S_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHA2_128S),
+        WC_SLHDSA_SHA2_128S_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_SHA2_128F
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHA2_128F),
+        WC_SLHDSA_SHA2_128F_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHA2_128F),
+        WC_SLHDSA_SHA2_128F_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_SHA2_192S
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHA2_192S),
+        WC_SLHDSA_SHA2_192S_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHA2_192S),
+        WC_SLHDSA_SHA2_192S_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_SHA2_192F
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHA2_192F),
+        WC_SLHDSA_SHA2_192F_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHA2_192F),
+        WC_SLHDSA_SHA2_192F_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_SHA2_256S
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHA2_256S),
+        WC_SLHDSA_SHA2_256S_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHA2_256S),
+        WC_SLHDSA_SHA2_256S_SIG_LEN);
+#endif
+#ifdef WOLFSSL_SLHDSA_PARAM_SHA2_256F
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam(SLHDSA_SHA2_256F),
+        WC_SLHDSA_SHA2_256F_PUB_LEN);
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam(SLHDSA_SHA2_256F),
+        WC_SLHDSA_SHA2_256F_SIG_LEN);
+#endif
+#endif /* WOLFSSL_SLHDSA_SHA2 */
+
+    /* default (unknown param) switch arm -> NOT_COMPILED_IN. */
+    ExpectIntEQ(wc_SlhDsaKey_PublicSizeFromParam((enum SlhDsaParam)0x7fff),
+        WC_NO_ERR_TRACE(NOT_COMPILED_IN));
+    ExpectIntEQ(wc_SlhDsaKey_SigSizeFromParam((enum SlhDsaParam)0x7fff),
+        WC_NO_ERR_TRACE(NOT_COMPILED_IN));
+#ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+    ExpectIntEQ(wc_SlhDsaKey_PrivateSizeFromParam((enum SlhDsaParam)0x7fff),
+        WC_NO_ERR_TRACE(NOT_COMPILED_IN));
+#endif
+#endif /* WOLFSSL_HAVE_SLHDSA */
+    return EXPECT_RESULT();
+}
+
 #ifdef TEST_SLHDSA_DEFAULT_PARAM
     #undef TEST_SLHDSA_DEFAULT_PARAM
     #undef TEST_SLHDSA_DEFAULT_SIG_LEN
@@ -2731,3 +3572,683 @@ int test_wc_slhdsa_decoder_disabled_oid(void)
     #undef TEST_SLHDSA_DEFAULT_PUB_LEN
     #undef TEST_SLHDSA_DEFAULT_SEED_LEN
 #endif
+
+/* Gate the streamed-CertificateVerify WANT_WRITE resume test: needs an SLH-DSA
+ * 128f leaf (the ~17KB signature spans multiple records, taking the streaming
+ * send path) chained to the shared 128s root, TLS 1.3 with the streaming path
+ * compiled in, a signing (not verify-only) build, and the memio test harness.
+ * Works with whichever 128f/128s hash family is compiled in (SHAKE preferred,
+ * else SHA2) so a SHAKE-disabled (--enable-slhdsa=sha2) build still runs it. */
+#if defined(WOLFSSL_HAVE_SLHDSA) && !defined(WOLFSSL_SLHDSA_VERIFY_ONLY) && \
+    defined(WOLFSSL_TLS13) && defined(WOLFSSL_TLS13_STREAM_CERT_VERIFY) && \
+    defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    ((defined(WOLFSSL_SLHDSA_PARAM_128F) &&                                    \
+      defined(WOLFSSL_SLHDSA_PARAM_128S)) ||                                   \
+     (defined(WOLFSSL_SLHDSA_PARAM_SHA2_128F) &&                              \
+      defined(WOLFSSL_SLHDSA_PARAM_SHA2_128S)))
+    #define TEST_SLHDSA_STREAM_CV_WANT_WRITE
+    #if defined(WOLFSSL_SLHDSA_PARAM_128F) && defined(WOLFSSL_SLHDSA_PARAM_128S)
+        #define SLHDSA_CV_FAM "shake"
+    #else
+        #define SLHDSA_CV_FAM "sha2"
+    #endif
+#endif
+
+#ifdef TEST_SLHDSA_STREAM_CV_WANT_WRITE
+/* The server's SLH-DSA-128f flight puts two oversized handshake messages on the
+ * wire, the certificate and the CertificateVerify. The callback counts
+ * oversized records and returns WANT_WRITE on a chosen one, interrupting a
+ * streamed CertificateVerify mid-flight, which the blocking .conf handshakes
+ * never do. Note the scope: where the flight is flushed as a single write the
+ * retry happens below SendTls13CertificateVerify, so this does not by itself
+ * reach the fragOffset != 0 resume branch. */
+struct slhdsa_wwrite_ctx {
+    int bigWritesUntilWantWrite;  /* 1-based index of the record to interrupt */
+    int repeatStalls;    /* WANT_WRITEs to fire on that record before it goes */
+    int bigSeen;         /* oversized records written so far */
+    struct test_memio_ctx* memio;
+};
+
+static int slhdsa_want_write_send_cb(WOLFSSL* ssl, char* data, int sz,
+    void* ctx)
+{
+    struct slhdsa_wwrite_ctx* ww = (struct slhdsa_wwrite_ctx*)ctx;
+
+    if (sz > 8000) {
+        ww->bigSeen++;
+        /* Only the record named by bigWritesUntilWantWrite is interrupted, and
+         * it is stalled repeatStalls times so the same record has to be
+         * re-sent more than once. */
+        if (ww->bigWritesUntilWantWrite == ww->bigSeen &&
+                ww->repeatStalls > 0) {
+            ww->repeatStalls--;
+            ww->bigSeen--;   /* the record has not been written yet */
+            return WOLFSSL_CBIO_ERR_WANT_WRITE;
+        }
+    }
+    return test_memio_write_cb(ssl, data, sz, ww->memio);
+}
+
+/* Run one SLH-DSA-128f TLS 1.3 handshake over memio. targetBig names the
+ * oversized record to interrupt (1-based, 0 to interrupt none) and stalls is
+ * how many WANT_WRITEs to fire on it. Returns 0 when the handshake completed.
+ * *bigSeen receives the number of oversized records the server wrote and
+ * *stallsLeft the stalls that were never consumed.
+ *
+ * Two passes are needed because the server's record batching is build
+ * dependent: some configurations flush the whole flight as one oversized
+ * write, others emit the Certificate and the CertificateVerify separately. The
+ * CertificateVerify is always the LAST oversized record, so callers count them
+ * with targetBig 0 first and then interrupt that index. Interrupting the
+ * Certificate instead trips a known memio harness limitation. */
+static int slhdsa_cv_stall_handshake(int targetBig, int stalls, int* bigSeen,
+    int* stallsLeft)
+{
+    int ret = -1;
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    struct slhdsa_wwrite_ctx ww_s;
+    const char* svrCert =
+        "./certs/slhdsa/server-slhdsa-" SLHDSA_CV_FAM "-128f.pem";
+    const char* svrKey  =
+        "./certs/slhdsa/server-slhdsa-" SLHDSA_CV_FAM "-128f-priv.pem";
+    const char* caCert  =
+        "./certs/slhdsa/root-slhdsa-" SLHDSA_CV_FAM "-128s.pem";
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(&ww_s, 0, sizeof(ww_s));
+
+    ctx_s = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
+    ctx_c = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
+    if (ctx_s == NULL || ctx_c == NULL) {
+        goto cleanup;
+    }
+    if (wolfSSL_CTX_use_certificate_chain_file(ctx_s, svrCert)
+            != WOLFSSL_SUCCESS) {
+        goto cleanup;
+    }
+    if (wolfSSL_CTX_use_PrivateKey_file(ctx_s, svrKey, WOLFSSL_FILETYPE_PEM)
+            != WOLFSSL_SUCCESS) {
+        goto cleanup;
+    }
+    if (wolfSSL_CTX_load_verify_locations(ctx_c, caCert, NULL)
+            != WOLFSSL_SUCCESS) {
+        goto cleanup;
+    }
+    wolfSSL_SetIORecv(ctx_s, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_s, test_memio_write_cb);
+    wolfSSL_SetIORecv(ctx_c, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_c, test_memio_write_cb);
+
+    ssl_s = wolfSSL_new(ctx_s);
+    ssl_c = wolfSSL_new(ctx_c);
+    if (ssl_s == NULL || ssl_c == NULL) {
+        goto cleanup;
+    }
+    wolfSSL_SetIOReadCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOReadCtx(ssl_c, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_c, &test_ctx);
+
+    ww_s.bigWritesUntilWantWrite = targetBig;
+    ww_s.repeatStalls = stalls;
+    ww_s.memio = &test_ctx;
+    wolfSSL_SetIOWriteCtx(ssl_s, &ww_s);
+    wolfSSL_SSLSetIOSend(ssl_s, slhdsa_want_write_send_cb);
+
+    ret = test_memio_do_handshake(ssl_c, ssl_s, 100, NULL);
+    if (ret == 0 && (!wolfSSL_is_init_finished(ssl_c) ||
+                     !wolfSSL_is_init_finished(ssl_s))) {
+        ret = -1;
+    }
+
+cleanup:
+    if (bigSeen != NULL)
+        *bigSeen = ww_s.bigSeen;
+    if (stallsLeft != NULL)
+        *stallsLeft = ww_s.repeatStalls;
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+    return ret;
+}
+#endif /* TEST_SLHDSA_STREAM_CV_WANT_WRITE */
+
+int test_slhdsa_tls13_certverify_want_write(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_SLHDSA_STREAM_CV_WANT_WRITE
+    int bigSeen = 0;
+    int stallsLeft = 0;
+
+    /* Count the server's oversized records without interrupting anything. */
+    ExpectIntEQ(slhdsa_cv_stall_handshake(0, 0, &bigSeen, NULL), 0);
+    ExpectIntGT(bigSeen, 0);
+
+    /* Interrupt the CertificateVerify, which is the last oversized record,
+     * once. Completing anyway means the retried send re-emitted identical
+     * bytes and the transcript stayed consistent. */
+    if (EXPECT_SUCCESS()) {
+        ExpectIntEQ(slhdsa_cv_stall_handshake(bigSeen, 1, NULL, &stallsLeft),
+            0);
+        /* The stall has to have been consumed, otherwise the callback never
+         * interrupted anything and the test proved nothing. */
+        ExpectIntEQ(stallsLeft, 0);
+    }
+#endif /* TEST_SLHDSA_STREAM_CV_WANT_WRITE */
+    return EXPECT_RESULT();
+}
+
+/* The single-stall test above leaves the repeated case open: a non-blocking
+ * peer can return WANT_WRITE many times for the same record. Stall one
+ * CertificateVerify record several times, which must keep emitting identical
+ * bytes. */
+int test_slhdsa_tls13_certverify_multi_stall(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_SLHDSA_STREAM_CV_WANT_WRITE
+    int bigSeen = 0;
+    int stallsLeft = 0;
+
+    ExpectIntEQ(slhdsa_cv_stall_handshake(0, 0, &bigSeen, NULL), 0);
+    ExpectIntGT(bigSeen, 0);
+
+    /* Fire five WANT_WRITEs on the same CertificateVerify fragment. */
+    if (EXPECT_SUCCESS()) {
+        ExpectIntEQ(slhdsa_cv_stall_handshake(bigSeen, 5, NULL, &stallsLeft),
+            0);
+        ExpectIntEQ(stallsLeft, 0);
+    }
+#endif /* TEST_SLHDSA_STREAM_CV_WANT_WRITE */
+    return EXPECT_RESULT();
+}
+
+#ifdef TEST_SLHDSA_STREAM_CV_WANT_WRITE
+    #undef TEST_SLHDSA_STREAM_CV_WANT_WRITE
+    #undef SLHDSA_CV_FAM
+#endif
+
+/* The streamed CertificateVerify path is enabled for ML-DSA and Falcon too,
+ * not just SLH-DSA: it triggers whenever the body exceeds one record, which a
+ * negotiated max_fragment_length makes reachable with a much smaller
+ * signature. Drive it with an ML-DSA leaf under a 512 byte fragment limit so
+ * the streaming send is covered for a non-SLH-DSA algorithm. */
+#if defined(WOLFSSL_HAVE_MLDSA) && !defined(WOLFSSL_MLDSA_NO_SIGN) && \
+    !defined(WOLFSSL_MLDSA_NO_VERIFY) && defined(WOLFSSL_TLS13) && \
+    defined(WOLFSSL_TLS13_STREAM_CERT_VERIFY) && \
+    defined(HAVE_MAX_FRAGMENT) && !defined(WOLFSSL_NO_ML_DSA_65) && \
+    !defined(WOLFSSL_NO_ML_DSA_87) && \
+    defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES)
+    #define TEST_MLDSA_STREAM_CV_MAXFRAG
+#endif
+
+int test_mldsa_tls13_certverify_maxfrag_stream(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_MLDSA_STREAM_CV_MAXFRAG
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    const char msg[] = "maxfrag mldsa stream";
+    char readBuf[sizeof(msg)];
+    const char* svrCert = "./certs/mldsa/mldsa65-leaf87ca-cert.pem";
+    const char* svrKey  = "./certs/mldsa/mldsa65-leaf87ca-key.pem";
+    const char* caCert  = "./certs/mldsa/mldsa87-ca-cert.pem";
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectNotNull(ctx_s = wolfSSL_CTX_new(wolfTLSv1_3_server_method()));
+    ExpectIntEQ(wolfSSL_CTX_use_certificate_chain_file(ctx_s, svrCert),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_file(ctx_s, svrKey,
+        WOLFSSL_FILETYPE_PEM), WOLFSSL_SUCCESS);
+    wolfSSL_SetIORecv(ctx_s, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_s, test_memio_write_cb);
+
+    ExpectNotNull(ctx_c = wolfSSL_CTX_new(wolfTLSv1_3_client_method()));
+    ExpectIntEQ(wolfSSL_CTX_load_verify_locations(ctx_c, caCert, NULL),
+        WOLFSSL_SUCCESS);
+    wolfSSL_SetIORecv(ctx_c, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_c, test_memio_write_cb);
+
+    ExpectNotNull(ssl_s = wolfSSL_new(ctx_s));
+    ExpectNotNull(ssl_c = wolfSSL_new(ctx_c));
+    wolfSSL_SetIOReadCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOReadCtx(ssl_c, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_c, &test_ctx);
+
+    /* 512 byte plaintext limit, well under the ML-DSA-65 signature, so the
+     * server's CertificateVerify must be streamed across records. */
+    ExpectIntEQ(wolfSSL_UseMaxFragment(ssl_c, WOLFSSL_MFL_2_9),
+        WOLFSSL_SUCCESS);
+
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 100, NULL), 0);
+    ExpectTrue(wolfSSL_is_init_finished(ssl_c));
+    ExpectTrue(wolfSSL_is_init_finished(ssl_s));
+
+    XMEMSET(readBuf, 0, sizeof(readBuf));
+    ExpectIntEQ(wolfSSL_write(ssl_s, msg, (int)sizeof(msg)), (int)sizeof(msg));
+    ExpectIntEQ(wolfSSL_read(ssl_c, readBuf, (int)sizeof(readBuf)),
+        (int)sizeof(msg));
+    ExpectStrEQ(readBuf, msg);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+#endif /* TEST_MLDSA_STREAM_CV_MAXFRAG */
+    return EXPECT_RESULT();
+}
+
+#ifdef TEST_MLDSA_STREAM_CV_MAXFRAG
+    #undef TEST_MLDSA_STREAM_CV_MAXFRAG
+#endif
+
+/* Not built with WOLFSSL_BLIND_PRIVATE_KEY: wolfSSL_CTX_check_private_key
+ * unblinds ctx->privateKey with ctx->privateKeyMask, and a key referenced by
+ * id or label never gets a mask because blinding only happens when real key
+ * material is loaded. The unblind then returns NULL and the check fails before
+ * check_cert_key runs. That is independent of the key algorithm, an RSA device
+ * key behaves the same way, so it is not something to work around here. */
+#if defined(WOLFSSL_HAVE_SLHDSA) && defined(WOLF_PRIVATE_KEY_ID) && \
+    !defined(NO_CHECK_PRIVATE_KEY) && defined(WOLF_CRYPTO_CB) && \
+    !defined(WOLFSSL_SLHDSA_VERIFY_ONLY) && \
+    !defined(WOLFSSL_BLIND_PRIVATE_KEY) && \
+    defined(WOLFSSL_SLHDSA_PARAM_128S) && !defined(NO_TLS)
+    #define TEST_SLHDSA_DEV_KEY
+    #define TEST_SLHDSA_DEV_DEVID 0x51484453
+#endif
+
+#ifdef TEST_SLHDSA_DEV_KEY
+/* Stands in for a device holding the SLH-DSA private key. Only the
+ * private-against-public check is served; counting it proves the SLH-DSA arm
+ * of that check was taken rather than silently skipped. */
+static int slhdsa_dev_key_cb(int devIdArg, wc_CryptoInfo* info, void* ctx)
+{
+    int* checks = (int*)ctx;
+
+    (void)devIdArg;
+
+    if ((info != NULL) && (info->algo_type == WC_ALGO_TYPE_PK) &&
+            (info->pk.type == WC_PK_TYPE_PQC_SIG_CHECK_PRIV_KEY) &&
+            (info->pk.pqc_sig_check.type == WC_PQC_SIG_TYPE_SLHDSA)) {
+        if (checks != NULL) {
+            (*checks)++;
+        }
+        return 0;
+    }
+
+    return WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE);
+}
+#endif /* TEST_SLHDSA_DEV_KEY */
+
+/* An SLH-DSA private key held in a device and referenced by id or label must
+ * be accepted against an SLH-DSA certificate. The parameter set cannot be
+ * recovered from an identifier, so it is carried from the certificate's key
+ * OID down to wc_SlhDsaKey_Init_id / wc_SlhDsaKey_Init_label. */
+int test_slhdsa_dev_private_key(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_SLHDSA_DEV_KEY
+    static const unsigned char keyId[] = { 0x01, 0x02, 0x03, 0x04 };
+    static const char keyLabel[] = "slhdsa-device-key";
+    WOLFSSL_CTX* ctx = NULL;
+    const char* svrCert = "./certs/slhdsa/server-slhdsa-shake-128s.pem";
+    int checks = 0;
+
+    ExpectIntEQ(wc_CryptoCb_RegisterDevice(TEST_SLHDSA_DEV_DEVID,
+        slhdsa_dev_key_cb, &checks), 0);
+
+    /* The certificate supplies the SLH-DSA key OID the device key is matched
+     * against, so it has to be loaded first. */
+    ExpectNotNull(ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method()));
+    ExpectIntEQ(wolfSSL_CTX_use_certificate_chain_file(ctx, svrCert),
+        WOLFSSL_SUCCESS);
+
+    /* Checking the pair is what builds the device key for the certificate's
+     * algorithm. Before the device-key path knew about SLH-DSA no key could be
+     * constructed and the check failed. */
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_Id(ctx, keyId, (long)sizeof(keyId),
+        TEST_SLHDSA_DEV_DEVID), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_check_private_key(ctx), WOLFSSL_SUCCESS);
+    ExpectIntEQ(checks, 1);
+
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_Label(ctx, keyLabel,
+        TEST_SLHDSA_DEV_DEVID), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_check_private_key(ctx), WOLFSSL_SUCCESS);
+    /* One private-against-public check per call, each dispatched as SLH-DSA. */
+    ExpectIntEQ(checks, 2);
+
+    wolfSSL_CTX_free(ctx);
+    wc_CryptoCb_UnRegisterDevice(TEST_SLHDSA_DEV_DEVID);
+#endif /* TEST_SLHDSA_DEV_KEY */
+    return EXPECT_RESULT();
+}
+
+#ifdef TEST_SLHDSA_DEV_KEY
+    #undef TEST_SLHDSA_DEV_KEY
+    #undef TEST_SLHDSA_DEV_DEVID
+#endif
+
+/* A post-quantum client certificate must not be usable for TLS 1.2 client
+ * authentication. No signature scheme below TLS 1.3 covers a PQC key, and the
+ * TLS 1.2 CertificateVerify record is sized for a classic signature, so the
+ * handshake has to fail rather than emit a message sized from the PQC
+ * signature length. */
+#if defined(WOLFSSL_HAVE_SLHDSA) && !defined(WOLFSSL_SLHDSA_VERIFY_ONLY) && \
+    defined(WOLFSSL_SLHDSA_PARAM_128S) && !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_RSA) && !defined(NO_CERTS) && \
+    defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES)
+    #define TEST_SLHDSA_TLS12_CLIENT_AUTH
+#endif
+
+int test_slhdsa_tls12_client_cert_rejected(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_SLHDSA_TLS12_CLIENT_AUTH
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    const char* cliCert = "./certs/slhdsa/client-slhdsa-shake-128s.pem";
+    const char* cliKey  = "./certs/slhdsa/client-slhdsa-shake-128s-priv.pem";
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    /* Server keeps a classic certificate and asks for client authentication. */
+    ExpectNotNull(ctx_s = wolfSSL_CTX_new(wolfTLSv1_2_server_method()));
+    ExpectIntEQ(wolfSSL_CTX_use_certificate_chain_file(ctx_s,
+        "./certs/server-cert.pem"), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_file(ctx_s, "./certs/server-key.pem",
+        WOLFSSL_FILETYPE_PEM), WOLFSSL_SUCCESS);
+    wolfSSL_CTX_set_verify(ctx_s, WOLFSSL_VERIFY_PEER, NULL);
+    wolfSSL_SetIORecv(ctx_s, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_s, test_memio_write_cb);
+
+    /* Client holds an SLH-DSA certificate and key, which it cannot sign a
+     * TLS 1.2 CertificateVerify with. */
+    ExpectNotNull(ctx_c = wolfSSL_CTX_new(wolfTLSv1_2_client_method()));
+    ExpectIntEQ(wolfSSL_CTX_use_certificate_chain_file(ctx_c, cliCert),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_file(ctx_c, cliKey,
+        WOLFSSL_FILETYPE_PEM), WOLFSSL_SUCCESS);
+    wolfSSL_CTX_set_verify(ctx_c, WOLFSSL_VERIFY_NONE, NULL);
+    wolfSSL_SetIORecv(ctx_c, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_c, test_memio_write_cb);
+
+    ExpectNotNull(ssl_s = wolfSSL_new(ctx_s));
+    ExpectNotNull(ssl_c = wolfSSL_new(ctx_c));
+    wolfSSL_SetIOReadCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOReadCtx(ssl_c, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_c, &test_ctx);
+
+    /* Must fail, and must fail while choosing a signature scheme rather than
+     * by building a CertificateVerify from an SLH-DSA key. PickHashSigAlgo
+     * finds no scheme the certificate can use below TLS 1.3, so
+     * DoCertificateRequest returns INVALID_PARAMETER. Pinning the code keeps
+     * the test honest: without the version gate the client would instead reach
+     * SendCertificateVerify and over-read its record buffer. */
+    ExpectIntNE(test_memio_do_handshake(ssl_c, ssl_s, 20, NULL), 0);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), INVALID_PARAMETER);
+    ExpectFalse(wolfSSL_is_init_finished(ssl_c));
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+#endif /* TEST_SLHDSA_TLS12_CLIENT_AUTH */
+    return EXPECT_RESULT();
+}
+
+#ifdef TEST_SLHDSA_TLS12_CLIENT_AUTH
+    #undef TEST_SLHDSA_TLS12_CLIENT_AUTH
+#endif
+
+/* A CertificateVerify that does not verify against the peer certificate's key
+ * must abort the handshake. The server presents its own certificate but signs
+ * with the client key: same parameter set, different key, so the signature is
+ * well formed and the failure is decided by wc_SlhDsaKey_Verify rather than by
+ * chain building or scheme matching. */
+#if defined(WOLFSSL_HAVE_SLHDSA) && !defined(WOLFSSL_SLHDSA_VERIFY_ONLY) && \
+    defined(WOLFSSL_SLHDSA_PARAM_128S) && defined(WOLFSSL_TLS13) && \
+    defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES)
+    #define TEST_SLHDSA_BAD_CV
+#endif
+
+int test_slhdsa_tls13_certverify_bad_signature(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_SLHDSA_BAD_CV
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    const char* svrCert = "./certs/slhdsa/server-slhdsa-shake-128s.pem";
+    const char* wrongKey =
+        "./certs/slhdsa/client-slhdsa-shake-128s-priv.pem";
+    const char* caCert = "./certs/slhdsa/root-slhdsa-shake-128s.pem";
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectNotNull(ctx_s = wolfSSL_CTX_new(wolfTLSv1_3_server_method()));
+    ExpectIntEQ(wolfSSL_CTX_use_certificate_chain_file(ctx_s, svrCert),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_file(ctx_s, wrongKey,
+        WOLFSSL_FILETYPE_PEM), WOLFSSL_SUCCESS);
+    wolfSSL_SetIORecv(ctx_s, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_s, test_memio_write_cb);
+
+    ExpectNotNull(ctx_c = wolfSSL_CTX_new(wolfTLSv1_3_client_method()));
+    ExpectIntEQ(wolfSSL_CTX_load_verify_locations(ctx_c, caCert, NULL),
+        WOLFSSL_SUCCESS);
+    wolfSSL_SetIORecv(ctx_c, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_c, test_memio_write_cb);
+
+    ExpectNotNull(ssl_s = wolfSSL_new(ctx_s));
+    ExpectNotNull(ssl_c = wolfSSL_new(ctx_c));
+    wolfSSL_SetIOReadCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOReadCtx(ssl_c, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_c, &test_ctx);
+
+    ExpectIntNE(test_memio_do_handshake(ssl_c, ssl_s, 20, NULL), 0);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), SIG_VERIFY_E);
+    ExpectFalse(wolfSSL_is_init_finished(ssl_c));
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+#endif /* TEST_SLHDSA_BAD_CV */
+    return EXPECT_RESULT();
+}
+
+#ifdef TEST_SLHDSA_BAD_CV
+    #undef TEST_SLHDSA_BAD_CV
+#endif
+
+/* Map every compiled-in SLH-DSA signature scheme from its wire code point to
+ * the public key OID sum, covering both DecodeSigAlg's SLH-DSA arm and the
+ * wolfSSL_get_sigalg_info cases. */
+int test_slhdsa_get_sigalg_info(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_HAVE_SLHDSA) && defined(OPENSSL_EXTRA)
+    static const struct {
+        byte minor;
+        int  keyOidSum;
+    } schemes[] = {
+    #if defined(WOLFSSL_SLHDSA_SHA2) && defined(WOLFSSL_SLHDSA_PARAM_SHA2_128S)
+        { SLHDSA_SHA2_128S_SA_MINOR,  SLH_DSA_SHA2_128Sk  },
+    #endif
+    #if defined(WOLFSSL_SLHDSA_SHA2) && defined(WOLFSSL_SLHDSA_PARAM_SHA2_128F)
+        { SLHDSA_SHA2_128F_SA_MINOR,  SLH_DSA_SHA2_128Fk  },
+    #endif
+    #if defined(WOLFSSL_SLHDSA_SHA2) && defined(WOLFSSL_SLHDSA_PARAM_SHA2_192S)
+        { SLHDSA_SHA2_192S_SA_MINOR,  SLH_DSA_SHA2_192Sk  },
+    #endif
+    #if defined(WOLFSSL_SLHDSA_SHA2) && defined(WOLFSSL_SLHDSA_PARAM_SHA2_192F)
+        { SLHDSA_SHA2_192F_SA_MINOR,  SLH_DSA_SHA2_192Fk  },
+    #endif
+    #if defined(WOLFSSL_SLHDSA_SHA2) && defined(WOLFSSL_SLHDSA_PARAM_SHA2_256S)
+        { SLHDSA_SHA2_256S_SA_MINOR,  SLH_DSA_SHA2_256Sk  },
+    #endif
+    #if defined(WOLFSSL_SLHDSA_SHA2) && defined(WOLFSSL_SLHDSA_PARAM_SHA2_256F)
+        { SLHDSA_SHA2_256F_SA_MINOR,  SLH_DSA_SHA2_256Fk  },
+    #endif
+    #ifdef WOLFSSL_SLHDSA_PARAM_128S
+        { SLHDSA_SHAKE_128S_SA_MINOR, SLH_DSA_SHAKE_128Sk },
+    #endif
+    #ifdef WOLFSSL_SLHDSA_PARAM_128F
+        { SLHDSA_SHAKE_128F_SA_MINOR, SLH_DSA_SHAKE_128Fk },
+    #endif
+    #ifdef WOLFSSL_SLHDSA_PARAM_192S
+        { SLHDSA_SHAKE_192S_SA_MINOR, SLH_DSA_SHAKE_192Sk },
+    #endif
+    #ifdef WOLFSSL_SLHDSA_PARAM_192F
+        { SLHDSA_SHAKE_192F_SA_MINOR, SLH_DSA_SHAKE_192Fk },
+    #endif
+    #ifdef WOLFSSL_SLHDSA_PARAM_256S
+        { SLHDSA_SHAKE_256S_SA_MINOR, SLH_DSA_SHAKE_256Sk },
+    #endif
+    #ifdef WOLFSSL_SLHDSA_PARAM_256F
+        { SLHDSA_SHAKE_256F_SA_MINOR, SLH_DSA_SHAKE_256Fk },
+    #endif
+        { 0, 0 } /* terminator, keeps the array non-empty */
+    };
+    size_t i;
+    int hashOid = 0;
+    int keyOid = 0;
+
+    for (i = 0; i < (sizeof(schemes) / sizeof(schemes[0])) - 1; i++) {
+        hashOid = 0;
+        keyOid = 0;
+        ExpectIntEQ(wolfSSL_get_sigalg_info(SLHDSA_SA_MAJOR,
+            schemes[i].minor, &hashOid, &keyOid), 0);
+        ExpectIntEQ(keyOid, schemes[i].keyOidSum);
+    }
+
+    /* An SLH-DSA major with a minor that is not a scheme stays unmapped. */
+    ExpectIntEQ(wolfSSL_get_sigalg_info(SLHDSA_SA_MAJOR, 0x7F, &hashOid,
+        &keyOid), BAD_FUNC_ARG);
+
+    /* NULL outputs are rejected. */
+    ExpectIntEQ(wolfSSL_get_sigalg_info(SLHDSA_SA_MAJOR,
+        SLHDSA_SHAKE_128S_SA_MINOR, NULL, &keyOid), BAD_FUNC_ARG);
+    ExpectIntEQ(wolfSSL_get_sigalg_info(SLHDSA_SA_MAJOR,
+        SLHDSA_SHAKE_128S_SA_MINOR, &hashOid, NULL), BAD_FUNC_ARG);
+#endif /* WOLFSSL_HAVE_SLHDSA && OPENSSL_EXTRA */
+    return EXPECT_RESULT();
+}
+
+#if defined(WOLFSSL_HAVE_SLHDSA) && defined(WOLF_CRYPTO_CB) && \
+    defined(WOLF_CRYPTO_CB_FREE)
+    #define TEST_SLHDSA_CB_FREE
+    #define TEST_SLHDSA_CB_FREE_DEVID 0x534C4844
+#endif
+
+#ifdef TEST_SLHDSA_CB_FREE
+/* What the free callback saw, so the test can check the contract rather than
+ * just that something fired. */
+typedef struct {
+    int frees;        /* matching free callbacks seen */
+    int badObj;       /* callback was handed the wrong object */
+    int wiped;        /* callback saw a key already cleaned up */
+    int ret;          /* what the callback returns */
+    const void* obj;  /* object the free is expected to name */
+} SlhDsaCbFreeCtx;
+
+/* Stands in for a device holding state for the key. Counting the call proves
+ * wc_SlhDsaKey_Free told the device rather than only cleaning up in software,
+ * which would leave the device side of the key behind. */
+static int slhdsa_cb_free_cb(int devIdArg, wc_CryptoInfo* info, void* ctx)
+{
+    SlhDsaCbFreeCtx* seen = (SlhDsaCbFreeCtx*)ctx;
+
+    (void)devIdArg;
+
+    if ((seen != NULL) && (info != NULL) &&
+            (info->algo_type == WC_ALGO_TYPE_FREE) &&
+            (info->free.algo == WC_ALGO_TYPE_PK) &&
+            (info->free.type == WC_PK_TYPE_PQC_SIG_KEYGEN) &&
+            (info->free.subType == WC_PQC_SIG_TYPE_SLHDSA)) {
+        const SlhDsaKey* slh = (const SlhDsaKey*)info->free.obj;
+
+        seen->frees++;
+        if ((slh == NULL) || ((const void*)slh != seen->obj)) {
+            seen->badObj++;
+        }
+        /* The device gets the key while it is still whole: it may need to
+         * read it to release the right resource, so the software wipe has
+         * to come after this call, not before. */
+        else if ((slh->devId != TEST_SLHDSA_CB_FREE_DEVID) ||
+                 (slh->params == NULL)) {
+            seen->wiped++;
+        }
+        return seen->ret;
+    }
+
+    return WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE);
+}
+#endif /* TEST_SLHDSA_CB_FREE */
+
+/* Freeing a key that names a device has to tell that device, so it can
+ * release what it holds. A key with no device must not, and neither must a
+ * second free of a key already freed: a freed key names no device. A device
+ * that reports an error does not stop the software cleanup. */
+int test_slhdsa_cb_free(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_SLHDSA_CB_FREE
+    SlhDsaKey key;
+    SlhDsaCbFreeCtx seen;
+
+    XMEMSET(&key, 0, sizeof(key));
+    XMEMSET(&seen, 0, sizeof(seen));
+    seen.obj = &key;
+
+    ExpectIntEQ(wc_CryptoCb_RegisterDevice(TEST_SLHDSA_CB_FREE_DEVID,
+        slhdsa_cb_free_cb, &seen), 0);
+
+    ExpectIntEQ(wc_SlhDsaKey_Init(&key, WC_SLHDSA_DEFAULT_PARAM, NULL,
+        TEST_SLHDSA_CB_FREE_DEVID), 0);
+    wc_SlhDsaKey_Free(&key);
+    ExpectIntEQ(seen.frees, 1);
+    ExpectIntEQ(seen.badObj, 0);
+    ExpectIntEQ(seen.wiped, 0);
+    ExpectIntEQ(key.devId, INVALID_DEVID);
+    ExpectNull(key.params);
+
+    wc_SlhDsaKey_Free(&key);
+    ExpectIntEQ(seen.frees, 1);
+
+    /* A device that fails still leaves the key cleaned up locally. */
+    seen.ret = WC_NO_ERR_TRACE(WC_HW_E);
+    XMEMSET(&key, 0, sizeof(key));
+    ExpectIntEQ(wc_SlhDsaKey_Init(&key, WC_SLHDSA_DEFAULT_PARAM, NULL,
+        TEST_SLHDSA_CB_FREE_DEVID), 0);
+    wc_SlhDsaKey_Free(&key);
+    ExpectIntEQ(seen.frees, 2);
+    ExpectIntEQ(key.devId, INVALID_DEVID);
+    ExpectNull(key.params);
+    seen.ret = 0;
+
+    XMEMSET(&key, 0, sizeof(key));
+    ExpectIntEQ(wc_SlhDsaKey_Init(&key, WC_SLHDSA_DEFAULT_PARAM, NULL,
+        INVALID_DEVID), 0);
+    wc_SlhDsaKey_Free(&key);
+    ExpectIntEQ(seen.frees, 2);
+
+    wc_CryptoCb_UnRegisterDevice(TEST_SLHDSA_CB_FREE_DEVID);
+#endif
+    return EXPECT_RESULT();
+}

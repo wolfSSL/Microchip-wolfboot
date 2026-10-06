@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -454,6 +454,31 @@ int wh_MessageCrypto_TranslateEccVerifyResponse(
     return 0;
 }
 
+/* ECC Make Public Request translation */
+int wh_MessageCrypto_TranslateEccMakePubRequest(
+    uint16_t magic, const whMessageCrypto_EccMakePubRequest* src,
+    whMessageCrypto_EccMakePubRequest* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T32(magic, dest, src, options);
+    WH_T32(magic, dest, src, keyId);
+    return 0;
+}
+
+/* ECC Make Public Response translation */
+int wh_MessageCrypto_TranslateEccMakePubResponse(
+    uint16_t magic, const whMessageCrypto_EccMakePubResponse* src,
+    whMessageCrypto_EccMakePubResponse* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T32(magic, dest, src, pubSz);
+    return 0;
+}
+
 /* ECC Check Request translation */
 int wh_MessageCrypto_TranslateEccCheckRequest(
     uint16_t magic, const whMessageCrypto_EccCheckRequest* src,
@@ -462,8 +487,10 @@ int wh_MessageCrypto_TranslateEccCheckRequest(
     if ((src == NULL) || (dest == NULL)) {
         return WH_ERROR_BADARGS;
     }
+    WH_T32(magic, dest, src, options);
     WH_T32(magic, dest, src, keyId);
     WH_T32(magic, dest, src, curveId);
+    WH_T32(magic, dest, src, pubSz);
     return 0;
 }
 
@@ -689,6 +716,59 @@ int wh_MessageCrypto_TranslateSha2Response(
     WH_T32(magic, dest, src, loLen);
     WH_T32(magic, dest, src, hashType);
     /* Hash value is just a byte array, no translation needed */
+    if (src != dest) {
+        memcpy(dest->hash, src->hash, sizeof(src->hash));
+    }
+    return 0;
+}
+
+/* SHA3 state translation - shared across all SHA3 variants and across the
+ * non-DMA and DMA wire formats. */
+int wh_MessageCrypto_TranslateSha3State(uint16_t                         magic,
+                                        const whMessageCrypto_Sha3State* src,
+                                        whMessageCrypto_Sha3State*       dest)
+{
+    int k;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    for (k = 0; k < 25; k++) {
+        WH_T64(magic, dest, src, s[k]);
+    }
+    return 0;
+}
+
+/* SHA3 Request translation. Trailing input bytes are raw and need no
+ * translation. */
+int wh_MessageCrypto_TranslateSha3Request(
+    uint16_t magic, const whMessageCrypto_Sha3Request* src,
+    whMessageCrypto_Sha3Request* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T32(magic, dest, src, isLastBlock);
+    WH_T32(magic, dest, src, inSz);
+    return wh_MessageCrypto_TranslateSha3State(magic, &src->resumeState,
+                                               &dest->resumeState);
+}
+
+/* SHA3 Response translation */
+int wh_MessageCrypto_TranslateSha3Response(
+    uint16_t magic, const whMessageCrypto_Sha3Response* src,
+    whMessageCrypto_Sha3Response* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslateSha3State(magic, &src->resumeState,
+                                              &dest->resumeState);
+    if (ret != 0) {
+        return ret;
+    }
     if (src != dest) {
         memcpy(dest->hash, src->hash, sizeof(src->hash));
     }
@@ -1024,6 +1104,48 @@ int wh_MessageCrypto_TranslateSha2DmaResponse(
     }
     WH_T32(magic, dest, src, hashType);
 
+    return wh_MessageCrypto_TranslateDmaAddrStatus(magic, &src->dmaAddrStatus,
+                                                   &dest->dmaAddrStatus);
+}
+
+/* SHA3 DMA Request translation */
+int wh_MessageCrypto_TranslateSha3DmaRequest(
+    uint16_t magic, const whMessageCrypto_Sha3DmaRequest* src,
+    whMessageCrypto_Sha3DmaRequest* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslateDmaBuffer(magic, &src->input, &dest->input);
+    if (ret != 0) {
+        return ret;
+    }
+    WH_T32(magic, dest, src, isLastBlock);
+    WH_T32(magic, dest, src, inSz);
+    return wh_MessageCrypto_TranslateSha3State(magic, &src->resumeState,
+                                               &dest->resumeState);
+}
+
+/* SHA3 DMA Response translation */
+int wh_MessageCrypto_TranslateSha3DmaResponse(
+    uint16_t magic, const whMessageCrypto_Sha3DmaResponse* src,
+    whMessageCrypto_Sha3DmaResponse* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    ret = wh_MessageCrypto_TranslateSha3State(magic, &src->resumeState,
+                                              &dest->resumeState);
+    if (ret != 0) {
+        return ret;
+    }
+    if (src != dest) {
+        memcpy(dest->hash, src->hash, sizeof(src->hash));
+    }
     return wh_MessageCrypto_TranslateDmaAddrStatus(magic, &src->dmaAddrStatus,
                                                    &dest->dmaAddrStatus);
 }
@@ -1366,6 +1488,185 @@ int wh_MessageCrypto_TranslateMlKemDecapsDmaResponse(
     }
 
     WH_T32(magic, dest, src, ssLen);
+    return 0;
+}
+
+/* Stateful sig DMA Key Generation Request translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigKeyGenDmaRequest(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigKeyGenDmaRequest* src,
+    whMessageCrypto_PqcStatefulSigKeyGenDmaRequest* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateDmaBuffer(magic, &src->pub, &dest->pub);
+    if (ret != 0) {
+        return ret;
+    }
+
+    WH_T32(magic, dest, src, flags);
+    WH_T32(magic, dest, src, keyId);
+    WH_T32(magic, dest, src, access);
+    WH_T32(magic, dest, src, labelSize);
+    WH_T32(magic, dest, src, lmsLevels);
+    WH_T32(magic, dest, src, lmsHeight);
+    WH_T32(magic, dest, src, lmsWinternitz);
+    if (src != dest) {
+        memcpy(dest->label, src->label, sizeof(src->label));
+        memcpy(dest->xmssParamStr, src->xmssParamStr,
+               sizeof(src->xmssParamStr));
+    }
+    return 0;
+}
+
+/* Stateful sig DMA Key Generation Response translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigKeyGenDmaResponse(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigKeyGenDmaResponse* src,
+    whMessageCrypto_PqcStatefulSigKeyGenDmaResponse* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateDmaAddrStatus(magic, &src->dmaAddrStatus,
+                                                  &dest->dmaAddrStatus);
+    if (ret != 0) {
+        return ret;
+    }
+
+    WH_T32(magic, dest, src, keyId);
+    WH_T32(magic, dest, src, pubSize);
+    return 0;
+}
+
+/* Stateful sig DMA Sign Request translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigSignDmaRequest(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigSignDmaRequest* src,
+    whMessageCrypto_PqcStatefulSigSignDmaRequest* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateDmaBuffer(magic, &src->msg, &dest->msg);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = wh_MessageCrypto_TranslateDmaBuffer(magic, &src->sig, &dest->sig);
+    if (ret != 0) {
+        return ret;
+    }
+
+    WH_T32(magic, dest, src, options);
+    WH_T32(magic, dest, src, keyId);
+    return 0;
+}
+
+/* Stateful sig DMA Sign Response translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigSignDmaResponse(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigSignDmaResponse* src,
+    whMessageCrypto_PqcStatefulSigSignDmaResponse* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateDmaAddrStatus(magic, &src->dmaAddrStatus,
+                                                  &dest->dmaAddrStatus);
+    if (ret != 0) {
+        return ret;
+    }
+
+    WH_T32(magic, dest, src, sigLen);
+    return 0;
+}
+
+/* Stateful sig DMA Verify Request translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigVerifyDmaRequest(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigVerifyDmaRequest* src,
+    whMessageCrypto_PqcStatefulSigVerifyDmaRequest* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateDmaBuffer(magic, &src->sig, &dest->sig);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = wh_MessageCrypto_TranslateDmaBuffer(magic, &src->msg, &dest->msg);
+    if (ret != 0) {
+        return ret;
+    }
+
+    WH_T32(magic, dest, src, options);
+    WH_T32(magic, dest, src, keyId);
+    return 0;
+}
+
+/* Stateful sig DMA Verify Response translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigVerifyDmaResponse(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigVerifyDmaResponse* src,
+    whMessageCrypto_PqcStatefulSigVerifyDmaResponse* dest)
+{
+    int ret;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_MessageCrypto_TranslateDmaAddrStatus(magic, &src->dmaAddrStatus,
+                                                  &dest->dmaAddrStatus);
+    if (ret != 0) {
+        return ret;
+    }
+
+    WH_T32(magic, dest, src, res);
+    return 0;
+}
+
+/* Stateful sig DMA Signatures-Left Request translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigSigsLeftDmaRequest(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigSigsLeftDmaRequest* src,
+    whMessageCrypto_PqcStatefulSigSigsLeftDmaRequest* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    WH_T32(magic, dest, src, keyId);
+    return 0;
+}
+
+/* Stateful sig DMA Signatures-Left Response translation */
+int wh_MessageCrypto_TranslatePqcStatefulSigSigsLeftDmaResponse(
+    uint16_t magic,
+    const whMessageCrypto_PqcStatefulSigSigsLeftDmaResponse* src,
+    whMessageCrypto_PqcStatefulSigSigsLeftDmaResponse* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+
+    WH_T32(magic, dest, src, sigsLeft);
     return 0;
 }
 

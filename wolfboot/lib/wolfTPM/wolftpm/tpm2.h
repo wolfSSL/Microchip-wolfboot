@@ -1,8 +1,8 @@
 /* tpm2.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -310,7 +310,14 @@ typedef enum {
     /* ST33 Firmware Update Vendor Command Codes
      * Verified from ST reference implementation (TPM_FU_STM_KTPM_LMS.c):
      * - Start: 0x2000030C, Data: 0x2000030D
-     * Note: Abandon still uses placeholder - may need verification */
+     * Note: Abandon still uses placeholder - may need verification
+     * These are only used by the ST33KTPM class of firmware. Other ST33
+     * firmware performs the field upgrade with the standard
+     * TPM_CC_FieldUpgradeStart/Data codes instead; the library queries
+     * TPM_CAP_COMMANDS to find out which pair a part implements.
+     * Note the abandon/finalize codes alias TPM_CC_GetRandom2 (0x2000030E)
+     * and TPM_CC_GPIO_Config (0x2000030F); only the firmware upgrade mode the
+     * TPM is in tells the two meanings apart. */
     TPM_CC_FieldUpgradeStartVendor_ST33    = CC_VEND + 0x030C,
     TPM_CC_FieldUpgradeAbandonVendor_ST33  = CC_VEND + 0x030E, /* Abandon/cancel */
     TPM_CC_FieldUpgradeDataVendor_ST33     = CC_VEND + 0x030D,
@@ -395,6 +402,11 @@ typedef enum {
     TPM_RC_BINDING          = RC_FMT1 + 0x025,
     TPM_RC_CURVE            = RC_FMT1 + 0x026,
     TPM_RC_ECC_POINT        = RC_FMT1 + 0x027,
+#ifdef WOLFTPM_V185
+    /* Part 2 v1.85 Sec.6.6.3 Table 17 firmware/SVN-limited codes */
+    TPM_RC_FW_LIMITED         = RC_FMT1 + 0x028,
+    TPM_RC_SVN_LIMITED        = RC_FMT1 + 0x029,
+#endif
     /* TCG Part 2 Sec.6.6.3 Table 17 -- present since v1.16, not v1.85 */
     TPM_RC_PARMS              = RC_FMT1 + 0x02A,
 #ifdef WOLFTPM_PQC
@@ -402,6 +414,11 @@ typedef enum {
     TPM_RC_EXT_MU             = RC_FMT1 + 0x02B,
     TPM_RC_ONE_SHOT_SIGNATURE = RC_FMT1 + 0x02C,
     TPM_RC_SIGN_CONTEXT_KEY   = RC_FMT1 + 0x02D,
+#endif
+#ifdef WOLFTPM_V185
+    /* Part 2 v1.85 Sec.6.6.3 Table 17 channel protocol codes */
+    TPM_RC_CHANNEL            = RC_FMT1 + 0x030,
+    TPM_RC_CHANNEL_KEY        = RC_FMT1 + 0x031,
 #endif
     RC_MAX_FMT1             = RC_FMT1 + 0x03F,
 
@@ -838,9 +855,9 @@ enum TPMA_ALGORITHM_mask {
     TPMA_ALGORITHM_symmetric  = 0x00000002,
     TPMA_ALGORITHM_hash       = 0x00000004,
     TPMA_ALGORITHM_object     = 0x00000008,
-    TPMA_ALGORITHM_signing    = 0x00000010,
-    TPMA_ALGORITHM_encrypting = 0x00000020,
-    TPMA_ALGORITHM_method     = 0x00000040,
+    TPMA_ALGORITHM_signing    = 0x00000100,
+    TPMA_ALGORITHM_encrypting = 0x00000200,
+    TPMA_ALGORITHM_method     = 0x00000400,
 };
 
 typedef UINT32 TPMA_OBJECT;
@@ -856,11 +873,12 @@ enum TPMA_OBJECT_mask {
     TPMA_OBJECT_restricted          = 0x00010000,
     TPMA_OBJECT_decrypt             = 0x00020000,
     TPMA_OBJECT_sign                = 0x00040000,
+#ifndef WOLFTPM_V185
     /* Deprecated alias. Earlier versions of this header labeled bit 9
      * as derivedDataOrigin, which does not appear in the TCG spec.
-     * Retained at the same bit value (now svnLimited per Part 2 v1.85)
-     * for source compatibility with downstream code. */
+     * In v1.85 builds bit 9 is exposed only as svnLimited. */
     TPMA_OBJECT_derivedDataOrigin   = 0x00000200,
+#endif
 #ifdef WOLFTPM_V185
     /* Part 2 v1.85 Sec.8.3.2 Table 36 bits 8 and 9: firmwareLimited /
      * svnLimited mark keys whose lifetime is bound to the firmware
@@ -1141,7 +1159,7 @@ typedef struct TPMS_PCR_SELECT {
 typedef struct TPMS_PCR_SELECTION {
     TPMI_ALG_HASH hash;
     BYTE sizeofSelect;
-    BYTE pcrSelect[PCR_SELECT_MIN];
+    BYTE pcrSelect[PCR_SELECT_MAX];
 } TPMS_PCR_SELECTION;
 
 
@@ -2141,9 +2159,19 @@ struct wolfTPM_winContext {
 #define TPM_E_COMMAND_BLOCKED (0x80280400)
 #endif
 
-#define WOLFTPM_IS_COMMAND_UNAVAILABLE(code) ((code) == (int)TPM_RC_COMMAND_CODE || (code) == (int)TPM_E_COMMAND_BLOCKED)
+/* Mask off vendor/layer high bits so a vendor-decorated TPM_RC_COMMAND_CODE
+ * (e.g. NS350 returns 0x000b0143 for 0x143) still matches. Gate on >= 0 so a
+ * propagated negative wolfCrypt error (e.g. -189) is never misread as an
+ * unavailable command. TPM_E_COMMAND_BLOCKED is a Windows HRESULT (negative),
+ * matched exactly. */
+#define WOLFTPM_IS_COMMAND_UNAVAILABLE(code) \
+    (((code) >= 0 && \
+      (((UINT32)(code)) & 0xFFFFu) == (UINT32)TPM_RC_COMMAND_CODE) || \
+     (code) == (int)TPM_E_COMMAND_BLOCKED)
 #else
-#define WOLFTPM_IS_COMMAND_UNAVAILABLE(code) (code == (int)TPM_RC_COMMAND_CODE)
+#define WOLFTPM_IS_COMMAND_UNAVAILABLE(code) \
+    ((code) >= 0 && \
+     (((UINT32)(code)) & 0xFFFFu) == (UINT32)TPM_RC_COMMAND_CODE)
 #endif /* WOLFTPM_WINAPI */
 
 /* make sure advanced IO is enabled for I2C */
@@ -3421,6 +3449,11 @@ WOLFTPM_API int TPM2_IFX_FieldUpgradeCommand(TPM_CC cc, uint8_t* data, uint32_t 
 #ifdef WOLFTPM_FIRMWARE_UPGRADE
 WOLFTPM_API int TPM2_ST33_FieldUpgradeStart(TPM_HANDLE sessionHandle,
     uint8_t* data, uint32_t size);
+/* Same as TPM2_ST33_FieldUpgradeStart, but with the field upgrade start
+ * command code supplied by the caller. ST33 firmware differs on whether the
+ * vendor code or the standard TPM_CC_FieldUpgradeStart is implemented. */
+WOLFTPM_API int TPM2_ST33_FieldUpgradeStart_ex(TPM_HANDLE sessionHandle,
+    TPM_CC cc, uint8_t* data, uint32_t size);
 WOLFTPM_API int TPM2_ST33_FieldUpgradeCommand(TPM_CC cc, uint8_t* data, uint32_t size);
 #endif /* WOLFTPM_FIRMWARE_UPGRADE */
 #endif /* WOLFTPM_ST33 || WOLFTPM_AUTODETECT */
@@ -3788,6 +3821,8 @@ WOLFTPM_API TPM_RC TPM2_SetCommandRetries(TPM2_CTX* ctx, int retries);
 /*!
     \ingroup TPM2_Proprietary
     \brief Returns the number of times a command is transparently resubmitted on TPM_RC_RETRY
+    \note Callers must synchronize concurrent calls to this function and
+    TPM2_SetCommandRetries.
 
     \return the configured retry count on success
     \return BAD_FUNC_ARG: the TPM2 context is a NULL pointer
@@ -4219,6 +4254,8 @@ WOLFTPM_API int TPM2_GetWolfCurve(int curve_id);
 
     \return TPM_RC_SUCCESS: successful
     \return BAD_FUNC_ARG: check the provided arguments
+    \return TPM_RC_VALUE: invalid attestation magic or type
+    \return TPM_RC_SIZE: malformed or truncated attestation data
 
     \param in pointer to a structure of a TPM2B_ATTEST type
     \param out pointer to a structure of a TPMS_ATTEST type
@@ -4366,6 +4403,7 @@ typedef enum {
     TPM_VENDOR_MCHP = 0x1114,
     TPM_VENDOR_NUVOTON = 0x1050,
     TPM_VENDOR_NATIONTECH = 0x1B4E,
+    TPM_VENDOR_SEALSQ = 0x2406,
 } TPM_Vendor_t;
 
 

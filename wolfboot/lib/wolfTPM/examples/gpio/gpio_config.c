@@ -1,8 +1,8 @@
 /* gpio_config.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -159,12 +159,14 @@ int TPM2_GPIO_Config_Example(void* userCtx, int argc, char *argv[])
     rc = wolfTPM2_GetCapabilities(&dev, &caps);
     if (rc != TPM_RC_SUCCESS) {
         printf("wolfTPM2_GetCapabilities failed 0x%x: %s\n", rc, TPM2_GetRCString(rc));
+        goto exit;
     }
 
     /* Confirm the TPM vendor */
 #ifdef WOLFTPM_ST33
     if (caps.mfg != TPM_MFG_STM) {
         printf("TPM vendor mismatch. GPIO support requires an ST33 TPM 2.0 module\n");
+        rc = BAD_FUNC_ARG;
         goto exit;
     }
 
@@ -252,6 +254,7 @@ int TPM2_GPIO_Config_Example(void* userCtx, int argc, char *argv[])
 
     if (caps.mfg != TPM_MFG_NUVOTON) {
         printf("TPM vendor mismatch. GPIO support requires Nuvoton NPCT7xx TPM 2.0 module\n");
+        rc = BAD_FUNC_ARG;
         goto exit;
     }
 
@@ -394,13 +397,13 @@ int TPM2_GPIO_Config_Example(void* userCtx, int argc, char *argv[])
     /* Initial NV attributes */
     parent.hndl = TPM_RH_PLATFORM;
     rc = wolfTPM2_GetNvAttributesTemplate(parent.hndl, &nvAttributes);
-    /* Add NV attributes required by Nuvoton specification */
-    nvAttributes |= (TPMA_NV_PLATFORMCREATE | TPMA_NV_POLICY_DELETE);
-    nvAttributes |= (TPMA_NV_TPM_NT & (TPM_NT_ORDINARY << 4));
     if (rc != TPM_RC_SUCCESS) {
         printf("Setting NV attributes failed\n");
         goto exit;
     }
+    /* Add NV attributes required by Nuvoton specification */
+    nvAttributes |= (TPMA_NV_PLATFORMCREATE | TPMA_NV_POLICY_DELETE);
+    nvAttributes |= (TPMA_NV_TPM_NT & (TPM_NT_ORDINARY << 4));
 #ifdef DEBUG_WOLFTPM
     printf("nvAttributes = 0x%8.8X\n", nvAttributes);
 #endif

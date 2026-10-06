@@ -9,7 +9,7 @@
  * https://www.wolfssl.com
  */
 
-#include "board.h"  /* provides WHAL_CFG_STM32WB_WWDG_DEV initializer */
+#include "wolfHAL_board.h"  /* provides WHAL_CFG_STM32WB_WWDG_DEV initializer */
 #include <wolfHAL/watchdog/stm32wb_wwdg.h>
 #include <wolfHAL/watchdog/watchdog.h>
 #include <wolfHAL/error.h>

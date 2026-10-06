@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -23,6 +23,41 @@
 
 #include "wolfhsm/wh_common.h"
 #include "wolfhsm/wh_auth.h"
+
+/**
+ * NVM object IDs reserved by the auth base backend (do not use for other
+ * objects). The user index (serialized whAuthUser records: usernames,
+ * permissions, user_id; no credential material) lives at
+ * WH_NVM_ID_AUTH_USER_INDEX. Each user's credential material, along with the
+ * method and length metadata reconstructed from it at load, is stored in its
+ * own object at WH_NVM_ID_AUTH_CRED_BASE + (user_id - 1), so that only the
+ * credential blob of the user being authenticated is ever read into RAM.
+ * The reserved range spans WH_NVM_ID_AUTH_USER_INDEX through
+ * WH_NVM_ID_AUTH_CRED_BASE + (max users - 1).
+ *
+ * Both IDs may be overridden at build time (e.g. to relocate the reserved
+ * range away from IDs used by other subsystems) by defining them before this
+ * header is included. When overriding, keep WH_NVM_ID_AUTH_CRED_BASE and the
+ * (max users) IDs above it clear of WH_NVM_ID_AUTH_USER_INDEX and any other
+ * reserved objects.
+ */
+#ifndef WH_NVM_ID_AUTH_USER_INDEX
+#define WH_NVM_ID_AUTH_USER_INDEX ((whNvmId)0xFE00)
+#endif
+#ifndef WH_NVM_ID_AUTH_CRED_BASE
+#define WH_NVM_ID_AUTH_CRED_BASE ((whNvmId)0xFE01)
+#endif
+
+/**
+ * @brief Configuration for the auth base implementation.
+ *
+ * When nvm is non-NULL and NVM is built in, the user index and per-user
+ * credential objects are persisted to NVM. When nvm is NULL, the user database
+ * remains in-memory only (lost on restart).
+ */
+typedef struct {
+    void* nvm; /**< NVM context (whNvmContext*) for persistent storage; NULL for in-memory only */
+} whAuthBaseConfig;
 
 /**
  * @brief Initialize the auth base implementation.
@@ -118,14 +153,19 @@ int wh_Auth_BaseUserSetPermissions(void* context, uint16_t current_user_id,
 /**
  * @brief Get user information by username.
  *
+ * A non-admin caller may only read its own record; an admin caller may read
+ * any record. To a non-admin, a denied and a missing name both return
+ * WH_ERROR_ACCESS.
+ *
  * @param[in] context Pointer to the auth base context.
+ * @param[in] current_user_id The user ID of the caller performing the lookup.
  * @param[in] username The username to look up.
  * @param[out] out_user_id Pointer to store the user ID.
  * @param[out] out_permissions Pointer to store the user permissions.
  * @return int Returns 0 on success, or a negative error code on failure.
  */
-int wh_Auth_BaseUserGet(void* context, const char* username,
-                        whUserId*          out_user_id,
+int wh_Auth_BaseUserGet(void* context, uint16_t current_user_id,
+                        const char* username, whUserId* out_user_id,
                         whAuthPermissions* out_permissions);
 
 /**

@@ -9,7 +9,7 @@
  * https://www.wolfssl.com
  */
 
-#include "board.h"  /* provides WHAL_CFG_SYSTICK_DEV initializer */
+#include "wolfHAL_board.h"  /* provides WHAL_CFG_SYSTICK_DEV initializer */
 #include <wolfHAL/error.h>
 #include <wolfHAL/reg.h>
 #include <wolfHAL/bitops.h>

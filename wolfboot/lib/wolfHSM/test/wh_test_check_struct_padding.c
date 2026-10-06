@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -96,6 +96,7 @@ whMessageCrypto_EcdhRequest           pkEcdhReq;
 whMessageCrypto_Curve25519Request     pkCurve25519Req;
 whMessageCrypto_EccSignRequest        pkEccSignReq;
 whMessageCrypto_EccVerifyRequest      pkEccVerifyReq;
+whMessageCrypto_EccMakePubRequest     pkEccMakePubReq;
 whMessageCrypto_EccCheckRequest       pkEccCheckReq;
 whMessageCrypto_RngRequest            rngReq;
 whMessageCrypto_CmacAesRequest        cmacReq;
@@ -109,12 +110,18 @@ whMessageCrypto_EcdhResponse          pkEcdhRes;
 whMessageCrypto_Curve25519Response    pkCurve25519Res;
 whMessageCrypto_EccSignResponse       pkEccSignRes;
 whMessageCrypto_EccVerifyResponse     pkEccVerifyRes;
+whMessageCrypto_EccMakePubResponse    pkEccMakePubRes;
 whMessageCrypto_EccCheckResponse      pkEccCheckRes;
 whMessageCrypto_RngResponse           rngRes;
 whMessageCrypto_CmacAesResponse       cmacRes;
 whMessageCrypto_Sha256Request         hashSha256Req;
 whMessageCrypto_Sha512Request         hashSha512Req;
 whMessageCrypto_Sha2Response          hashSha2Res;
+#if defined(WOLFSSL_SHA3)
+whMessageCrypto_Sha3State    hashSha3State;
+whMessageCrypto_Sha3Request  hashSha3Req;
+whMessageCrypto_Sha3Response hashSha3Res;
+#endif
 whMessageCrypto_HkdfRequest           hkdfReq;
 whMessageCrypto_HkdfResponse          hkdfRes;
 whMessageCrypto_MlDsaKeyGenRequest    pkMldsaKeygenReq;
@@ -135,6 +142,10 @@ whMessageCrypto_MlKemDecapsResponse   pkMlkemDecapsRes;
 whMessageCrypto_Sha256DmaRequest       hashSha256DmaReq;
 whMessageCrypto_Sha512DmaRequest       hashSha512DmaReq;
 whMessageCrypto_Sha2DmaResponse        hashSha2DmaRes;
+#if defined(WOLFSSL_SHA3)
+whMessageCrypto_Sha3DmaRequest  hashSha3DmaReq;
+whMessageCrypto_Sha3DmaResponse hashSha3DmaRes;
+#endif
 whMessageCrypto_MlDsaKeyGenDmaRequest  pqMldsaKeygenDmaReq;
 whMessageCrypto_MlDsaKeyGenDmaResponse pqMldsaKeygenDmaRes;
 whMessageCrypto_MlDsaSignDmaRequest    pqMldsaSignDmaReq;
@@ -149,6 +160,14 @@ whMessageCrypto_MlKemEncapsDmaRequest  pkMlkemEncapsDmaReq;
 whMessageCrypto_MlKemEncapsDmaResponse pkMlkemEncapsDmaRes;
 whMessageCrypto_MlKemDecapsDmaRequest  pkMlkemDecapsDmaReq;
 whMessageCrypto_MlKemDecapsDmaResponse pkMlkemDecapsDmaRes;
+whMessageCrypto_PqcStatefulSigKeyGenDmaRequest    pqStatefulSigKeygenDmaReq;
+whMessageCrypto_PqcStatefulSigKeyGenDmaResponse   pqStatefulSigKeygenDmaRes;
+whMessageCrypto_PqcStatefulSigSignDmaRequest      pqStatefulSigSignDmaReq;
+whMessageCrypto_PqcStatefulSigSignDmaResponse     pqStatefulSigSignDmaRes;
+whMessageCrypto_PqcStatefulSigVerifyDmaRequest    pqStatefulSigVerifyDmaReq;
+whMessageCrypto_PqcStatefulSigVerifyDmaResponse   pqStatefulSigVerifyDmaRes;
+whMessageCrypto_PqcStatefulSigSigsLeftDmaRequest  pqStatefulSigSigsLeftDmaReq;
+whMessageCrypto_PqcStatefulSigSigsLeftDmaResponse pqStatefulSigSigsLeftDmaRes;
 #endif /* WOLFHSM_CFG_DMA */
 
 #endif /* !WOLFHSM_CFG_NO_CRYPTO */
@@ -185,6 +204,8 @@ whMessageShe_GenMacRequest            sheGenMacReq;
 whMessageShe_GenMacResponse           sheGenMacRes;
 whMessageShe_VerifyMacRequest         sheVerifyMacReq;
 whMessageShe_VerifyMacResponse        sheVerifyMacRes;
+whMessageShe_GetIdRequest             sheGetIdReq;
+whMessageShe_GetIdResponse            sheGetIdRes;
 #endif /* WOLFHSM_CFG_SHE_EXTENSION */
 
 #if defined(WOLFHSM_CFG_CERTIFICATE_MANAGER)

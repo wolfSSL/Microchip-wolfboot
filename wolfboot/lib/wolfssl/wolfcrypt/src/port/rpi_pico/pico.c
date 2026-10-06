@@ -10,7 +10,7 @@
  */
 
 
-
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 
 #include <inttypes.h>
 #include <string.h>

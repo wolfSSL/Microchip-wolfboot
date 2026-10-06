@@ -193,6 +193,25 @@ int test_wolfSSL_EVP_EncodeUpdate(void)
                 sizeof(encBlock0)-1);
     ExpectStrEQ(encOutBuff, encBlock0);
 
+    /* oversized length must be rejected, not read past the input buffer */
+    XMEMSET( encOutBuff,0, sizeof(encOutBuff));
+    ExpectIntEQ(EVP_EncodeBlock(encOutBuff, plain0, 0x7FFFFFFF), -1);
+
+    /* oversized length must be rejected by EVP_EncodeUpdate as well, rather
+     * than reading far past the caller's input buffer */
+    EVP_EncodeInit(ctx);
+    outl = 1;
+    XMEMSET( encOutBuff,0, sizeof(encOutBuff));
+    ExpectIntEQ(
+        EVP_EncodeUpdate(
+            ctx,
+            encOutBuff,
+            &outl,
+            plain0,
+            0x7FFFFFFF),
+        0);
+    ExpectIntEQ(outl, 0);
+
     /* pass small size( < 48bytes ) input, then make sure they are not
      * encoded  and just stored in ctx
      */
@@ -375,6 +394,18 @@ int test_wolfSSL_EVP_DecodeUpdate(void)
     );
     ExpectIntEQ( outl, 0);
 
+    /* pass negative length */
+    ExpectIntEQ(
+        EVP_DecodeUpdate(
+            ctx,
+            decOutBuff,
+            &outl,
+            enc1,
+            -1),             /* negative inl */
+        -1                    /* expected result code -1: fail */
+    );
+    ExpectIntEQ( outl, 0);
+
     ExpectIntEQ(EVP_DecodeBlock(NULL, NULL, 0), -1);
 
     /* pass zero length input */
@@ -541,6 +572,33 @@ int test_wolfSSL_EVP_DecodeUpdate(void)
                 (const char*)decOutBuff,
                 (const char*)plain4,sizeof(plain4)-1 ),
             0);
+    }
+
+    /* decode input holding a NUL byte at the start of a 4 byte group, followed
+     * by more data than the context buffer can hold */
+
+    {
+        unsigned char enc5[64];
+
+        XMEMSET(enc5, 'A', sizeof(enc5));
+        enc5[0] = '\0';
+
+        EVP_DecodeInit(ctx);
+
+        ExpectIntEQ(
+            EVP_DecodeUpdate(
+                ctx,
+                decOutBuff,
+                &outl,
+                enc5,
+                (int)sizeof(enc5)),
+            1                    /* expected result code 1: success */
+            );
+        ExpectIntEQ(outl, 0);
+        /* Before the fix all 64 input bytes were buffered into the 48 byte
+         * ctx->data. The NUL byte ends the input, so nothing may be buffered
+         * at all. */
+        ExpectIntEQ(ctx->remaining, 0);
     }
 
     EVP_ENCODE_CTX_free(ctx);

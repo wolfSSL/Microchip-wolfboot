@@ -34,14 +34,23 @@ int test_wolfSSL_X509_check_host_URI_SAN_not_DNS_match(void);
 int test_wolfSSL_CertManagerCRL(void);
 int test_wolfSSL_CRL_reason_extensions_cleanup(void);
 int test_wolfSSL_CRL_static_revoked_list(void);
+int test_wolfSSL_CRL_static_revoked_list_dup(void);
 int test_wolfSSL_CRL_duplicate_extensions(void);
 int test_wolfSSL_CRL_critical_idp(void);
 int test_wolfSSL_CRL_unknown_critical_ext(void);
 int test_wolfSSL_CRL_unknown_critical_entry_ext(void);
+int test_wolfSSL_CRL_unknown_ext_cb_rescues_critical_entry_ext(void);
+int test_wolfSSL_CRL_unknown_ext_cb_rescues_critical_crl_ext(void);
+int test_wolfSSL_CRL_unknown_ext_cb_positive_return_fails_load(void);
+int test_wolfSSL_CRL_unknown_ext_cb_noctx(void);
+int test_wolfSSL_cert_critical_policy_constraints(void);
 int test_wolfSSL_CertManagerCheckOCSPResponse(void);
 int test_various_pathlen_chains(void);
 int test_wolfSSL_CertManagerRejectMD5Cert(void);
+int test_wolfSSL_CertManagerRejectRPK(void);
 int test_wolfSSL_X509_V_ERR_strings(void);
+int test_wolfSSL_CertManagerNameConstraint_valid_chain(void);
+int test_wolfSSL_CertManagerNameConstraint_skid_disambiguates(void);
 
 #define TEST_CERTMAN_DECLS                                                  \
     TEST_DECL_GROUP("certman", test_wolfSSL_CertManagerAPI),                \
@@ -66,14 +75,28 @@ int test_wolfSSL_X509_V_ERR_strings(void);
     TEST_DECL_GROUP("certman", test_wolfSSL_CertManagerCRL),                \
     TEST_DECL_GROUP("certman", test_wolfSSL_CRL_reason_extensions_cleanup), \
     TEST_DECL_GROUP("certman", test_wolfSSL_CRL_static_revoked_list),      \
+    TEST_DECL_GROUP("certman", test_wolfSSL_CRL_static_revoked_list_dup),  \
     TEST_DECL_GROUP("certman", test_wolfSSL_CRL_duplicate_extensions),      \
     TEST_DECL_GROUP("certman", test_wolfSSL_CRL_critical_idp),             \
     TEST_DECL_GROUP("certman", test_wolfSSL_CRL_unknown_critical_ext),     \
     TEST_DECL_GROUP("certman", test_wolfSSL_CRL_unknown_critical_entry_ext), \
+    TEST_DECL_GROUP("certman",                                              \
+        test_wolfSSL_CRL_unknown_ext_cb_rescues_critical_entry_ext),        \
+    TEST_DECL_GROUP("certman",                                              \
+        test_wolfSSL_CRL_unknown_ext_cb_rescues_critical_crl_ext),          \
+    TEST_DECL_GROUP("certman",                                              \
+        test_wolfSSL_CRL_unknown_ext_cb_positive_return_fails_load),        \
+    TEST_DECL_GROUP("certman",                                              \
+        test_wolfSSL_CRL_unknown_ext_cb_noctx),                             \
+    TEST_DECL_GROUP("certman", test_wolfSSL_cert_critical_policy_constraints), \
     TEST_DECL_GROUP("certman", test_wolfSSL_CertManagerCheckOCSPResponse),  \
     TEST_DECL_GROUP("certman", test_various_pathlen_chains),                \
     TEST_DECL_GROUP("certman", test_wolfSSL_CertManagerRejectMD5Cert),      \
-    TEST_DECL_GROUP("certman", test_wolfSSL_X509_V_ERR_strings)
+    TEST_DECL_GROUP("certman", test_wolfSSL_CertManagerRejectRPK),          \
+    TEST_DECL_GROUP("certman", test_wolfSSL_X509_V_ERR_strings),            \
+    TEST_DECL_GROUP("certman",                                             \
+        test_wolfSSL_CertManagerNameConstraint_valid_chain),                \
+    TEST_DECL_GROUP("certman",                                             \
+        test_wolfSSL_CertManagerNameConstraint_skid_disambiguates)
 
 #endif /* WOLFCRYPT_TEST_CERTMAN_H */
-

@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -49,6 +49,8 @@ static int _benchAesCtrDma(whClientContext* client, whBenchOpContext* ctx,
     const uint8_t* in  = NULL;
     uint8_t*       out = NULL;
 
+    (void)wh_Client_SetDmaMode(client, 1);
+
 #if defined(WOLFHSM_CFG_TEST_POSIX)
     /* Allocate buffers using XMALLOC with heap hints for DMA */
     if (ctx->transportType == WH_BENCH_TRANSPORT_POSIX_DMA) {
@@ -81,7 +83,7 @@ static int _benchAesCtrDma(whClientContext* client, whBenchOpContext* ctx,
 #endif
 
     /* Initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;
@@ -177,6 +179,8 @@ static int _benchAesCtr(whClientContext* client, whBenchOpContext* ctx, int id,
         WC_AES_BLOCK_SIZE;
     int i;
 
+    (void)wh_Client_SetDmaMode(client, 0);
+
 #if defined(WOLFHSM_CFG_BENCH_INIT_DATA_BUFFERS)
     /* Initialize the input buffer with something non-zero */
     memset(WH_BENCH_DATA_IN_BUFFER, 0xAA, inLen);
@@ -184,7 +188,7 @@ static int _benchAesCtr(whClientContext* client, whBenchOpContext* ctx, int id,
 #endif
 
     /* Initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;
@@ -373,6 +377,8 @@ static int _benchAesEcbDma(whClientContext* client, whBenchOpContext* ctx,
     const uint8_t* in  = NULL;
     uint8_t*       out = NULL;
 
+    (void)wh_Client_SetDmaMode(client, 1);
+
 #if defined(WOLFHSM_CFG_TEST_POSIX)
     /* Allocate buffers using XMALLOC with heap hints for DMA */
     if (ctx->transportType == WH_BENCH_TRANSPORT_POSIX_DMA) {
@@ -405,7 +411,7 @@ static int _benchAesEcbDma(whClientContext* client, whBenchOpContext* ctx,
 #endif
 
     /* Initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;
@@ -504,6 +510,8 @@ static int _benchAesEcb(whClientContext* client, whBenchOpContext* ctx, int id,
         WC_AES_BLOCK_SIZE;
     int i;
 
+    (void)wh_Client_SetDmaMode(client, 0);
+
 #if defined(WOLFHSM_CFG_BENCH_INIT_DATA_BUFFERS)
     /* Initialize the input buffer with something non-zero */
     memset(WH_BENCH_DATA_IN_BUFFER, 0xAA, inLen);
@@ -511,7 +519,7 @@ static int _benchAesEcb(whClientContext* client, whBenchOpContext* ctx, int id,
 #endif
 
     /* Initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;
@@ -708,6 +716,8 @@ static int _benchAesCbcDma(whClientContext* client, whBenchOpContext* ctx,
     const uint8_t* in  = NULL;
     uint8_t*       out = NULL;
 
+    (void)wh_Client_SetDmaMode(client, 1);
+
 #if defined(WOLFHSM_CFG_TEST_POSIX)
     /* Allocate buffers using XMALLOC with heap hints for DMA */
     if (ctx->transportType == WH_BENCH_TRANSPORT_POSIX_DMA) {
@@ -740,7 +750,7 @@ static int _benchAesCbcDma(whClientContext* client, whBenchOpContext* ctx,
 #endif
 
     /* Initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;
@@ -848,6 +858,8 @@ static int _benchAesCbc(whClientContext* client, whBenchOpContext* ctx, int id,
         WC_AES_BLOCK_SIZE;
     int i;
 
+    (void)wh_Client_SetDmaMode(client, 0);
+
 #if defined(WOLFHSM_CFG_BENCH_INIT_DATA_BUFFERS)
     /* Initialize the input buffer with something non-zero */
     memset(WH_BENCH_DATA_IN_BUFFER, 0xAA, inLen);
@@ -855,7 +867,7 @@ static int _benchAesCbc(whClientContext* client, whBenchOpContext* ctx, int id,
 #endif
 
     /* Initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;
@@ -1064,6 +1076,8 @@ static int _benchAesGcmDma(whClientContext* client, whBenchOpContext* ctx,
     const uint8_t* in  = NULL;
     uint8_t*       out = NULL;
 
+    (void)wh_Client_SetDmaMode(client, 1);
+
 #if defined(WOLFHSM_CFG_TEST_POSIX)
     /* Allocate buffers using XMALLOC with heap hints for DMA */
     if (ctx->transportType == WH_BENCH_TRANSPORT_POSIX_DMA) {
@@ -1096,7 +1110,7 @@ static int _benchAesGcmDma(whClientContext* client, whBenchOpContext* ctx,
 #endif
 
     /* initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;
@@ -1221,6 +1235,8 @@ static int _benchAesGcm(whClientContext* client, whBenchOpContext* ctx, int id,
         WC_AES_BLOCK_SIZE;
     int i;
 
+    (void)wh_Client_SetDmaMode(client, 0);
+
 #if defined(WOLFHSM_CFG_BENCH_INIT_DATA_BUFFERS)
     /* Initialize the input buffer with something non-zero */
     memset(WH_BENCH_DATA_IN_BUFFER, 0xAA, inLen);
@@ -1228,7 +1244,7 @@ static int _benchAesGcm(whClientContext* client, whBenchOpContext* ctx, int id,
 #endif
 
     /* initialize the aes struct */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_AesInit %d\n", ret);
         goto exit;

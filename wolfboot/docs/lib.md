@@ -4,7 +4,6 @@ Instead of building as standalone repository, wolfBoot can be built as
 a secure-boot library and integrated in third party bootloaders, custom
 staging solutions etc.
 
-
 ## Library API
 
 The wolfBoot secure-boot image verification has a very simple interface.
@@ -84,7 +83,8 @@ EOF
 ```
 
 Change `WOLFBOOT_PARTITION_SIZE` accordingly. `wolfBoot_open_image_address()` will discard images larger than
-`WOLFBOOT_PARTITION_SIZE` - `IMAGE_HEADER_SIZE`.
+the target slot size (`WOLFBOOT_PARTITION_SIZE`, or `WOLFBOOT_PARTITION_UPDATE_SIZE` for the update slot)
+minus `IMAGE_HEADER_SIZE`.
 
 
 Step 3: compile keytools and create keys.

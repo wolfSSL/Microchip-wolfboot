@@ -1,8 +1,8 @@
 /* clock_set.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -102,8 +102,14 @@ int TPM2_ClockSet_Test(void* userCtx, int argc, char *argv[])
 
     /* Set the TPM clock forward */
     cmdIn.clockSet.auth = TPM_RH_OWNER;
-    if (newClock)
-        cmdIn.clockSet.newTime = newClock;
+    if (newClock) {
+        if (newClock > (UINT64)0xFFFFFFFFFFFFFFFFULL - oldClock) {
+            printf("Clock increment out of range\n");
+            rc = BAD_FUNC_ARG;
+            goto exit;
+        }
+        cmdIn.clockSet.newTime = oldClock + newClock;
+    }
     else
         cmdIn.clockSet.newTime = oldClock + 50000;
     rc = TPM2_ClockSet(&cmdIn.clockSet);

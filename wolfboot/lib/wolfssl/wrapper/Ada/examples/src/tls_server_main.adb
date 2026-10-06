@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 with Tls_Server; pragma Elaborate_All (Tls_Server);
 
 --  SPARK wrapper package around GNAT Library packages.

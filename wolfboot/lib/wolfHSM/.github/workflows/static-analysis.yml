@@ -6,23 +6,24 @@ on:
   push:
     branches: [ main, master ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   cppcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
     - name: Checkout wolfssl
-      uses: actions/checkout@v4
-      with:
-        repository: wolfssl/wolfssl
-        ref: v5.6.4-stable
-        path: wolfssl
+      uses: ./.github/actions/checkout-wolfssl
 
     - name: Install cppcheck
       run: |
@@ -68,6 +69,7 @@ jobs:
 
   scan-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
     - name: Checkout wolfHSM
@@ -76,10 +78,7 @@ jobs:
         path: wolfHSM
 
     - name: Checkout wolfssl
-      uses: actions/checkout@v4
-      with:
-        repository: wolfssl/wolfssl
-        path: wolfssl
+      uses: ./wolfHSM/.github/actions/checkout-wolfssl
 
     - name: Install dependencies
       run: |
@@ -99,16 +98,14 @@ jobs:
 
   clang-tidy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
     - name: Checkout wolfssl
-      uses: actions/checkout@v4
-      with:
-        repository: wolfssl/wolfssl
-        path: wolfssl
+      uses: ./.github/actions/checkout-wolfssl
 
     - name: Install dependencies
       run: |

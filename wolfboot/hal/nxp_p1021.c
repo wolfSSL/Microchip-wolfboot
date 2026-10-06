@@ -144,32 +144,10 @@
 /* P1021 PC16552D Dual UART */
 #define BAUD_RATE    115200
 #define UART_SEL     0 /* select UART 0 or 1 */
-#define UART_LCR_VAL (UART_LCR_WLS) /* data=8 bits, stop-1 bit, no parity */
 
 #define UART_BASE(n) (CCSRBAR + 0x4500 + (n * 0x100))
 
-#define UART_RBR(n)  ((volatile uint8_t*)(UART_BASE(n) + 0)) /* receiver buffer register */
-#define UART_THR(n)  ((volatile uint8_t*)(UART_BASE(n) + 0)) /* transmitter holding register */
-#define UART_IER(n)  ((volatile uint8_t*)(UART_BASE(n) + 1)) /* interrupt enable register */
-#define UART_IIR(n)  ((volatile uint8_t*)(UART_BASE(n) + 2)) /* interrupt ID register */
-#define UART_FCR(n)  ((volatile uint8_t*)(UART_BASE(n) + 2)) /* FIFO control register */
-#define UART_LCR(n)  ((volatile uint8_t*)(UART_BASE(n) + 3)) /* line control register */
-#define UART_MCR(n)  ((volatile uint8_t*)(UART_BASE(n) + 4)) /* modem control register */
-#define UART_LSR(n)  ((volatile uint8_t*)(UART_BASE(n) + 5)) /* line status register */
-
-/* enabled when UART_LCR_DLAB set */
-#define UART_DLB(n)  ((volatile uint8_t*)(UART_BASE(n) + 0)) /* divisor least significant byte register */
-#define UART_DMB(n)  ((volatile uint8_t*)(UART_BASE(n) + 1)) /* divisor most significant byte register */
-
-#define UART_FCR_TFR  (0x04) /* Transmitter FIFO reset */
-#define UART_FCR_RFR  (0x02) /* Receiver FIFO reset */
-#define UART_FCR_FEN  (0x01) /* FIFO enable */
-#define UART_LCR_DLAB (0x80) /* Divisor latch access bit */
-#define UART_LCR_WLS  (0x03) /* Word length select: 8-bits */
-#define UART_LSR_TEMT (0x40) /* Transmitter empty */
-#define UART_LSR_THRE (0x20) /* Transmitter holding register empty */
-
-/* P1021 eLBC (Enhanced Local Bus Controller) - RM 12.3 */
+/* Register layout and bit names live in include/ns16550.h. */
 #define ELBC_BASE        (CCSRBAR + 0x5000UL)
 #define ELBC_MAX_BANKS   8
 #define ELBC_BANK_SZ     8192
@@ -186,6 +164,11 @@
 #define ELBC_FBAR   ((volatile uint32_t*)(ELBC_BASE + 0xEC))  /* flash address register - OR_PGS=0 (shift 5), OR_PGS=1 (shift 6) */
 #define ELBC_FPAR   ((volatile uint32_t*)(ELBC_BASE + 0xF0))  /* flash page address register */
 #define ELBC_FBCR   ((volatile uint32_t*)(ELBC_BASE + 0xF4))  /* flash byte count register */
+/* FBCR[BC] = byte count: 0 = full page + spare (the only ECC setting,
+ * FPAR[MS]/[CI] then read as 0), else bytes from FPAR[CI]. P1021RM
+ * 12.3.30 numbers it 20-31 MSB-first, i.e. the low 12 bits: unshifted,
+ * like ELBC_FPAR_*_CI below. */
+#define ELBC_FBCR_BC(n)   ((n) & 0xFFF)
 
 #define ELBC_LTESR  ((volatile uint32_t*)(ELBC_BASE + 0xB0))  /* transfer error status register */
 #define ELBC_LTEIR  ((volatile uint32_t*)(ELBC_BASE + 0xB8))  /* transfer error interrupt enable register */
@@ -320,6 +303,12 @@ enum elbc_amask_sizes {
 #define NAND_CMD_RESET        0xFF
 
 #define NAND_CMD_READSTART    0x30 /* Extended command for large page devices */
+
+/* NAND device status byte (ONFI): bit 0 set = program/erase failed,
+ * bit 7 clear = write protected. Success requires bit 0 clear and
+ * bit 7 set. */
+#define NAND_STATUS_FAIL      (1 << 0) /* DQ0: 1 = program/erase fail */
+#define NAND_STATUS_WP_N      (1 << 7) /* DQ7: 0 = write protected */
 
 
 /* DDR */
@@ -647,6 +636,7 @@ static int hal_flash_command(uint8_t iswrite)
 {
     int ret = 0;
     int timeout = 0;
+    uint32_t ltesr;
     uint32_t fmr =
         ELBC_FMR_CWTO(15) |       /* max timeout */
         ELBC_FMR_AL(2) |          /* 4 byte address */
@@ -664,45 +654,87 @@ static int hal_flash_command(uint8_t iswrite)
         timeout++ < FLASH_TIMEOUT_TRIES) {
         /* NOP */
     };
-    if (timeout == FLASH_TIMEOUT_TRIES) {
+
+    ltesr = get32(ELBC_LTESR);
+
+    /* Test the completion flag, not the loop counter: on a timeout exit
+     * "timeout" has already passed FLASH_TIMEOUT_TRIES, so comparing it
+     * for equality never matched and a hung command returned 0. */
+    if (!(ltesr & ELBC_LTESR_CC)) {
+        ret = -1;
+    }
+    else if (ltesr & ELBC_LTESR_FCT) {
+        /* a CW/RSW wait timed out: the device never became ready */
+        ret = -1;
+    }
+    else if (iswrite == 0 && (ltesr & ELBC_LTESR_PAR)) {
+        /* uncorrectable ECC error during the FCM read: the data in the
+         * FCM buffer cannot be trusted */
         ret = -1;
     }
 
     /* clear interrupt */
-    set32(ELBC_LTESR, get32(ELBC_LTESR) & ELBC_NAND_MASK);
+    set32(ELBC_LTESR, ltesr & ELBC_NAND_MASK);
     set32(ELBC_LTEATR, 0);
 
     return ret;
 }
 
-/* assume input/output buffers are 32-bit aligned */
+/* 32-bit accesses only when both the FCM offset and the caller's
+ * buffer are 4-byte aligned; either can be odd, and a misaligned
+ * access to the guarded eLBC window traps on e500. */
 static void hal_flash_read_bytes(uint8_t* data, size_t len)
 {
+    uint32_t end = flash_idx + (uint32_t)len;
+
 #ifdef DEBUG_EXT_FLASH
     wolfBoot_printf("read %p to %p, len %d\n",
         &flash_buf[flash_idx], data, len);
 #endif
-    /* copy data from internal eLBC FCM buffer */
-    while (flash_idx < len) {
-        *((volatile uint32_t*)data) =
-            *(volatile uint32_t*)(&flash_buf[flash_idx]);
-        flash_idx += 4;
-        data += 4;
+    /* copy data from internal eLBC FCM buffer. flash_idx starts at the
+     * page column (see hal_flash_set_addr), so len is a relative count and
+     * the end must be flash_idx + len, not len. */
+    while (flash_idx < end) {
+        if (end - flash_idx >= 4 &&
+                ((flash_idx | (uintptr_t)data) & 3) == 0) {
+            *((volatile uint32_t*)data) =
+                *(volatile uint32_t*)(&flash_buf[flash_idx]);
+            flash_idx += 4;
+            data += 4;
+        }
+        else {
+            *data = flash_buf[flash_idx];
+            flash_idx++;
+            data++;
+        }
     }
 }
-/* assume input/output buffers are 32-bit aligned */
+/* 32-bit accesses only when both sides are aligned; see
+ * hal_flash_read_bytes() above. */
 static void hal_flash_write_bytes(const uint8_t* data, size_t len)
 {
+    uint32_t end = flash_idx + (uint32_t)len;
+
 #ifdef DEBUG_EXT_FLASH
     wolfBoot_printf("write %p to %p, len %d\n",
         data, &flash_buf[flash_idx], len);
 #endif
-    /* copy data to internal eLBC FCM buffer */
-    while (flash_idx < len) {
-        *(volatile uint32_t*)(&flash_buf[flash_idx]) =
-            *((volatile uint32_t*)data);
-        flash_idx += 4;
-        data += 4;
+    /* copy data to internal eLBC FCM buffer. flash_idx starts at the
+     * page column (see hal_flash_set_addr), so len is a relative count and
+     * the end must be flash_idx + len, not len. */
+    while (flash_idx < end) {
+        if (end - flash_idx >= 4 &&
+                ((flash_idx | (uintptr_t)data) & 3) == 0) {
+            *(volatile uint32_t*)(&flash_buf[flash_idx]) =
+                *((volatile uint32_t*)data);
+            flash_idx += 4;
+            data += 4;
+        }
+        else {
+            flash_buf[flash_idx] = *data;
+            flash_idx++;
+            data++;
+        }
     }
 }
 
@@ -1014,18 +1046,18 @@ static void config_io_pin(uint8_t port, uint8_t pin, int dir, int open_drain,
     pin_2bit_dir =  (uint32_t)(dir << (NUM_OF_PINS -
         (pin % (NUM_OF_PINS / 2) + 1) * 2));
 
-    /* Setup the direction */
+    /* Setup the direction: one masked store - a clear-then-set pair
+     * would drop a concurrent update to another pin in the same
+     * register */
     tmp_val = (pin > (NUM_OF_PINS / 2) - 1) ?
         get32(GUTS_CPDIR2(port)) :
         get32(GUTS_CPDIR1(port));
 
     if (pin > (NUM_OF_PINS / 2) - 1) {
-        set32(GUTS_CPDIR2(port), ~pin_2bit_mask & tmp_val);
-        set32(GUTS_CPDIR2(port),  pin_2bit_dir  | tmp_val);
+        set32(GUTS_CPDIR2(port), (~pin_2bit_mask & tmp_val) | pin_2bit_dir);
     }
     else {
-        set32(GUTS_CPDIR1(port), ~pin_2bit_mask & tmp_val);
-        set32(GUTS_CPDIR1(port),  pin_2bit_dir  | tmp_val);
+        set32(GUTS_CPDIR1(port), (~pin_2bit_mask & tmp_val) | pin_2bit_dir);
     }
 
     /* Calculate pin location for 1bit mask */
@@ -1040,21 +1072,21 @@ static void config_io_pin(uint8_t port, uint8_t pin, int dir, int open_drain,
         set32(GUTS_CPODR(port), ~pin_1bit_mask & tmp_val);
     }
 
-    /* Setup the assignment */
+    /* Setup the assignment: one masked store (same reason as the
+     * direction write above) */
     tmp_val = (pin > (NUM_OF_PINS/2) - 1) ?
         get32(GUTS_CPPAR2(port)):
         get32(GUTS_CPPAR1(port));
     pin_2bit_assign = (uint32_t)(assign <<
         (NUM_OF_PINS - (pin % (NUM_OF_PINS / 2) + 1) * 2));
 
-    /* Clear and set 2 bits mask */
     if (pin > (NUM_OF_PINS/2) - 1) {
-        set32(GUTS_CPPAR2(port), ~pin_2bit_mask   & tmp_val);
-        set32(GUTS_CPPAR2(port),  pin_2bit_assign | tmp_val);
+        set32(GUTS_CPPAR2(port), (~pin_2bit_mask & tmp_val) |
+            pin_2bit_assign);
     }
     else {
-        set32(GUTS_CPPAR1(port), ~pin_2bit_mask   & tmp_val);
-        set32(GUTS_CPPAR1(port),  pin_2bit_assign | tmp_val);
+        set32(GUTS_CPPAR1(port), (~pin_2bit_mask & tmp_val) |
+            pin_2bit_assign);
     }
 }
 
@@ -1192,6 +1224,7 @@ static void qe_upload_microcode(const struct qe_firmware *firmware,
 static int qe_upload_firmware(const struct qe_firmware *firmware)
 {
     unsigned int i, j;
+    uint64_t mcode_end;
 #ifdef ENABLE_QE_CRC32
     uint32_t crc;
 #endif
@@ -1234,6 +1267,24 @@ static int qe_upload_firmware(const struct qe_firmware *firmware)
     if (length != calc_size + sizeof(uint32_t)) {
         wolfBoot_printf("QE length %d invalid!\n", length);
         return -1;
+    }
+
+    /* The blob must fit in the buffer actually read from NAND, and every
+     * microcode (and the trailing CRC) must stay inside it: count and
+     * code_offset are attacker-controlled until proven otherwise. */
+    if (length > QE_FW_LENGTH) {
+        wolfBoot_printf("QE length %d exceeds the %d byte buffer\n",
+            length, QE_FW_LENGTH);
+        return -1;
+    }
+    for (i = 0; i < firmware->count; i++) {
+        mcode_end = (uint64_t)firmware->microcode[i].code_offset +
+            (uint64_t)sizeof(uint32_t) * firmware->microcode[i].count;
+
+        if (mcode_end > length) {
+            wolfBoot_printf("QE microcode %d out of bounds\n", i);
+            return -1;
+        }
     }
 
 #ifdef ENABLE_QE_CRC32
@@ -1573,13 +1624,19 @@ int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
     page_size = 512;
     set32(ELBC_FCR, ELBC_FCR_CMD(0, NAND_CMD_READA) |
                     ELBC_FCR_CMD(1, NAND_CMD_PAGE_PROG2) |
-                    ELBC_FCR_CMD(2, NAND_CMD_PAGE_PROG1));
+                    ELBC_FCR_CMD(2, NAND_CMD_PAGE_PROG1) |
+                    ELBC_FCR_CMD(3, NAND_CMD_STATUS));
+    /* the CM3+RSW pair issues the status command after the program
+     * execute and waits for it, so MDR holds the page status like the
+     * large page path */
     set32(ELBC_FIR, ELBC_FIR_OP(0, ELBC_FIR_OP_CW0) |
                     ELBC_FIR_OP(1, ELBC_FIR_OP_CM2) |
                     ELBC_FIR_OP(2, ELBC_FIR_OP_CA) |
                     ELBC_FIR_OP(3, ELBC_FIR_OP_PA) |
                     ELBC_FIR_OP(4, ELBC_FIR_OP_WB) |
-                    ELBC_FIR_OP(5, ELBC_FIR_OP_CW1));
+                    ELBC_FIR_OP(5, ELBC_FIR_OP_CW1) |
+                    ELBC_FIR_OP(6, ELBC_FIR_OP_CM3) |
+                    ELBC_FIR_OP(7, ELBC_FIR_OP_RSW));
 #endif
     (void)block_size; /* not used - shown for reference */
 
@@ -1590,15 +1647,23 @@ int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
         uint32_t col = (address % page_size);
         uint32_t status;
 
-        /* bytes to read */
-        write_size = len;
-        if (write_size > page_size) {
-            write_size = page_size;
+        /* bytes remaining in the request, capped to the current page */
+        write_size = len - pos;
+        if (write_size > page_size - col) {
+            write_size = page_size - col;
         }
         /* set page and FCM buffer */
         hal_flash_set_addr(page, col);
 
-        set32(ELBC_FBCR, col); /* size of write (0=full page) */
+        /* full page + spare (the only ECC-generating setting) only when
+         * the whole page is written from column 0; otherwise transfer
+         * exactly write_size bytes starting at column col */
+        if (col == 0 && write_size == page_size) {
+            set32(ELBC_FBCR, 0);
+        }
+        else {
+            set32(ELBC_FBCR, ELBC_FBCR_BC(write_size));
+        }
 
         /* copy page to FCM buffer */
         hal_flash_write_bytes(data, write_size);
@@ -1614,11 +1679,16 @@ int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
         wolfBoot_printf("write page %d, col %d, status %x\n",
             page, col, status);
 #endif
-        (void)status;
-        address += page_size - col;
-        pos += page_size - col;
-        data += page_size - col;
-        col = 0; /* remainder is page aligned */
+        /* DQ0 set = program failed, DQ7 clear = write protected: the
+         * page did not program. Stop; retrying the same page fails the
+         * same way. */
+        if ((status & NAND_STATUS_FAIL) || !(status & NAND_STATUS_WP_N)) {
+            ret = -1;
+            break;
+        }
+        address += write_size;
+        pos += write_size;
+        data += write_size;
     };
 
     return ret;
@@ -1631,6 +1701,8 @@ int ext_flash_read(uintptr_t address, uint8_t *data, int len)
     uint32_t block_size, page_size, read_size;
     int ret = 0, pos = 0, i = 0;
     int bad_marker;
+    uint8_t *block_start_data;
+    int block_start_pos;
 
 #ifdef DEBUG_EXT_FLASH
     wolfBoot_printf("ext read: addr 0x%x, dst 0x%x, len %d\n",
@@ -1663,45 +1735,64 @@ int ext_flash_read(uintptr_t address, uint8_t *data, int len)
 
     /* total download loop */
     while (pos < len) {
+        /* the bad-block marker only exists on the first pages of each
+         * erase block: restart the per-block page counter. Record the
+         * output position at the start of the block so that, if the
+         * block turns out to be bad, the pages already copied from it
+         * can be discarded. */
+        i = 0;
+        block_start_data = data;
+        block_start_pos = pos;
+
         /* block loop */
         do {
             /* Calculate page address */
             uint32_t page = (address / page_size);
             uint32_t col = (address % page_size);
 
-            set32(ELBC_FBCR, col);
-
-            /* bytes to read */
-            read_size = len;
-            if (read_size > page_size) {
-                read_size = page_size;
+            /* bytes remaining in the request, capped to the current page */
+            read_size = len - pos;
+            if (read_size > page_size - col) {
+                read_size = page_size - col;
             }
 
             /* read page into FCM buffer */
             hal_flash_set_addr(page, col);
+
+            /* Always full page + spare (BC = 0): the bad-block marker
+             * below lives in the spare region, which a BC != 0 transfer
+             * never loads. read_size still bounds the copy out. */
+            set32(ELBC_FBCR, 0);
+
             ret = hal_flash_command(0);
             if (ret != 0)
-                break;
+                goto read_done;
 
             /* check for bad page. if either of the first two pages are bad then
              * skip to next block */
             if (i++ < 2 && flash_buf[bad_marker] != 0xFF) {
-                /* skip block - advance address by block and restart position */
+                /* bad block: discard the pages already copied from it
+                 * (the marker is only checked on the first two pages, so
+                 * a page may have been delivered before detection) and
+                 * continue at the next block. Rewind pos and data to the
+                 * block start (data = original + pos is preserved) and
+                 * move the source address past the bad block. */
+                pos = block_start_pos;
+                data = block_start_data;
                 address = (address + block_size) & ~(block_size - 1);
-                pos &= ~(block_size - 1);
                 break;
             }
 
             /* copy from FCM buffer to data buffer */
             hal_flash_read_bytes(data, read_size);
-            address += page_size - col;
-            pos += page_size - col;
-            data += page_size - col;
-            col = 0; /* remainder is page aligned */
+            address += read_size;
+            pos += read_size;
+            data += read_size;
 
         } while ((address & (block_size - 1)) && (pos < len));
     };
 
+read_done:
     /* on success return size read */
     if (ret == 0) {
         ret = len;
@@ -1755,7 +1846,13 @@ int ext_flash_erase(uintptr_t address, int len)
 #ifdef DEBUG_EXT_FLASH
         wolfBoot_printf("erase page %d, status %x\n", page, status);
 #endif
-        (void)status;
+        /* DQ0 set = erase failed, DQ7 clear = write protected: the block
+         * did not erase. Stop; erasing the same block fails the same way. */
+        if ((status & NAND_STATUS_FAIL) || !(status & NAND_STATUS_WP_N)) {
+            ret = -1;
+            break;
+        }
+        address += block_size;
         len -= block_size;
     }
 

@@ -112,6 +112,34 @@ static int sim_cryptocb(int devIdArg, wc_CryptoInfo* info, void* ctx)
 #include "port/posix/posix_flash_file.h"
 #endif /* WOLFBOOT_ENABLE_WOLFHSM_SERVER */
 
+#if defined(HAVE_FIPS)
+/* FIPS DRBG entropy seed for the simulator: read from /dev/urandom.
+ * Registered via CUSTOM_RAND_GENERATE_SEED in include/user_settings.h. */
+int wolfBoot_fips_seed(unsigned char* output, unsigned int sz)
+{
+    unsigned int pos = 0;
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0)
+        return -1;
+    while (pos < sz) {
+        ssize_t r = read(fd, output + pos, sz - pos);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue; /* interrupted, retry */
+            close(fd);
+            return -1;
+        }
+        if (r == 0) { /* unexpected EOF on /dev/urandom */
+            close(fd);
+            return -1;
+        }
+        pos += (unsigned int)r;
+    }
+    close(fd);
+    return 0;
+}
+#endif /* HAVE_FIPS */
+
 /* Global pointer to the internal and external flash base */
 uint8_t *sim_ram_base;
 static uint8_t *flash_base;
@@ -305,8 +333,10 @@ static int mmap_file(const char *path, uint8_t *address, uint8_t** ret_address)
 
     mmaped_addr = mmap(address, st.st_size, PROT_READ | PROT_WRITE,
                        MAP_SHARED, fd, 0);
-    if (mmaped_addr == MAP_FAILED)
+    if (mmaped_addr == MAP_FAILED) {
+        close(fd);
         return -1;
+    }
 
     wolfBoot_printf( "Simulator assigned %s to base %p\n", path, mmaped_addr);
 
@@ -501,6 +531,10 @@ void hal_init(void)
 
     for (i = 1; i < main_argc; i++) {
         if (strcmp(main_argv[i], "powerfail") == 0) {
+            if ((i + 1) >= main_argc) {
+                wolfBoot_printf( "powerfail requires a hex address argument\n");
+                exit(-1);
+            }
             erasefail_address = strtol(main_argv[++i], NULL,  16);
             wolfBoot_printf( "Set power fail to erase at address %x\n",
                 erasefail_address);

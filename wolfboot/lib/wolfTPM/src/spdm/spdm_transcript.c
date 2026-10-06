@@ -1,8 +1,8 @@
 /* spdm_transcript.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -43,7 +43,8 @@ int wolfSPDM_TranscriptAdd(WOLFSPDM_CTX* ctx, const byte* data, word32 len)
         return WOLFSPDM_E_INVALID_ARG;
     }
 
-    if (ctx->transcriptLen + len > WOLFSPDM_MAX_TRANSCRIPT) {
+    if (ctx->transcriptLen > WOLFSPDM_MAX_TRANSCRIPT ||
+        len > WOLFSPDM_MAX_TRANSCRIPT - ctx->transcriptLen) {
         return WOLFSPDM_E_BUFFER_SMALL;
     }
 

@@ -1,8 +1,8 @@
 /* version.h.in
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -24,8 +24,8 @@
 extern "C" {
 #endif
 
-#define LIBWOLFTPM_VERSION_STRING "4.0.0"
-#define LIBWOLFTPM_VERSION_HEX 0x04000000
+#define LIBWOLFTPM_VERSION_STRING "4.2.0"
+#define LIBWOLFTPM_VERSION_HEX 0x04002000
 
 #ifdef __cplusplus
 }

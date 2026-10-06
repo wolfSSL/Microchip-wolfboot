@@ -9,6 +9,35 @@ function(override_cache VAR VAL)
     set_property(CACHE ${VAR} PROPERTY VALUE ${VAL})
 endfunction()
 
+# Record that an option must be forced to a given value by a dependency (e.g. an
+# application bundle enabling the algorithms it needs). The force is applied by
+# add_option() when the option is later defined, so it must be recorded before
+# that add_option() call runs. This keeps the option's declared type and help
+# text intact (unlike creating the cache entry early), and makes the dependency
+# explicit rather than relying on cross-file cache-precedence side effects.
+function(force_option NAME VALUE)
+    set_property(GLOBAL PROPERTY "WOLFSSL_FORCE_${NAME}" "${VALUE}")
+    # Track pending forces so an unconsumed one (no matching add_option) can be
+    # reported by wolfssl_warn_unconsumed_forces() -- a force on an option that
+    # is not declared via add_option() would otherwise be silently ignored.
+    set_property(GLOBAL APPEND PROPERTY WOLFSSL_FORCE_PENDING "${NAME}")
+endfunction()
+
+# Warn about any force_option() whose target option was never declared with
+# add_option() (so the force never took effect). Call after all options are
+# defined and before generate_build_flags().
+function(wolfssl_warn_unconsumed_forces)
+    get_property(_pending GLOBAL PROPERTY WOLFSSL_FORCE_PENDING)
+    if(_pending)
+        list(REMOVE_DUPLICATES _pending)
+        foreach(_n ${_pending})
+            message(WARNING
+                "force_option(${_n}) had no effect: no add_option(\"${_n}\") "
+                "was declared to consume it.")
+        endforeach()
+    endif()
+endfunction()
+
 function(add_option NAME HELP_STRING DEFAULT VALUES)
     if(VALUES STREQUAL "yes;no")
         # Set the default value for the option.
@@ -18,6 +47,20 @@ function(add_option NAME HELP_STRING DEFAULT VALUES)
         set(${NAME} ${DEFAULT} CACHE STRING ${HELP_STRING})
         # Set the list of allowed values for the option.
         set_property(CACHE ${NAME} PROPERTY STRINGS ${VALUES})
+    endif()
+
+    # Apply any dependency force recorded via force_option(). Done after the
+    # cache entry is created (so its BOOL/STRING type and help are preserved)
+    # and before the reduction below, so the forced value drives this option's
+    # own define/source emission just as an explicit setting would.
+    get_property(_wolfssl_forced GLOBAL PROPERTY "WOLFSSL_FORCE_${NAME}" SET)
+    if(_wolfssl_forced)
+        get_property(_wolfssl_force_val GLOBAL PROPERTY "WOLFSSL_FORCE_${NAME}")
+        override_cache(${NAME} "${_wolfssl_force_val}")
+        # Mark this force as consumed so it is not reported as unconsumed.
+        get_property(_pending GLOBAL PROPERTY WOLFSSL_FORCE_PENDING)
+        list(REMOVE_ITEM _pending "${NAME}")
+        set_property(GLOBAL PROPERTY WOLFSSL_FORCE_PENDING "${_pending}")
     endif()
 
     if(DEFINED ${NAME})
@@ -162,9 +205,6 @@ function(generate_build_flags)
     if(WOLFSSL_AES OR WOLFSSL_USER_SETTINGS)
         set(BUILD_AES "yes" PARENT_SCOPE)
     endif()
-    if(WOLFSSL_CODING OR WOLFSSL_USER_SETTINGS)
-        set(BUILD_CODING "yes" PARENT_SCOPE)
-    endif()
     if(WOLFSSL_ARC4 OR WOLFSSL_USER_SETTINGS)
         set(BUILD_RC4 "yes" PARENT_SCOPE)
     endif()
@@ -210,12 +250,14 @@ function(generate_build_flags)
     if(WOLFSSL_MLKEM OR WOLFSSL_USER_SETTINGS)
         set(BUILD_WC_MLKEM "yes" PARENT_SCOPE)
     endif()
+    if(WOLFSSL_FRODOKEM OR WOLFSSL_USER_SETTINGS)
+        set(BUILD_WC_FRODOKEM "yes" PARENT_SCOPE)
+    endif()
     if(WOLFSSL_MLDSA OR WOLFSSL_DILITHIUM OR WOLFSSL_USER_SETTINGS)
         set(BUILD_MLDSA "yes" PARENT_SCOPE)
     endif()
     if(WOLFSSL_FALCON OR WOLFSSL_USER_SETTINGS)
         set(BUILD_FALCON "yes" PARENT_SCOPE)
-        set(BUILD_OQS_HELPER "yes" PARENT_SCOPE)
     endif()
     if(WOLFSSL_LMS OR WOLFSSL_USER_SETTINGS)
         set(BUILD_WC_LMS "yes" PARENT_SCOPE)
@@ -320,6 +362,9 @@ function(generate_build_flags)
     if(WOLFSSL_CRYPTOCB OR WOLFSSL_USER_SETTINGS)
         set(BUILD_CRYPTOCB "yes" PARENT_SCOPE)
     endif()
+    if(WOLFSSL_VAULTIC)
+        set(BUILD_VAULTIC "yes" PARENT_SCOPE)
+    endif()
     set(BUILD_PSK ${WOLFSSL_PSK} PARENT_SCOPE)
     set(BUILD_TRUST_PEER_CERT ${WOLFSSL_TRUSTED_PEER_CERT} PARENT_SCOPE)
     set(BUILD_PKI ${WOLFSSL_PKI} PARENT_SCOPE)
@@ -329,6 +374,9 @@ function(generate_build_flags)
     if(WOLFSSL_PKCS7 OR WOLFSSL_USER_SETTINGS)
         set(BUILD_PKCS7 "yes" PARENT_SCOPE)
     endif()
+    if(WOLFSSL_TSP OR WOLFSSL_USER_SETTINGS)
+        set(BUILD_TSP "yes" PARENT_SCOPE)
+    endif()
     set(BUILD_HASHFLAGS ${WOLFSSL_HASHFLAGS} PARENT_SCOPE)
     set(BUILD_LINUX_KM ${WOLFSSL_LINUX_KM} PARENT_SCOPE)
     set(BUILD_NO_LIBRARY ${WOLFSSL_NO_LIBRARY} PARENT_SCOPE)
@@ -336,6 +384,22 @@ function(generate_build_flags)
         set(BUILD_DEBUG "yes" PARENT_SCOPE)
     endif()
     set(BUILD_RC2 ${WOLFSSL_RC2} PARENT_SCOPE)
+    if(WOLFSSL_ASCON OR WOLFSSL_USER_SETTINGS)
+        set(BUILD_ASCON "yes" PARENT_SCOPE)
+    endif()
+    if(WOLFSSL_ARGON2 OR WOLFSSL_USER_SETTINGS)
+        set(BUILD_ARGON2 "yes" PARENT_SCOPE)
+    endif()
+    if(WOLFSSL_SM2 OR WOLFSSL_USER_SETTINGS)
+        set(BUILD_SM2 "yes" PARENT_SCOPE)
+    endif()
+    if(WOLFSSL_SM3 OR WOLFSSL_USER_SETTINGS)
+        set(BUILD_SM3 "yes" PARENT_SCOPE)
+    endif()
+    if(WOLFSSL_SM4_CBC OR WOLFSSL_SM4_CTR OR WOLFSSL_SM4_ECB OR WOLFSSL_SM4_GCM OR
+       WOLFSSL_SM4_CCM OR WOLFSSL_USER_SETTINGS)
+        set(BUILD_SM4 "yes" PARENT_SCOPE)
+    endif()
     if(WOLFSSL_CAAM)
         set(BUILD_CAAM "yes" PARENT_SCOPE)
     endif()
@@ -404,6 +468,10 @@ function(generate_lib_src_list LIB_SOURCES)
 
             if(BUILD_AESNI)
                 list(APPEND LIB_SOURCES wolfcrypt/src/aes_asm.S)
+                # 32-bit x86 AES-XTS. The file guards its own contents on
+                # WOLFSSL_AES_XTS and WOLFSSL_X86_BUILD, so it compiles to
+                # nothing on any other target or without XTS.
+                list(APPEND LIB_SOURCES wolfcrypt/src/aes_xts_x86_asm.S)
 
                 if(BUILD_INTELASM)
                     list(APPEND LIB_SOURCES wolfcrypt/src/aes_gcm_asm.S)
@@ -767,11 +835,6 @@ function(generate_lib_src_list LIB_SOURCES)
         wolfcrypt/src/wc_port.c
         wolfcrypt/src/error.c)
 
-    if(BUILD_OQS_HELPER)
-        list(APPEND LIB_SOURCES
-            wolfcrypt/src/port/liboqs/liboqs.c)
-    endif()
-
     if(BUILD_ARIA)
         list(APPEND LIB_SOURCES
             wolfcrypt/src/port/aria/aria-crypt.c
@@ -799,9 +862,7 @@ function(generate_lib_src_list LIB_SOURCES)
         endif()
     endif()
 
-    if(BUILD_CODING)
-        list(APPEND LIB_SOURCES wolfcrypt/src/coding.c)
-    endif()
+    list(APPEND LIB_SOURCES wolfcrypt/src/coding.c)
 
     if(NOT BUILD_FIPS_RAND)
         if(BUILD_POLY1305)
@@ -855,9 +916,13 @@ function(generate_lib_src_list LIB_SOURCES)
         endif()
 
         if(NOT BUILD_FIPS_V2 AND BUILD_AESNI)
+            # aes_xts_x86_asm.S guards its own contents on WOLFSSL_AES_XTS and
+            # WOLFSSL_X86_BUILD, so it compiles to nothing on any other target
+            # or without XTS.
             list(APPEND LIB_SOURCES
                 wolfcrypt/src/aes_asm.S
-                wolfcrypt/src/aes_gcm_asm.S)
+                wolfcrypt/src/aes_gcm_asm.S
+                wolfcrypt/src/aes_xts_x86_asm.S)
         endif()
 
         if(BUILD_CAMELLIA)
@@ -878,6 +943,60 @@ function(generate_lib_src_list LIB_SOURCES)
 
         if(BUILD_BLAKE2S)
             list(APPEND LIB_SOURCES wolfcrypt/src/blake2s.c)
+        endif()
+
+        if(BUILD_RC2)
+            list(APPEND LIB_SOURCES wolfcrypt/src/rc2.c)
+        endif()
+
+        if(BUILD_ASCON)
+            list(APPEND LIB_SOURCES wolfcrypt/src/ascon.c)
+        endif()
+
+        if(BUILD_ARGON2)
+            list(APPEND LIB_SOURCES wolfcrypt/src/argon2.c)
+        endif()
+
+        # ShangMi SM2/SM3/SM4. The implementation files are provided by the
+        # external wolfsm add-on (the in-tree files are stubs that #error
+        # without it), matching automake's --enable-sm* behaviour. src/include.am
+        # guards all three with !BUILD_FIPS_V2_PLUS (excludes FIPS v2 AND v5), so
+        # reproduce that here (the enclosing scope is only NOT BUILD_FIPS_RAND).
+        if(NOT BUILD_FIPS_V2 AND NOT BUILD_FIPS_V5)
+            if(BUILD_SM2)
+                list(APPEND LIB_SOURCES wolfcrypt/src/sm2.c)
+                if(BUILD_SP)
+                    if(BUILD_SP_C)
+                        list(APPEND LIB_SOURCES
+                            wolfcrypt/src/sp_sm2_c32.c
+                            wolfcrypt/src/sp_sm2_c64.c)
+                    endif()
+                    if(BUILD_SP_X86_64)
+                        list(APPEND LIB_SOURCES wolfcrypt/src/sp_sm2_x86_64.c)
+                        if(WOLFSSL_X86_64_BUILD_ASM)
+                            list(APPEND LIB_SOURCES wolfcrypt/src/sp_sm2_x86_64_asm.S)
+                        endif()
+                    endif()
+                    if(BUILD_SP_ARM32)
+                        list(APPEND LIB_SOURCES wolfcrypt/src/sp_sm2_arm32.c)
+                    endif()
+                    if(BUILD_SP_ARM_THUMB)
+                        list(APPEND LIB_SOURCES wolfcrypt/src/sp_sm2_armthumb.c)
+                    endif()
+                    if(BUILD_SP_ARM64)
+                        list(APPEND LIB_SOURCES wolfcrypt/src/sp_sm2_arm64.c)
+                    endif()
+                    if(BUILD_SP_ARM_CORTEX)
+                        list(APPEND LIB_SOURCES wolfcrypt/src/sp_sm2_cortexm.c)
+                    endif()
+                endif()
+            endif()
+            if(BUILD_SM3)
+                list(APPEND LIB_SOURCES wolfcrypt/src/sm3.c)
+            endif()
+            if(BUILD_SM4)
+                list(APPEND LIB_SOURCES wolfcrypt/src/sm4.c)
+            endif()
         endif()
 
         if(BUILD_CHACHA)
@@ -1037,6 +1156,7 @@ function(generate_lib_src_list LIB_SOURCES)
             endif()
         endif()
 
+
         if(BUILD_WC_MLKEM)
             list(APPEND LIB_SOURCES wolfcrypt/src/wc_mlkem.c)
             list(APPEND LIB_SOURCES wolfcrypt/src/wc_mlkem_poly.c)
@@ -1066,6 +1186,35 @@ function(generate_lib_src_list LIB_SOURCES)
             endif()
         endif()
 
+        if(BUILD_WC_FRODOKEM)
+            list(APPEND LIB_SOURCES wolfcrypt/src/wc_frodokem.c)
+            list(APPEND LIB_SOURCES wolfcrypt/src/wc_frodokem_mat.c)
+
+            if(BUILD_ARMASM)
+                if(BUILD_ARMASM_INLINE)
+                    list(APPEND LIB_SOURCES
+                        wolfcrypt/src/port/arm/armv8-frodokem-asm_c.c
+                        wolfcrypt/src/port/arm/armv8-32-frodokem-asm_c.c)
+                else()
+                    list(APPEND LIB_SOURCES
+                        wolfcrypt/src/port/arm/armv8-frodokem-asm.S
+                        wolfcrypt/src/port/arm/armv8-32-frodokem-asm.S)
+                endif()
+
+                if(BUILD_ARMASM_INLINE AND BUILD_ARM_THUMB)
+                    list(APPEND LIB_SOURCES
+                        wolfcrypt/src/port/arm/thumb2-frodokem-asm_c.c)
+                elseif(BUILD_ARM_THUMB)
+                    list(APPEND LIB_SOURCES
+                        wolfcrypt/src/port/arm/thumb2-frodokem-asm.S)
+                endif()
+            endif()
+
+            if(BUILD_INTELASM)
+                list(APPEND LIB_SOURCES wolfcrypt/src/wc_frodokem_asm.S)
+            endif()
+        endif()
+
         if(BUILD_WC_LMS)
             list(APPEND LIB_SOURCES wolfcrypt/src/wc_lms.c)
             list(APPEND LIB_SOURCES wolfcrypt/src/wc_lms_impl.c)
@@ -1086,6 +1235,10 @@ function(generate_lib_src_list LIB_SOURCES)
 
         if(BUILD_PKCS7)
             list(APPEND LIB_SOURCES wolfcrypt/src/pkcs7.c)
+        endif()
+
+        if(BUILD_TSP)
+            list(APPEND LIB_SOURCES wolfcrypt/src/tsp.c)
         endif()
 
         if(BUILD_SRP)
@@ -1143,6 +1296,9 @@ function(generate_lib_src_list LIB_SOURCES)
     # Corresponds to wolfcrypt/src/include.am
     if(BUILD_CRYPTOCB)
         list(APPEND LIB_SOURCES wolfcrypt/src/cryptocb.c)
+        # entirely #ifdef WOLF_CRYPTO_CB_KEYSTORE, so it costs nothing when the
+        # key store facility is not enabled
+        list(APPEND LIB_SOURCES wolfcrypt/src/wc_keystore.c)
     endif()
 
     if(BUILD_SHE)
@@ -1180,6 +1336,10 @@ function(generate_lib_src_list LIB_SOURCES)
 
     if(BUILD_CRYPTOAUTHLIB)
         list(APPEND LIB_SOURCES wolfcrypt/src/port/atmel/atmel.c)
+    endif()
+
+    if(BUILD_VAULTIC)
+        list(APPEND LIB_SOURCES wolfcrypt/src/port/sealsq/vaultic.c)
     endif()
 
     if(BUILD_CAAM)
@@ -1240,6 +1400,10 @@ function(set_wolfssl_definitions SEARCH_VALUE RESULT)
 
         message(STATUS "Enabling ${SEARCH_VALUE}")
         list(APPEND WOLFSSL_DEFINITIONS "-D${SEARCH_VALUE}")
+        # Propagate the appended flag to the caller so it actually reaches the
+        # compile line (without PARENT_SCOPE the append is confined to this
+        # function). Duplicates are collapsed later by list(REMOVE_DUPLICATES).
+        set(WOLFSSL_DEFINITIONS "${WOLFSSL_DEFINITIONS}" PARENT_SCOPE)
         set(${SEARCH_VALUE} 1 PARENT_SCOPE)
         # override_cache("${SEARCH_VALUE}" "yes")
         # Need to check that value is settable

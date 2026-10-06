@@ -21,6 +21,8 @@ This chapter provides a detailed overview of the high level features that wolfHS
     - [Key Cache, Key IDs, and NVM Backing Store](#key-cache-key-ids-and-nvm-backing-store)
     - [Global Keys](#global-keys)
     - [Wrapped Keys](#wrapped-keys)
+    - [Hardware-Only Keys](#hardware-only-keys)
+        - [Supported Components](#supported-components)
     - [Key Usage Policies](#key-usage-policies)
 - [Certificate Management](#certificate-management)
     - [Trusted Root Storage](#trusted-root-storage)
@@ -33,13 +35,14 @@ This chapter provides a detailed overview of the high level features that wolfHS
     - [Communication Layer](#communication-layer)
     - [Transport Backends](#transport-backends)
 - [DMA Support](#dma-support)
-    - [The DMA Crypto Device (`WH_DEV_ID_DMA`)](#the-dma-crypto-device-wh_dev_id_dma)
+    - [DMA Dispatch Mode (`wh_Client_SetDmaMode`)](#dma-dispatch-mode-wh_client_setdmamode)
     - [Pre-Access and Post-Access Callbacks](#pre-access-and-post-access-callbacks)
     - [Address Allowlisting](#address-allowlisting)
     - [32-bit vs. 64-bit Address Handling](#32-bit-vs-64-bit-address-handling)
 - [AUTOSAR SHE Subsystem](#autosar-she-subsystem)
     - [Client API and Command Set](#client-api-and-command-set)
     - [SHE Key Slots and the wolfHSM Keystore](#she-key-slots-and-the-wolfhsm-keystore)
+    - [Global SHE Keys](#global-she-keys)
     - [Encrypted Key Update Protocol (M1–M5)](#encrypted-key-update-protocol-m1m5)
     - [Secure Boot](#secure-boot)
     - [Deterministic PRNG](#deterministic-prng)
@@ -82,7 +85,16 @@ wolfHSM uses wolfCrypt as its cryptographic provider on both sides of the client
 
 Clients can use the wolfCrypt API directly because of wolfCrypt's [crypto callback (cryptoCb)](https://www.wolfssl.com/documentation/manuals/wolfssl/chapter06.html#crypto-callbacks-cryptocb) framework. Crypto callbacks let you override selected algorithms at runtime by registering a callback against a device identifier (`devId`). Most wolfCrypt functions take a `devId`, and when it matches a registered device the call is dispatched through that callback instead of running locally.
 
-The wolfHSM client library registers a crypto callback that turns each supported wolfCrypt call into a request/response exchange with the server. The same wolfCrypt source can be retargeted to the HSM by changing only the `devId` — nothing else in the application changes. wolfHSM defines `WH_DEV_ID` for the server crypto device, and `WH_DEV_ID_DMA` when DMA support is compiled in; passing either to a wolfCrypt function routes the operation to the server.
+The wolfHSM client library registers a crypto callback that turns each supported wolfCrypt call into a request/response exchange with the server. The same wolfCrypt source can be retargeted to the HSM by changing only the `devId` — nothing else in the application changes. Each client context registers a device ID chosen by the application in the `.devId` field of `whClientConfig`; leaving the field `0` selects the default `WH_DEV_ID`. `wh_Client_Init()` registers the ID and binds it to that context, and `wh_Client_Cleanup()` unregisters it. At a wolfCrypt call site the application can either read the ID back from the context with the `WH_CLIENT_DEVID(client)` macro, or simply pass the same constant it placed in the config — convenient where the client context is not in scope. Because each client can own a distinct `devId`, a single process can run multiple client connections (to one server or several) and each wolfCrypt call is serviced by exactly the client whose `devId` it was initialized with; a multi-client process must configure a distinct, nonzero `devId` for every client.
+
+In addition to the configured per-client ID, every `wh_Client_Init()` registers the two process-global device IDs:
+
+- `WH_DEV_ID` is registered with the same unified callback as a configured `devId`, so it behaves identically — including honoring the [DMA dispatch mode](#dma-dispatch-mode-wh_client_setdmamode). It is also the ID a client is bound to when its config leaves `.devId` 0.
+- `WH_DEV_ID_DMA` (present only with `WOLFHSM_CFG_DMA`) is registered with the DMA-only callback: operations always use the DMA request forms, and algorithms without a DMA variant fail rather than falling back to the standard path. It is reserved for this purpose and is not valid as a configured `.devId`.
+
+The global IDs preserve the behavior of earlier wolfHSM releases: an application with a **single client per process** needs no devId configuration at all and can keep passing `WH_DEV_ID` (or `WH_DEV_ID_DMA`) straight to wolfCrypt functions, exactly as before — they are always registered and available after `wh_Client_Init()`. Because these registrations are process-global and keyed on the integer value, each `wh_Client_Init()` rebinds them to the most recently initialized client, and **any** client's `wh_Client_Cleanup()` unregisters them. In a multi-client process they are therefore unreliable and should not be passed to wolfCrypt; use the per-client configured IDs instead. Both values are overridable at compile time (see [Configuration](9-Configuration.md#cryptography-features)).
+
+Registered device IDs occupy slots in wolfCrypt's fixed-size crypto-callback table (`MAX_CRYPTO_DEVID_CALLBACKS`, default 8): the global IDs occupy one slot each, shared by all clients in the process (every init rebinds the same table entries), and each distinct configured `devId` adds one more. `wh_Client_Cleanup()` releases the client's slots. Applications that run many simultaneous clients in one process may need to raise the wolfCrypt limit.
 
 In effect the callback layer is a transparent RPC framework for wolfCrypt: clients write ordinary wolfCrypt code, and wolfHSM handles request marshaling, transport, dispatch, and response delivery underneath. It also makes prototyping easy — develop against a local wolfCrypt instance, then switch to the HSM by toggling one parameter once the server is available.
 
@@ -93,24 +105,25 @@ The wolfHSM server exposes the full set of wolfCrypt software algorithms, and th
 - **Symmetric ciphers**: AES in CBC, CTR, ECB, GCM, and CCM modes; AES key wrap
 - **Hashing**: SHA-1, SHA-2 (SHA-224, SHA-256, SHA-384, SHA-512), SHA-3
 - **Message authentication**: HMAC (over the supported hash functions) and CMAC
-- **Asymmetric**: RSA (encryption, signing, key generation), ECC (ECDSA, ECDH), Ed25519, Curve25519
+- **Asymmetric**: RSA (encryption, signing, key generation), ECC (ECDSA, ECDH, public key derivation, key validation), Ed25519, Curve25519
 - **Random number generation**: DRBG/RNG backed by the server's entropy source
 - **Post-quantum cryptography**: ML-DSA (FIPS 204) and ML-KEM (FIPS 203)
 
-For the authoritative list of algorithms, parameter ranges, and options, see the [wolfCrypt API reference](https://www.wolfssl.com/documentation/manuals/wolfssl/index.html). An algorithm not yet wired through the crypto callback can still be used locally against the client's own wolfCrypt instance — only operations dispatched to `WH_DEV_ID` are offloaded.
+For the authoritative list of algorithms, parameter ranges, and options, see the [wolfCrypt API reference](https://www.wolfssl.com/documentation/manuals/wolfssl/index.html). An algorithm not yet wired through the crypto callback can still be used locally against the client's own wolfCrypt instance — only operations dispatched to the client's `devId` are offloaded.
 
 ### Referencing Keys by ID
 
 When a client offloads an operation, it usually does *not* send the key with the request. The key lives in the server [keystore](#keystore) under a numeric **key ID**, and the client refers to it by that ID alone. The bytes never cross the client/server boundary — the client holds only the ID, and the server looks up the material when it runs the operation. This is what lets an HSM guard a private key while still letting a client sign or decrypt with it.
 
-A wolfCrypt key object is tied to a server-side key ID with a per-algorithm `SetKeyId` call. Every offloaded algorithm has one — `wh_Client_RsaSetKeyId`, `wh_Client_EccSetKeyId`, `wh_Client_AesSetKeyId`, `wh_Client_Ed25519SetKeyId`, `wh_Client_Curve25519SetKeyId`, `wh_Client_CmacSetKeyId`, `wh_Client_MlDsaSetKeyId`, and so on (each with a matching `GetKeyId`). You initialize an ordinary wolfCrypt key struct with `WH_DEV_ID`, associate it with a key ID instead of loading key bytes, and call wolfCrypt as usual:
+A wolfCrypt key object is tied to a server-side key ID with a per-algorithm `SetKeyId` call. Every offloaded algorithm has one — `wh_Client_RsaSetKeyId`, `wh_Client_EccSetKeyId`, `wh_Client_AesSetKeyId`, `wh_Client_Ed25519SetKeyId`, `wh_Client_Curve25519SetKeyId`, `wh_Client_CmacSetKeyId`, `wh_Client_MlDsaSetKeyId`, and so on (each with a matching `GetKeyId`). You initialize an ordinary wolfCrypt key struct with the client's devId, associate it with a key ID instead of loading key bytes, and call wolfCrypt as usual:
 
 ```c
 RsaKey  rsa;
 whKeyId keyId = 4; /* keyId 4 must be resident on the server */
 
-/* Initialize the RSA key context to use wolfHSM offload via WH_DEV_ID */
-wc_InitRsaKey_ex(&rsa, NULL, WH_DEV_ID);
+/* Initialize the RSA key context to use wolfHSM offload via the
+ * devId of an initialized client context */
+wc_InitRsaKey_ex(&rsa, NULL, WH_CLIENT_DEVID(client));
 
 /* Bind the key object to the server-side key */
 wh_Client_RsaSetKeyId(&rsa, keyId);
@@ -126,7 +139,7 @@ The same ID can name a key the client just cached, one provisioned into NVM at t
 
 Many of the platforms wolfHSM targets ship a dedicated crypto accelerator alongside their secure core. The server can use these accelerators per-algorithm through the same crypto callback mechanism: a port-supplied callback, registered at server init, redirects supported operations to the vendor's hardware driver, and anything not implemented in hardware falls back to wolfCrypt software. Which algorithms are accelerated depends on the silicon and is documented in each platform's port.
 
-Clients control whether a given crypto request should prefer hardware or software execution through the **crypto affinity** API. Affinity is a per-client setting with two values:
+Clients control whether a given crypto request should prefer hardware or software execution through the **crypto affinity** API. This feature is compiled in only when `WOLFHSM_CFG_CRYPTO_AFFINITY` is defined; when it is not, the server always uses its configured device ID and the client API below is unavailable. Affinity is a per-client setting with two values:
 
 - `WH_CRYPTO_AFFINITY_HW` (default): the server attempts to execute the operation using the configured hardware crypto device. If the server was not configured with a valid hardware device ID, or if the requested algorithm is not implemented in hardware, the request transparently falls back to wolfCrypt's software implementation.
 - `WH_CRYPTO_AFFINITY_SW`: the server always executes the operation using wolfCrypt's software implementation, bypassing any registered hardware device.
@@ -212,6 +225,8 @@ The access field is used to express coarser-grained permissions (owner / other /
 The `wh_Nvm_*` API is implemented against a backend callback table (`whNvmCb`) that abstracts the details of how objects are actually laid out on storage. The core library does not depend on any particular backend — selecting a backend is part of server configuration, and ports or applications can supply their own implementations against the same interface. wolfHSM ships with two reference backends, both built on top of the [flash abstraction](#flash-abstraction):
 
 - **`nvm_flash`** (`wh_nvm_flash.c`): the default backend, suitable for flash devices with small write granularity (8 bytes or less). It manages two equal-sized partitions in flash, with one designated as active at any time. New objects are added by programming directly into free space at the end of the active partition, which keeps write amplification low for read-heavy and append-dominated workloads. A directory of object state is cached in RAM and rebuilt from flash at initialization. Destruction of objects (and explicit compaction) is performed by regenerating the inactive partition with only the surviving objects, then atomically switching the active partition pointer and erasing the old one. An interruption before the switch leaves the previous partition intact; an interruption after the switch is recovered by completing the erase of the now-inactive partition on the next boot.
+
+    With `WOLFHSM_CFG_NVM_FLASH_CRC16` defined, `nvm_flash` additionally stores a CRC16 (CRC-16/CCITT-FALSE) of each object's metadata and data in spare bits of the on-flash object state, providing integrity checking against flash corruption. Metadata is verified whenever the directory is rebuilt from flash: an object whose metadata fails its CRC is treated as absent and reclaimable, and the next compaction drops it and frees its slot and data. For an interrupted (uncommitted) write whose metadata fails its CRC, the extent of the partially written data is unknown, so the remainder of the data area is reserved and new writes return `WH_ERROR_NOSPACE` until a compaction reclaims the entry (`wh_Nvm_AddObjectWithReclaim` does this automatically). Object data is verified on full-object reads (offset 0 for the object's full length) and while objects are copied during compaction, returning `WH_ERROR_NOTVERIFIED` on mismatch — a failed compaction copy aborts the reclaim with the active partition intact. Reads of a partial byte range are *not* verified, which includes client reads issued at a nonzero offset or chunked through a communication buffer smaller than the object; server-local consumers (keystore, certificate manager, image manager) read whole objects and are always verified. Two caveats: if an object was overwritten and the newest copy's metadata is corrupted before the duplicate is compacted away, the previous version becomes visible again until the next compaction; and enabling the option changes the on-flash format, so images written with and without it are mutually incompatible (existing images must be re-provisioned, and `whnvmtool` must be built with the same setting).
 - **`nvm_flash_log`** (`wh_nvm_flash_log.c`): an alternative backend designed for flash devices with **large write granularity** (e.g. 64 bytes) where every program operation must be aligned and padded to that boundary. It also uses a two-partition layout, but caches the entire active partition in RAM and rewrites the whole inactive partition on every mutation. Each partition header carries a monotonic epoch counter, and the partition with the highest epoch is treated as authoritative on the next initialization. The implementation favors simplicity and a uniform write pattern at the cost of higher write amplification, which is acceptable on the read-heavy workloads it is intended for. Selected at build time via `WOLFHSM_CFG_SERVER_NVM_FLASH_LOG`.
 
 Both backends bind to a `whFlashCb` flash driver supplied by the port; the choice between them is a function of the underlying flash device's program granularity and the application's write profile, not of any user-facing feature. Ports targeting microcontrollers with conventional NOR flash typically use `nvm_flash`; ports targeting devices whose program operation is fundamentally a 32- or 64-byte page write are better served by `nvm_flash_log`.
@@ -237,6 +252,8 @@ wolfHSM ships with two reference flash drivers usable on host platforms and in t
 - **RAM-backed flash simulator** (`wolfhsm/wh_flash_ramsim.h`): emulates flash semantics (erase-then-program, partition alignment, configurable erased-byte value) entirely in RAM, used by the test suite and useful when bringing up a new port
 
 Vendor-supplied flash drivers ship with the platform ports under `port/<vendor>/`. New platforms are integrated into wolfHSM by implementing the `whFlashCb` callback set against the device's flash controller; nothing in the NVM library above this layer needs to change.
+
+**Write-through requirement (port maintainers).** wolfHSM's power-loss guarantees assume the port's `Program` and `Verify` callbacks are write-through to the physical medium: `Program` must make the data durable before it returns, and `Verify` must read back from the medium rather than from any volatile write cache. A backend that buffers writes in a cache that can be lost on power failure breaks this assumption — on the next boot a committed object can roll back to a prior value. For stateless key material this is only a durability concern, but for **stateful or monotonic objects it is a security issue**: a rolled-back LMS or XMSS private key reuses a one-time signature index, enabling forgery, and a rolled-back monotonic counter defeats anti-rollback and replay protection. wolfHSM cannot detect or enforce this property, so a port whose flash controller caches writes must either disable that caching or issue an explicit flush before `Program`/`Verify` return.
 
 ### Optional NVM Backing
 
@@ -279,7 +296,7 @@ The keystore is two-tier: a fixed-size **key cache** in server RAM holds the wor
 
 Keys are named by a 16-bit identifier (`whKeyId`), which has two forms — a simple one the client uses and a fuller one the server uses internally:
 
-- **Client-side**: Each client gets a dedicated namespace of 255 key identifiers that are specific to and only accessible by that client. These IDs range from `[1, 255]`, where `0` is the reserved sentinel value `WH_KEYID_ERASED` used internally to mark empty key slots (this sentinel value is also used to request a dynamically assigned ID for a key cache operation — see the keystore API documentation for more information). The client can also set a flag bit in the keyId top byte to ask for special handling — bit 8 for a [global key](#global-keys), bit 9 for a [wrapped key](#wrapped-keys). That is all a client ever deals with, and the `WH_CLIENT_KEYID_MAKE_*` macros in `wolfhsm/wh_client.h` set those flags for it.
+- **Client-side**: Each client gets a dedicated namespace of 255 key identifiers that are specific to and only accessible by that client. These IDs range from `[1, 255]`, where `0` is the reserved sentinel value `WH_KEYID_ERASED` used internally to mark empty key slots (this sentinel value is also used to request a dynamically assigned ID for a key cache operation — see the keystore API documentation for more information). The client can also set a flag bit in the keyId top byte to ask for special handling — bit 8 for a [global key](#global-keys), bit 9 for a [wrapped key](#wrapped-keys), and bit 10 for a [hardware-only key](#hardware-only-keys). That is all a client ever deals with, and the `WH_CLIENT_KEYID_MAKE_*` macros in `wolfhsm/wh_client.h` set those flags for it.
 - **Server-side**: internally every key has a globally unique id that also encodes *what* the key is and *who* owns it. When a request arrives, the server expands the client's provided keyId number into this full form, and collapses it back on the way out (`wh_KeyId_TranslateFromClient()` and its inverse). Client code never touches the internal fields.
 
 The server-side `whKeyId` packs three fields into its 16 bits:
@@ -299,9 +316,10 @@ The two tiers keep one large key (e.g. an an ML-DSA-87 private key) from dictati
 
 Each cached key carries its full `whNvmMetadata` record alongside the key bytes, plus an internal **committed flag** marking whether a copy also exists in NVM. This flag is what makes the cache a true working set: when it needs a slot and none is free, the keystore evicts a key that is already committed (and can be reloaded later), but never an uncommitted one. Uncommitted keys are RAM-only, so the caller must commit them to survive eviction or reset; if the cache fills with uncommitted keys, the next cache operation returns `WH_ERROR_NOSPACE` instead of silently dropping material.
 
-A client drives this tier with five operations:
+A client drives this tier with six operations:
 
 - **Cache**: write key bytes and metadata into a server cache slot. The key is usable immediately but RAM-only.
+- **Cache Random**: have the server generate a random key from its own RNG and cache it into a server cache slot.
 - **Commit**: copy a cached key into NVM as a durable object. The cache copy is marked committed and becomes a candidate for eviction.
 - **Evict**: drop the cache copy. If the key was committed, the NVM copy remains and reloads on the next reference; if it was uncommitted, the key is gone.
 - **Export**: read a cached key's bytes back to the client, subject to `WH_NVM_FLAGS_NONEXPORTABLE`.
@@ -332,6 +350,8 @@ Global keys interact with the cache and NVM tiers in the same way as local keys,
 
 > **Security note**: Because a global key is reachable by every client connected to the server, the security boundary it provides is the server itself, not any particular client. Global keys should be reserved for material that is genuinely shared across the trust domains of the connected clients — typically vendor-provisioned roots and shared symmetric keys for inter-client communication — and should not be used as a workaround for per-client key management. Per-key usage flags (see [Key Usage Policies](#key-usage-policies)) apply to global keys exactly as they do to local keys, and should be used to constrain how a shared key may be used regardless of which client invokes the operation.
 
+The [AUTOSAR SHE subsystem](#autosar-she-subsystem) can be layered onto this feature with `WOLFHSM_CFG_SHE_GLOBAL_KEYS`, which places all SHE slots in the global namespace so every client shares one SHE device; see [Global SHE Keys](#global-she-keys).
+
 ### Wrapped Keys
 
 A key that lives entirely inside the server is protected by its trust boundary: only the server can read its bytes, and policy is enforced before every use. Some workflows still need to move key material outside that boundary — to back keys up to off-device storage, to transport a key between systems during provisioning, or even to support wolfHSM on an HSM platform without dedicated NVM. wolfHSM's **wrapped keys** feature (`WOLFHSM_CFG_KEYWRAP`) does this safely, with the server mediating every step.
@@ -344,19 +364,82 @@ The wrap format used by wolfHSM is a length-prefixed, authenticated encryption b
 [ IV (12 bytes) | AuthTag (16 bytes) | AES-GCM( metadata || key ) ]
 ```
 
-The metadata is bound into the authenticated plaintext so that the wrapped blob carries not only the key bytes but also its policy, label, and identifier — a recipient cannot strip or substitute metadata without invalidating the authentication tag. The on-wire constants `WH_KEYWRAP_AES_GCM_IV_SIZE`, `WH_KEYWRAP_AES_GCM_TAG_SIZE`, and `WH_KEYWRAP_AES_GCM_HEADER_SIZE` are defined in `wolfhsm/wh_common.h` and may be used by callers to size wrap output buffers. The maximum wrappable key size is controlled by `WOLFHSM_CFG_KEYWRAP_MAX_KEY_SIZE`.
+The metadata is bound into the authenticated plaintext so that the wrapped blob carries not only the key bytes but also its policy, label, and identifier — a recipient cannot strip or substitute metadata without invalidating the authentication tag. The on-wire constants `WH_KEYWRAP_AES_GCM_IV_SIZE`, `WH_KEYWRAP_AES_GCM_TAG_SIZE`, and `WH_KEYWRAP_AES_GCM_HEADER_SIZE` are defined in `wolfhsm/wh_common.h` and may be used by callers to size wrap output buffers. The maximum wrappable key size is controlled by `WOLFHSM_CFG_KEYWRAP_MAX_KEY_SIZE`. The blob's authenticated data also carries a domain-separation AAD string binding it to its operation class, so a wrapped key and a wrapped data blob cannot be interchanged; see [Cryptographic Domain Separation](#cryptographic-domain-separation).
 
-The lifecycle exposed to clients consists of three primary operations:
+The lifecycle exposed to clients consists of four primary operations:
 
 - **Wrap**: the client supplies plaintext key bytes, a metadata template, and the keyId of a server-resident KEK; the server encrypts the (metadata || key) blob with the KEK and returns the wrapped blob to the client. The plaintext is not written to NVM as part of this operation.
+- **Wrap-export**: the client names a key *already resident in the server* by its keyId (never presenting plaintext), plus a KEK keyId; the server reads the target key — enforcing its export policy, so a `NONEXPORTABLE` key is refused — and returns it wrapped under the KEK. This backs up or migrates a key the server already holds without ever exposing its plaintext to the client. Because a server-held secret is moved across the trust boundary, the KEK must be a **trusted KEK** (see below).
 - **Unwrap-and-export**: the client supplies a wrapped blob and the KEK's keyId; the server decrypts the blob, authenticates the tag, and returns the recovered metadata and key bytes to the client. This is the operation used by host-side workflows that need to consume the key off-device, for example to inject it into a non-HSM peer.
-- **Unwrap-and-cache**: the client supplies a wrapped blob and the KEK's keyId; the server decrypts the blob and installs the recovered key directly into the keystore cache as if `wh_Client_KeyCache` had been called locally with the recovered bytes. This is the more common operation in production deployments, since it lets a key live on disk in encrypted form and be hydrated into the HSM at runtime without the plaintext ever transiting the client. Clients can then commit the unwrapped key to NVM if they wish.
+- **Unwrap-and-cache**: the client supplies a wrapped blob and the KEK's keyId; the server decrypts the blob and installs the recovered key directly into the keystore cache as if `wh_Client_KeyCache` had been called locally with the recovered bytes. This is the more common operation in production deployments, since it lets a key live on disk in encrypted form and be hydrated into the HSM at runtime without the plaintext ever transiting the client. Unwrapped keys are cache-only and cannot be committed to NVM. Because this injects a key into the server keystore, the KEK must be a **trusted KEK** (see below).
 
-In all three operations the KEK is identified by its existing keyId in the keystore, must carry the `WH_NVM_FLAGS_USAGE_WRAP` usage flag, and is enforced server-side by the keystore policy machinery. A key without the `WRAP` usage flag cannot be used to wrap or unwrap regardless of any client request.
+In every operation the KEK is identified by its existing keyId in the keystore. A software (keystore-resident) KEK must carry the `WH_NVM_FLAGS_USAGE_WRAP` usage flag, enforced server-side by the keystore policy machinery: a key without the `WRAP` usage flag cannot wrap or unwrap — key material or data — regardless of any client request. This usage-flag check does not apply to [hardware-only KEKs](#hardware-only-keys), which carry no `whNvmMetadata`; for them the hardware keystore backend is the policy authority instead.
 
-A parallel pair of APIs — `wh_Client_DataWrap` and `wh_Client_DataUnwrap` — applies the same construction to arbitrary application data rather than key material. These are useful when a client needs the same authenticated-encryption guarantee for non-key payloads using a key resident in the HSM.
+A parallel pair of APIs — `wh_Client_DataWrap` and `wh_Client_DataUnwrap` — applies the same construction to arbitrary application data rather than key material. These are useful when a client needs the same authenticated-encryption guarantee for non-key payloads using a key resident in the HSM. Like the key operations, data wrap and unwrap require the KEK to carry `WH_NVM_FLAGS_USAGE_WRAP`; unlike *wrap-export* and *unwrap-and-cache*, they do not require a **trusted KEK**, since no server-held secret crosses the boundary. Data blobs are cryptographically domain-separated from key blobs, so *data unwrap* cannot recover key material wrapped by *wrap* or *wrap-export*, and a *data wrap* blob cannot be injected as a key through *unwrap-and-cache* (see [Cryptographic Domain Separation](#cryptographic-domain-separation)).
 
 > **Note**: Wrapped key identifiers are signaled on the wire by setting `WH_KEYID_CLIENT_WRAPPED_FLAG` (bit 9) in the request keyId, which the server translates internally to `WH_KEYTYPE_WRAPPED`. Clients construct wrapped-key identifiers using `WH_CLIENT_KEYID_MAKE_WRAPPED()`, and the combined wrapped-and-global form using `WH_CLIENT_KEYID_MAKE_WRAPPED_GLOBAL()`; both are defined in `wolfhsm/wh_client.h`.
+
+#### Trusted KEKs
+
+Two of the operations — **wrap-export** and **unwrap-and-cache** — additionally require the KEK to be a **trusted KEK**, because each moves a *server-held* secret across the client trust boundary: wrap-export extracts one, and unwrap-and-cache injects one. If a client could name a KEK whose plaintext it knows (for example an AES key it cached itself), it could decrypt an extracted blob to recover the target key, or forge a blob to inject a key of its choosing, defeating the wrapped-key confidentiality guarantee. A trusted KEK is one that the client can neither read nor set, and is one of the following:
+
+- a **[hardware-only key](#hardware-only-keys)**: A key stored in hardware in a port-specific manner (see next section)
+- a software key carrying the server-only **`WH_NVM_FLAGS_TRUSTED`** flag.
+
+For a software KEK, the `WH_NVM_FLAGS_TRUSTED` flag will be stripped by the server from *every* client request that supplies key or object metadata such that a client can never cause a key or object to carry it. The strip lives in the policy-checked entry points that all client requests funnel through. It can be set only by calling the unchecked keystore/NVM API directly, which is not exposed via the client API but remains usable for server-side code or offline provisioning via `whnvmtool`. A key carrying the flag is treated as unreadable, immutable, non-evictable, and non-exportable through the client API, and is the only cache/NVM key permitted to act as a KEK for wrap-export and unwrap-and-cache.
+
+The ordinary **wrap**, **unwrap-and-export**, and **data wrap/unwrap** operations are not affected by the trusted-KEK requirement, as no server secret crosses the boundary in those; they accept any client-chosen KEK that carries `WH_NVM_FLAGS_USAGE_WRAP`.
+
+For deployment guidance, an NVM-backed system that wishes to use software KEKs for keywrap export should provision the software KEK in an offline manner (e.g. using `whnvmtool` or building the NVM image manually). An NVM-less system has no secure persistent source for software-KEK bytes other than the firmware image, so a **hardware KEK is required** in this case.
+
+#### Server KEK Best Practices
+
+Clients name a KEK by its keyId and the wrap-blob format is public (above), so the confidentiality of every wrapped key rests entirely on the KEK's **usage policy**, which the server enforces on every operation. Provision KEKs with that in mind.
+
+Recommended flags for a software KEK:
+
+- **`WH_NVM_FLAGS_USAGE_WRAP`** — required; permits wrapping and unwrapping. This should be the KEK's *only* usage flag.
+- **`WH_NVM_FLAGS_TRUSTED`** — marks the key a [trusted KEK](#trusted-keks), required for `wrap-export` and `unwrap-and-cache`, and makes it unreadable, immutable, non-evictable, and non-exportable through the client API.
+- **`WH_NVM_FLAGS_NONEXPORTABLE`** and **`WH_NVM_FLAGS_NONMODIFIABLE`** — `WH_NVM_FLAGS_TRUSTED` already implies both, but setting them explicitly keeps the intent clear and also protects a plain wrapping key that does not carry the trusted flag.
+
+See the `whnvmtool` README for the concrete flag value and provisioning mechanics.
+
+**Never grant a KEK any usage beyond `WRAP`** — in particular not `WH_NVM_FLAGS_USAGE_ENCRYPT` or `WH_NVM_FLAGS_USAGE_DECRYPT`, and not the catch-all `WH_NVM_FLAGS_USAGE_ANY`. The server enforces usage flags on every wolfCrypt request through the crypto callback (see [Key Usage Policies](#key-usage-policies)), and that check is the only thing stopping a client from using a KEK as an ordinary cipher key. A wrap blob is just AES-GCM ciphertext under the KEK, so a KEK that also carries `USAGE_DECRYPT` can be fed to a raw AES-GCM decrypt under its keyId — returning the wrapped key's plaintext directly and defeating wrapped-key confidentiality regardless of every other control. A KEK never needs encrypt or decrypt usage to function, so `WRAP`-only is both fully functional and the only safe choice.
+
+**Give each key one role.** A key should be a KEK *or* a general-purpose encryption/signing/derivation key, never both; provision separate keys if an application needs both. Sharing usage across roles is exactly what the crypto callback's usage enforcement exists to prevent. A [hardware KEK](#hardware-only-keys) sidesteps this class of mistake by construction: hardware-only keys carry no usage metadata and are rejected in every operation except keywrap, so they can never be used as a cipher key regardless of configuration.
+
+#### Cryptographic Domain Separation
+
+Key wrapping and data wrapping share the same AES-GCM construction and may name the same KEK, so every blob additionally uses a custom string internally as its authenticated data (AAD). Key blobs — produced by *wrap* and *wrap-export* — and data blobs — produced by *data wrap* — are sealed under distinct tags (`WH_KEYWRAP_AAD_KEY_STR` and `WH_KEYWRAP_AAD_DATA_STR`, defined in `wolfhsm/wh_common.h`). Because the tag is authenticated, a blob made for one class fails the AES-GCM authentication check when presented to an operation of the other class.
+
+This is what keeps the general-purpose data path from becoming a decryption oracle for wrapped keys. *Data wrap* and *data unwrap* impose no trusted-KEK restriction and operate under any wrap-capable KEK the client can name — **including a trusted KEK** that is also used for wrap-export. Without domain separation, a client could wrap-export a server-held key under a trusted KEK and then hand the identical blob to *data unwrap* under the same KEK, recovering the plaintext the wrap was meant to protect. Binding a distinct tag per class makes that blob fail authentication under *data unwrap*, and symmetrically prevents a *data wrap* blob from being injected as a key through *unwrap-and-cache*.
+
+The tag is not stored in or transmitted with the blob; the server and every blob producer derive it from the operation being performed. Any code that builds a blob the server will later unwrap — most commonly an offline provisioning tool that pre-wraps keys for *unwrap-and-cache* — must bind the matching tag as AAD, using `WH_KEYWRAP_AAD_KEY_STR` for key blobs. Because the tag is part of the authenticated wrap format, its byte value is fixed: changing it invalidates every previously produced blob and must not be done once wrapped blobs exist in the field.
+
+### Hardware-Only Keys
+
+Some platforms provide key material that the HSM core can read but that never lives in the wolfHSM keystore at all — KEKs burned into OTP or fuses, keys held by an SoC key-management block, or other hardware-provisioned secrets. The optional **hardware keystore front-end** (`WOLFHSM_CFG_HWKEYSTORE`) lets clients reference such keys as KEKs in [wrapped-key](#wrapped-keys) operations while guaranteeing the material never enters the key cache, never touches NVM, and is never returned to a client.
+
+The front-end (`wolfhsm/wh_hwkeystore.h`) is a platform-agnostic, fully configurable abstraction over the hardware keystore, following the same backend-callback-table paradigm as other elements of the core library. A backend provides a `whHwKeystoreCb` callback table whose required `GetKey` callback copies a requested key's bytes into a caller-provided buffer on demand, plus optional `Init` and `Cleanup` callbacks for backend setup/teardown. The callback table, an opaque backend context and config (for backend-specific state), and a lock (serializing callback invocations when the backing hardware is shared across server threads under `WOLFHSM_CFG_THREADSAFE`) are described by a `whHwKeystoreConfig` and held in a `whHwKeystoreContext`. The server application initializes the context once with `wh_HwKeystore_Init()` — which binds the callback table and invokes the backend `Init` callback if present — and binds it to one or more server contexts through the optional `hwKeystore` member of `whServerConfig`.
+
+Clients designate a hardware-only key by setting `WH_KEYID_CLIENT_HW_FLAG` (bit 10) in the request keyId, normally via the `WH_CLIENT_KEYID_MAKE_HW()` macro in `wolfhsm/wh_client.h`. The server translates the flag to the internal key type `WH_KEYTYPE_HW` and routes accordingly:
+
+- In the keywrap operations (key wrap, wrap-export, unwrap-and-export, unwrap-and-cache, and data wrap/unwrap), a hardware-only KEK id causes the server to fetch the KEK from the hardware keystore into a local stack buffer via `wh_HwKeystore_GetKey()`, perform the AES-GCM operation, and zeroize the buffer before returning. The KEK is never cached and never appears in any response. An unwrap-and-cache under a hardware KEK still caches the unwrapped payload since the payload is an ordinary key; only the KEK is hardware-resident.
+- Hardware-only keyIds are rejected in every other operation with `WH_ERROR_ACCESS`.
+
+Because hardware-only keys carry no `whNvmMetadata`, the [usage-flag policy machinery](#key-usage-policies) does not apply to them. The largest key the keywrap path will fetch from the backend is bounded by `WOLFHSM_CFG_HWKEYSTORE_MAX_KEY_SIZE` (default 32 bytes, sized for an AES-256 KEK), which should be respected (or enforced), by the port layer.
+
+#### Supported Components
+
+Hardware-only keys can be consumed by exactly one wolfHSM component today — the **[keywrap](#wrapped-keys) API**, where a `WH_CLIENT_KEYID_MAKE_HW()` id names the KEK. The supported operations are:
+
+- **Key wrap** (`wh_Client_KeyWrap`) — wrap a client-supplied key under the hardware-resident KEK.
+- **Key wrap-export** (`wh_Client_KeyWrapExport`) — wrap a server-resident key named by id under the hardware KEK, without exposing its plaintext. A hardware KEK is inherently a [trusted KEK](#trusted-keks), which this operation requires.
+- **Key unwrap-and-export** (`wh_Client_KeyUnwrapAndExport`) — unwrap a blob and return the recovered key to the client.
+- **Key unwrap-and-cache** (`wh_Client_KeyUnwrapAndCache`) — unwrap a blob into the key cache; only the KEK is hardware-resident, while the unwrapped payload becomes an ordinary cached key.
+- **Data wrap and unwrap** (`wh_Client_DataWrap`, `wh_Client_DataUnwrap`) — apply the same authenticated encryption to arbitrary application data.
+
+No other component can name a hardware-only key: a direct wolfCrypt operation through the crypto callback, or any keystore lifecycle operation (cache, export, commit, evict, erase, revoke), is rejected with `WH_ERROR_ACCESS`. **Support is limited to keywrap KEK usage for now** — broader use, such as referencing a hardware-only key directly in a crypto operation, may be added in a future release.
 
 ### Key Usage Policies
 
@@ -370,7 +453,7 @@ The usage flags constrain which cryptographic operations a given key may partici
 - `WH_NVM_FLAGS_USAGE_DECRYPT`: the key may be used to decrypt
 - `WH_NVM_FLAGS_USAGE_SIGN`: the key may be used to produce signatures or MACs
 - `WH_NVM_FLAGS_USAGE_VERIFY`: the key may be used to verify signatures or MACs
-- `WH_NVM_FLAGS_USAGE_WRAP`: the key may be used as a KEK for [wrapped keys](#wrapped-keys) or for data wrapping
+- `WH_NVM_FLAGS_USAGE_WRAP`: the key may be used as a KEK for the [wrapped-key](#wrapped-keys) and data wrap/unwrap operations
 - `WH_NVM_FLAGS_USAGE_DERIVE`: the key may be used as input to a key derivation function
 
 Multiple usage flags may be combined, and `WH_NVM_FLAGS_USAGE_ANY` is a convenience constant equal to the bitwise OR of all USAGE bits. A key whose metadata carries no USAGE bits at all is treated as not permitted for any cryptographic use — attempting to use it returns `WH_ERROR_USAGE`. This is intentional: a default-zero metadata does not silently grant access; the application must explicitly opt in to each operation a key may perform.
@@ -520,9 +603,11 @@ The motivating use cases all involve payloads that are either too large or too i
 - **Certificate chain verification** (see [DMA Variants](#dma-variants)) where the chain itself may be several kilobytes and the application already holds it in its own memory.
 - **In-place image verification** by the [image manager](#image-manager), which is the canonical case: the image being authenticated is already mapped in flash or RAM, and copying it through the comm buffer would defeat the purpose.
 
-### The DMA Crypto Device (`WH_DEV_ID_DMA`)
+### DMA Dispatch Mode (`wh_Client_SetDmaMode`)
 
-For wolfCrypt-mediated operations, opt-in to DMA is a single change at the call site: instead of passing `WH_DEV_ID` as the device identifier, the client passes `WH_DEV_ID_DMA`. Both device IDs route to the wolfHSM client crypto callback, but the DMA device tells the callback to construct a DMA-flavored request whose payload carries pointers and lengths into the client's address space rather than inline data. The server-side dispatcher recognizes the DMA request kind and, for each referenced buffer, hands the pointer to the server's DMA address-processing path (described below) before invoking the underlying wolfCrypt primitive. The set of algorithms that have a DMA path mirrors the most performance-sensitive subset of the supported algorithms; algorithms without a DMA path return an unsupported error if invoked with `WH_DEV_ID_DMA`, and the application can fall back to the standard `WH_DEV_ID` for those.
+For wolfCrypt-mediated operations, opt-in to DMA is a per-client dispatch mode rather than a separate device ID: the application calls `wh_Client_SetDmaMode(client, 1)` (or sets `.preferDma` in the client's `whClientDmaConfig` at init), and subsequent wolfCrypt calls made with `WH_CLIENT_DEVID(client)` construct DMA-flavored requests whose payloads carry pointers and lengths into the client's address space rather than inline data. The server-side dispatcher recognizes the DMA request kind and, for each referenced buffer, hands the pointer to the server's DMA address-processing path (described below) before invoking the underlying wolfCrypt primitive. The set of algorithms that have a DMA path mirrors the most performance-sensitive subset of the supported algorithms; with DMA mode preferred, an algorithm without a DMA path automatically falls back to the standard (non-DMA) request, so no call-site changes are needed. The mode can be toggled at any time — `wh_Client_SetDmaMode(client, 0)` returns the client to standard dispatch, and `wh_Client_GetDmaMode()` reads the current setting.
+
+The global `WH_DEV_ID_DMA` device ID is also always registered when `WOLFHSM_CFG_DMA` is enabled and always produces DMA-flavored requests for the most recently initialized client; unlike the DMA dispatch mode, it does not fall back to the standard path for algorithms without a DMA variant. See [Transparent Offload via Crypto Callbacks](#transparent-offload-via-crypto-callbacks) for the global device IDs' single-client-per-process scope.
 
 For the non-crypto subsystems (NVM, certificate manager, image manager, key cache/export, and the data-wrap API) the DMA-aware request kinds are exposed as `*Dma` variants of the corresponding client API functions — `wh_Client_NvmAddObjectDma`, `wh_Client_KeyCacheDma`, `wh_Client_KeyExportDma`, `wh_Client_CertVerifyDma`, and so on. See the [client API reference](10-API-docs-client.md) for the full set.
 
@@ -589,10 +674,11 @@ The SHE client API is declared in `wolfhsm/wh_client_she.h` and maps one-to-one 
 - **Bulk crypto**: `wh_Client_SheEncEcb` / `wh_Client_SheEncCbc` / `wh_Client_SheDecEcb` / `wh_Client_SheDecCbc` (`CMD_ENC_*` / `CMD_DEC_*`) — AES-ECB and AES-CBC encrypt and decrypt against a selected key slot
 - **MAC**: `wh_Client_SheGenerateMac` / `wh_Client_SheVerifyMac` (`CMD_GENERATE_MAC` / `CMD_VERIFY_MAC`) — CMAC generation and verification against a selected key slot
 - **Status**: `wh_Client_SheGetStatus` (`CMD_GET_STATUS`) — reads the SHE status register (SREG)
+- **Module identity**: `wh_Client_SheGetId` (`CMD_GET_ID`) — returns the ECU UID, the status register, and a CMAC over the caller's challenge, UID, and status register computed under the `MASTER_ECU_KEY`, letting a party that holds that key verify the module's identity. If the `MASTER_ECU_KEY` slot is empty the MAC is computed with an all-zero key.
 
 In addition to the spec commands, wolfHSM exposes two non-standard helpers that fill gaps left by the spec's assumption of dedicated hardware:
 
-- `wh_Client_SheSetUid`: explicitly programs the 15-byte ECU UID that the key update protocol binds against. The AUTOSAR spec assumes this value is hardware-fused; wolfHSM needs a software path to install it, and rejects most SHE operations until it has been set.
+- `wh_Client_SheSetUid`: explicitly programs the 15-byte ECU UID that the key update protocol binds against. The AUTOSAR spec assumes this value is hardware-fused; wolfHSM needs a software path to install it, and rejects most SHE operations until it has been set. Where the UID really does live in hardware or in NVM, the server can be pointed at it instead with [UID storage callbacks](#she-uid-storage), in which case `CMD_SET_UID` returns `WH_SHE_ERC_WRITE_PROTECTED` on a read-only store.
 - `wh_Client_ShePreProgramKey`: writes a key directly into a SHE NVM slot, bypassing the encrypted M1–M5 protocol. This exists to support initial provisioning on a blank device — once a `MASTER_ECU_KEY` exists, all subsequent updates can go through the spec-compliant protocol.
 
 All SHE commands return one of the spec's `WH_SHE_ERC_*` error codes (`SEQUENCE_ERROR`, `KEY_NOT_AVAILABLE`, `WRITE_PROTECTED`, `KEY_UPDATE_ERROR`, etc.) alongside the wolfHSM transport return code, so applications can distinguish protocol-level failures from communication failures.
@@ -615,6 +701,48 @@ The SHE spec also requires every key to carry a 28-bit monotonic update counter 
 
 `RAM_KEY` is the one exception to NVM-backed storage. The spec defines it as volatile, so the server caches the loaded key in its [key cache](#key-cache-key-ids-and-nvm-backing-store) but never calls into the NVM layer for it; eviction or reset clears it. All other slots, including `PRNG_SEED`, persist.
 
+### SHE UID Storage
+
+A pair of optional callbacks determines where the 15-byte ECU UID lives. Install them and the server reads it from the integrator's store (fuses, OTP, NVM); leave them unset and it stays in the caller-owned `whServerSheContext`, re-provisioned with `CMD_SET_UID` after every reset.
+
+```c
+typedef int (*whServerSheGetUidCb)(void* ctx, uint8_t* outUid);
+typedef int (*whServerSheSetUidCb)(void* ctx, const uint8_t* uid);
+```
+
+The getter fills `WH_SHE_UID_SZ` bytes and returns `0`, `WH_ERROR_NOTFOUND` if no UID has been provisioned, or any other wolfHSM error to report a backend failure. It must also accept a `NULL` `outUid`, which asks for the return code alone and must not write any bytes; the server uses that form to test whether a UID exists without reading it out. The setter persists a UID that arrived over the wire via `CMD_SET_UID`; leaving it `NULL` marks the UID read-only, so provisioning attempts are answered with `WH_SHE_ERC_WRITE_PROTECTED` rather than being silently dropped.
+
+Callbacks are supplied at initialization through the optional `whServerConfig.sheConfig` field, or registered later with `wh_Server_SheSetUidCb`:
+
+```c
+whServerSheConfig sheConfig = {
+    .getUidCb = myGetUid,
+    .setUidCb = NULL,        /* fused UID, read-only */
+    .uidCtx   = &myPlatform,
+};
+whServerConfig serverConfig = { /* ... */ .she = she, .sheConfig = &sheConfig };
+```
+
+### Global SHE Keys
+
+By default every SHE keyId carries the connecting client's ID in its USER field, so each client gets its own private set of sixteen SHE slots. That is convenient when clients are mutually distrusting, but it does not match the AUTOSAR model, where SHE is a single physical device with one fixed set of slots shared by every host core. Defining `WOLFHSM_CFG_SHE_GLOBAL_KEYS` (which requires both `WOLFHSM_CFG_GLOBAL_KEYS` and `WOLFHSM_CFG_SHE_EXTENSION`) switches to that model: **all** SHE slots — `SECRET_KEY` through `RAM_KEY` and `PRNG_SEED` — are built in the [global-keys](#global-keys) namespace (USER = `WH_KEYUSER_GLOBAL`, 0) and are shared by every client.
+
+Nothing changes on the wire. Clients still name slots by their raw 0–15 slot number in every SHE command; the server resolves each SHE keyId into the global namespace internally. Two clients that program and use slot 4 now see the same key, and one shared `RAM_KEY` is visible to all. This is a build-time choice rather than a per-request flag because most SHE operations cannot carry one: the `CMD_LOAD_KEY` target and authorization slots are 4-bit fields inside the authenticated M1 message, and secure boot, PRNG, and RAM-key export address fixed slots.
+
+The mode composes with the [wrapped keys](#wrapped-keys) interop:
+
+- **Wrap-export** of a SHE slot needs no special flag — the server routes any `WH_KEYTYPE_SHE` target into the global namespace, so `wh_Client_KeyWrapExport(..., slot, WH_KEYTYPE_SHE, kek, ...)` names the same slot the SHE commands do.
+- **Unwrap-and-cache** normalizes a SHE blob's USER field to the global namespace after the ownership check, so a blob minted by a per-client build primes the slot the SHE commands actually read. The server-assigned id returned to the client carries `WH_KEYID_CLIENT_GLOBAL_FLAG`.
+- The **counter rollback guard** compares a primed blob's counter against the globally committed slot, so a stale blob cannot shadow a newer shared key.
+
+Some deployment limits follow from where the global cache lives:
+
+- **Sessions are per server, keys are shared.** The per-connection SHE runtime state — the secure-boot state machine, the ECU UID, the plaintext `RAM_KEY` load flag, and the PRNG working state — stays in each server's `whServerSheContext`. Each server must therefore still set its UID and run secure boot on its own even though it reads the shared boot keys. Servers that share an NVM must be provisioned with the same UID, or their `CMD_LOAD_KEY` M1 validation will diverge.
+- **NVM-less degrades to per-server.** The global cache is owned by the NVM context (`whNvmContext`), so a server started with `nvm == NULL` has no global cache and its global SHE keys fall back to that server's local cache. This is correct for a single NVM-less server but means multiple NVM-less servers do **not** share SHE state; sharing across servers requires a shared `whNvmContext`.
+- **One shared cache, sized for the slots.** With global SHE keys on, every client's SHE keys plus any global crypto keys share the one global cache; the default `WOLFHSM_CFG_SERVER_KEYCACHE_COUNT` with SHE enabled matches the sixteen SHE slots (see [Configuration](9-Configuration.md#keystore-and-key-cache)). Keys primed via unwrap-and-cache are uncommitted and are not evicted under cache pressure, and a client `KeyEvict` cannot target SHE-typed cache entries, so provisioning flows should keep the number of live uncommitted SHE entries small.
+
+When `WOLFHSM_CFG_SHE_GLOBAL_KEYS` is left undefined, SHE behaves exactly as described in the previous section, with per-client slots and no dependency on the global-keys feature.
+
 ### Encrypted Key Update Protocol (M1–M5)
 
 The most intricate piece of the SHE spec is the encrypted key update protocol that runs underneath `CMD_LOAD_KEY`. wolfHSM implements it as specified: the client constructs three input messages (M1, M2, M3) by encrypting and CMACing the new key and its metadata under keys derived from a chosen authorization key, sends them to the server, and receives two response messages (M4, M5) that prove the server stored the new key correctly.
@@ -632,6 +760,8 @@ SHE secure boot is implemented as a three-phase state machine that the client dr
 3. **FINISH**: the server finalizes the CMAC and compares it byte-for-byte against the stored `BOOT_MAC` (slot ID 3). A match sets `WH_SHE_SREG_BOOT_OK` in the status register; a mismatch leaves `BOOT_OK` clear. Either outcome sets `BOOT_FINISHED` and transitions the state machine to a terminal state.
 
 While the state machine is in any state other than `SUCCESS`, the SHE handler refuses every non-boot command except `CMD_GET_STATUS` and `CMD_SET_UID`, returning `WH_SHE_ERC_SEQUENCE_ERROR`. This is what allows the SHE module to gate cryptographic services on a successful boot measurement: once boot has succeeded, the rest of the SHE command set unlocks; on a boot failure the keys remain inaccessible and only status queries are honored.
+
+The same stateful gate also enforces that a UID has been provisioned. When [UID storage callbacks](#she-uid-storage) are installed, that check queries the integrator's store, and a store that reports a failure causes every command except `CMD_GET_STATUS` to return `WH_SHE_ERC_MEMORY_FAILURE`.
 
 The bootloader bytes are supplied through the standard message buffer in chunks of up to `WOLFHSM_CFG_COMM_DATA_LEN`. For large bootloaders this is the natural place to opt into [DMA](#dma-support) — a future variant of the secure boot handler could read the bootloader image directly out of flash using the DMA address-translation path — but the current implementation is purely buffer-based.
 
@@ -663,7 +793,8 @@ The SHE extension is built on top of the same infrastructure as every other wolf
 - **NVM**: SHE keys are ordinary NVM objects under the `WH_KEYTYPE_SHE` namespace; they inherit fail-safe atomicity, partition compaction, and the rest of the [NVM](#non-volatile-memory-nvm) guarantees. The 24-byte `label` field carries SHE-specific counter and flag metadata.
 - **Keystore**: SHE keys live in the same per-client `whKeyId` space as crypto keys, with the TYPE field disambiguating the two. SHE keys do not currently consume the per-key [usage flag policy](#key-usage-policies) machinery — usage constraints are expressed through the SHE-spec flag set in the label instead — but lifecycle flags like `NONMODIFIABLE` apply at the NVM layer just as they do for any other object.
 - **Communication layer**: every SHE command is a packet under the `WH_MESSAGE_GROUP_SHE` group and is dispatched through the [comm layer](#communication-layer-and-transports) like any other request. SHE clients work over every available transport without modification.
-- **Global keys** and **wrapped keys**: not currently supported for SHE keys — the SHE keyId namespace uses the per-client USER field and does not interpret `WH_KEYUSER_GLOBAL` or the wrapped flag. Applications that need to share a key across clients must do so by provisioning it into each client's SHE namespace separately.
+- **Wrapped keys**: SHE keys interoperate with the [wrapped keys](#wrapped-keys) feature by explicit type rather than by flag (the SHE keyId namespace does not interpret the wrapped flag): the client passes `WH_KEYTYPE_SHE` to *wrap-export* to receive a slot's key wrapped under a [trusted KEK](#trusted-keks), and presents the blob to *unwrap-and-cache* to prime a slot directly in the key cache — the provisioning path for servers with [no NVM](#optional-nvm-backing), guarded by the slot's counter rollback check. *Unwrap-and-export* refuses SHE blobs, so a wrapped SHE key can re-enter the keystore but its plaintext is never returned to a client.
+- **Global keys**: off by default — every SHE keyId carries the connection's client ID in the USER field, giving each client its own set of slots. Defining `WOLFHSM_CFG_SHE_GLOBAL_KEYS` instead places all SHE slots in the [global](#global-keys) (`WH_KEYUSER_GLOBAL`) namespace so every client shares one SHE device view; see [Global SHE Keys](#global-she-keys). Without that option, applications that need to share a key across clients must provision it into each client's SHE namespace separately.
 
 A typical automotive deployment uses the SHE extension end-to-end: the bootloader and `BOOT_MAC` are programmed into NVM at production using `wh_Client_ShePreProgramKey`, the device's UID is set on first boot with `wh_Client_SheSetUid`, secure boot is run on every reset via `wh_Client_SheSecureBoot`, in-field key updates flow through the encrypted `CMD_LOAD_KEY` protocol, and CAN message authentication uses `wh_Client_SheGenerateMac` / `wh_Client_SheVerifyMac` against pre-provisioned user-slot keys.
 
@@ -717,10 +848,10 @@ Images are registered at server initialization through a `whServerImgMgrConfig` 
 - `keyId`: the [keyId](#key-cache-key-ids-and-nvm-backing-store) of the verification key
 - `sigNvmId`: for image types whose signature lives in NVM, the `whNvmId` of the signature object; for cert-chain image types, the `whNvmId` of the trusted root certificate
 - `imgType`: one of `WH_IMG_MGR_IMG_TYPE_RAW`, `WH_IMG_MGR_IMG_TYPE_WOLFBOOT`, or `WH_IMG_MGR_IMG_TYPE_WOLFBOOT_CERT`, which tells the framework how to load the key and signature
-- `verifyMethod`: the verify callback that runs the actual cryptographic check
-- `verifyAction`: the post-verification callback invoked with the verify result
+- `verifyMethod`: the verify callback that runs the actual cryptographic check (required)
+- `verifyAction`: the post-verification callback invoked with the verify result (required; use `wh_Server_ImgMgrVerifyActionDefault` for a no-op)
 
-Once registered, an image can be verified individually by reference (`wh_Server_ImgMgrVerifyImg`), by index into the registered array (`wh_Server_ImgMgrVerifyImgIdx`), or in bulk against every registered image (`wh_Server_ImgMgrVerifyAll`). All three calls return both the cryptographic outcome and the action callback's return value through a `whServerImgMgrVerifyResult` so the caller can distinguish a verification failure from an action failure.
+Once registered, an image can be verified individually by reference (`wh_Server_ImgMgrVerifyImg`), by index into the registered array (`wh_Server_ImgMgrVerifyImgIdx`), or in bulk against every registered image (`wh_Server_ImgMgrVerifyAll`). All three calls return `WH_ERROR_OK` only when verification and the action callback both succeed, so a caller can gate on the return value alone. A failed signature check surfaces as the verify method's error (typically `WH_ERROR_NOTVERIFIED`), and a failed verification cannot be masked by the action callback's return value. The per-callback breakdown is also reported through a `whServerImgMgrVerifyResult` so the caller can distinguish a verification failure from an action failure. `wh_Server_ImgMgrVerifyAll` stops at the first image that fails and reports its index. The result entries of images it did not reach are marked `WH_ERROR_ABORTED`.
 
 ### Verify Methods
 
@@ -1119,6 +1250,15 @@ When a session adds a user with `wh_Auth_UserAdd`, the following rules apply to 
 Credential updates through `wh_Auth_UserSetCredentials` add a further check on top of the self-service rule described under [Permissions](#permissions). When the target user already has a credential set, the caller must also present the matching **current** credential. The base backend verifies it in constant time before accepting the replacement, and a missing or mismatched current credential fails with `WH_ERROR_ACCESS`. PINs are hashed with SHA-256 for both the comparison and storage, so the plaintext PIN is never retained.
 
 `wh_Auth_UserDelete` and `wh_Auth_UserSetPermissions` remain admin-only operations in the base backend.
+
+### Permission Changes and Live Sessions
+
+A permission change made through `wh_Auth_UserSetPermissions` takes effect on the calling session immediately: when the target `user_id` is the user logged in on that context, the cached session permissions are refreshed with the supplied values, so a revoked group or action bit is enforced on the very next request rather than at the next login. The cache mirrors what the caller supplied, so a backend that stores something other than the permissions it was handed leaves the session cache diverged from its own record.
+
+Two consequences are worth planning for:
+
+- **Self-demotion is immediate and can be self-locking.** A session that clears its own group or action bits loses those capabilities at once. If it clears the `USER_SET_PERMISSIONS` action, it can no longer restore itself and must log out and back in as a sufficiently privileged user.
+- **Other sessions are not affected.** Permissions are cached per `whAuthContext`, and there is no cross-context notification. A user logged in on another connection keeps its existing permissions until it logs in again.
 
 ### Pluggable Backend
 

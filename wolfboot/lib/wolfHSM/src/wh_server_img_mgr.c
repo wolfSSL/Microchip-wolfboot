@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -55,13 +55,28 @@ int wh_Server_ImgMgrInit(whServerImgMgrContext*      context,
         return WH_ERROR_BADARGS;
     }
 
+    /* Every registered image must have both callbacks so a verify can never
+     * silently succeed without one */
+    if (config->imageCount > 0) {
+        size_t i;
+        if (config->images == NULL) {
+            return WH_ERROR_BADARGS;
+        }
+        for (i = 0; i < config->imageCount; i++) {
+            if (config->images[i].verifyMethod == NULL ||
+                config->images[i].verifyAction == NULL) {
+                return WH_ERROR_BADARGS;
+            }
+        }
+    }
+
     /* Initialize context */
     memset(context, 0, sizeof(*context));
     context->imageCount = config->imageCount;
     context->server     = config->server;
 
     /* Copy image configurations */
-    if (config->images != NULL && config->imageCount > 0) {
+    if (config->imageCount > 0) {
         size_t i;
         for (i = 0; i < config->imageCount; i++) {
             context->images[i] = config->images[i];
@@ -168,6 +183,16 @@ int wh_Server_ImgMgrVerifyImg(whServerImgMgrContext*      context,
         result->verifyActionResult = WH_ERROR_NOHANDLER;
     }
 
+    /* Fold the callback outcomes into the return value so WH_ERROR_OK always
+     * means the image verified and the action succeeded. A failed verify wins
+     * over the action result so it can't be masked by the action callback. */
+    if (result->verifyMethodResult != WH_ERROR_OK) {
+        return result->verifyMethodResult;
+    }
+    if (result->verifyActionResult != WH_ERROR_OK) {
+        return result->verifyActionResult;
+    }
+
     return ret;
 }
 
@@ -195,6 +220,13 @@ int wh_Server_ImgMgrVerifyAll(whServerImgMgrContext*      context,
 
     if (outResultsCount < context->imageCount) {
         return WH_ERROR_BADARGS;
+    }
+
+    /* Mark every result failed up front so entries past an early exit never
+     * read as verified */
+    for (i = 0; i < context->imageCount; i++) {
+        outResults[i].verifyMethodResult = WH_ERROR_ABORTED;
+        outResults[i].verifyActionResult = WH_ERROR_ABORTED;
     }
 
     for (i = 0; i < context->imageCount; i++) {

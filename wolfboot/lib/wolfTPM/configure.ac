@@ -3,7 +3,7 @@
 # All right reserved.
 
 AC_COPYRIGHT([Copyright (C) 2014-2026 wolfSSL Inc.])
-AC_INIT([wolftpm],[4.0.0],[https://github.com/wolfssl/wolfTPM/issues],[wolftpm],[https://www.wolfssl.com])
+AC_INIT([wolftpm],[4.2.0],[https://github.com/wolfssl/wolfTPM/issues],[wolftpm],[https://www.wolfssl.com])
 
 AC_PREREQ([2.63])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -29,7 +29,7 @@ AC_ARG_PROGRAM
 
 AC_CONFIG_HEADERS([src/config.h])
 
-WOLFTPM_LIBRARY_VERSION=17:0:0
+WOLFTPM_LIBRARY_VERSION=18:1:0
 #                        | | |
 #                 +------+ | +---+
 #                 |        |     |
@@ -253,7 +253,7 @@ fi
 WOLFTPM_HW_SELECTED=no
 for _wt_v in "$enable_infineon" "$enable_st" "$enable_st33" \
              "$enable_microchip" "$enable_mchp" \
-             "$enable_nuvoton" "$enable_nations" \
+             "$enable_nuvoton" "$enable_nations" "$enable_sealsq" \
              "$enable_spi" "$enable_i2c" "$enable_mmio" \
              "$enable_devtpm" "$enable_autodetect" \
              "$enable_winapi" "$enable_wintbs"; do
@@ -308,6 +308,15 @@ then
     fi
 
     AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_SWTPM"
+
+    # WOLFTPM_SWTPM suppresses the /dev/tpmX autodetect (see
+    # WOLFTPM_LINUX_DEV_AUTODETECT in wolftpm/tpm2_types.h), so when it is
+    # reached by default rather than by request, a host with a real kernel
+    # TPM would silently build against the simulator. Say so.
+    if test "x$WOLFTPM_DEFAULT_SWTPM" = "xyes" && test "x$enable_swtpm" = "x"; then
+        AC_MSG_NOTICE([no hardware TPM interface selected: defaulting to the software TPM (swTPM) so 'make check' works without hardware.])
+        AC_MSG_NOTICE([this build will NOT use /dev/tpmrm0 or /dev/tpm0. For a real TPM use --enable-autodetect, --enable-devtpm, or --enable-<vendor>.])
+    fi
 
     if test "x$ENABLED_SWTPM" = "xuart"
     then
@@ -415,6 +424,25 @@ then
     fi
 fi
 
+# POSIX TIS/shared-memory consumers need the platform's semaphore link flags.
+# Keep these target-scoped instead of adding them to LIBS.
+FWTPM_TIS_LIBS=""
+if test "x$ENABLED_FWTPM_TIS" = "xyes"
+then
+    fwtpm_tis_saved_LIBS="$LIBS"
+    LIBS="$PTHREAD_LIBS $LIBS"
+    AC_SEARCH_LIBS([sem_open], [rt pthread], [
+        AS_IF([test "x$ac_cv_search_sem_open" != "xnone required"], [
+            FWTPM_TIS_LIBS="$FWTPM_TIS_LIBS $ac_cv_search_sem_open"
+        ])
+    ], [
+        AC_MSG_ERROR([fwTPM TIS transport requires POSIX sem_open])
+    ])
+    LIBS="$fwtpm_tis_saved_LIBS"
+    FWTPM_TIS_LIBS="$PTHREAD_LIBS $FWTPM_TIS_LIBS"
+fi
+AC_SUBST([FWTPM_TIS_LIBS])
+
 # Append-only NV journal for write-once flash fwTPM ports (opt-in)
 AC_ARG_ENABLE([fwtpm-nv-appendonly],
     [AS_HELP_STRING([--enable-fwtpm-nv-appendonly],[Enable the append-only NV journal mode for write-once flash fwTPM ports (default: disabled)])],
@@ -474,6 +502,34 @@ then
     AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_ST33"
 fi
 
+# Optional TPM hardware reset (nRST) HAL control via Linux GPIO char device.
+# Accepts an optional GPIO line number (default ST33 GPIO24 / Pi pin 18, Nuvoton GPIO4).
+AC_ARG_ENABLE([hal-reset],
+    [AS_HELP_STRING([--enable-hal-reset@<:@=LINE@:>@],[Enable TPM nRST reset HAL (optional GPIO line; default ST33 GPIO24, Nuvoton GPIO4) (default: disabled)])],
+    [ ENABLED_HAL_RESET=$enableval ],
+    [ ENABLED_HAL_RESET=no ]
+    )
+if test "x$ENABLED_HAL_RESET" != "xno"
+then
+    # The reset HAL implementation (hal/tpm_io.c) only builds for the SPI/I2C
+    # example HAL, not the native kernel (/dev/tpm0) or swtpm transports, so
+    # reject those combinations rather than report "yes" with no callable API.
+    # Note swtpm is the default on Linux x86_64/aarch64, so the hardware reset
+    # HAL requires explicitly selecting a hardware interface (--enable-spi/-i2c).
+    if test "x$ENABLED_DEVTPM" = "xyes" || test "x$ENABLED_SWTPM" = "xyes" || test "x$ENABLED_SWTPM" = "xuart"
+    then
+        AC_MSG_ERROR([--enable-hal-reset needs the SPI/I2C hardware HAL; it is not available with the swtpm simulator (default on Linux x86_64/aarch64) or --enable-devtpm. Select a hardware interface, e.g. --enable-spi or --enable-i2c.])
+    fi
+    AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_HAL_RESET"
+    case "x$ENABLED_HAL_RESET" in
+        xyes) ;;
+        x|x*[[!0-9]]*)
+            AC_MSG_ERROR([--enable-hal-reset=LINE requires a numeric GPIO line number (e.g. --enable-hal-reset=24).]) ;;
+        *) AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_RESET_LINE=$ENABLED_HAL_RESET" ;;
+    esac
+    ENABLED_HAL_RESET=yes
+fi
+
 # Microchip ATTPM20
 AC_ARG_ENABLE([mchp],,
     [ ENABLED_MCHP=$enableval ],
@@ -510,6 +566,17 @@ AC_ARG_ENABLE([nations],
 if test "x$ENABLED_NATIONS" = "xyes"
 then
     AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_NATIONS"
+fi
+
+# SealSQ QVault TPM (post-quantum ML-DSA/ML-KEM)
+AC_ARG_ENABLE([sealsq],
+    [AS_HELP_STRING([--enable-sealsq],[Enable SealSQ QVault TPM Support (default: disabled)])],
+    [ ENABLED_SEALSQ=$enableval ],
+    [ ENABLED_SEALSQ=no ]
+    )
+if test "x$ENABLED_SEALSQ" = "xyes"
+then
+    AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_SEALSQ"
 fi
 
 # Infineon SLB9670/SLB9672/SLB9673
@@ -593,7 +660,7 @@ then
     # If a module hasn't been selected then enable auto-detection
     if test "x$ENABLED_INFINEON" = "xno" && test "x$ENABLED_MCHP" = "xno" && test "x$ENABLED_MICROCHIP" = "xno" && \
        test "x$ENABLED_ST" = "xno" && test "x$ENABLED_ST33" = "xno" && test "x$ENABLED_NUVOTON" = "xno" && \
-       test "x$ENABLED_NATIONS" = "xno"
+       test "x$ENABLED_NATIONS" = "xno" && test "x$ENABLED_SEALSQ" = "xno"
     then
         ENABLED_AUTODETECT=yes
     fi
@@ -614,6 +681,20 @@ AC_ARG_ENABLE([hal],
 if test "x$ENABLED_EXAMPLE_HAL" = "xyes"
 then
     AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_EXAMPLE_HAL"
+fi
+
+
+# wolfHAL hardware abstraction layer
+# Selects hal/tpm_io_wolfhal.c for SPI/I2C. Requires wolfHAL headers and a
+# board.h supplying the BOARD_* peripheral definitions.
+AC_ARG_ENABLE([wolfhal],
+    [AS_HELP_STRING([--enable-wolfhal],[Enable wolfHAL IO callbacks (default: disabled)])],
+    [ ENABLED_WOLFHAL=$enableval ],
+    [ ENABLED_WOLFHAL=no ]
+    )
+if test "x$ENABLED_WOLFHAL" = "xyes"
+then
+    AM_CFLAGS="$AM_CFLAGS -DWOLFTPM_WOLFHAL"
 fi
 
 
@@ -882,35 +963,45 @@ fi
 
 if test "x$ENABLED_PQC_MODE" != "xno"
 then
-    # Explicit opt-in: re-probe so we fail at configure time (with a
-    # clear hint about wolfSSL flags) rather than deep inside the compile
-    # with a cryptic error. Header existence alone is not enough -- the
-    # actual functions must be declared (gated by WOLFSSL_HAVE_MLDSA /
-    # HAVE_MLKEM in wolfssl/options.h). The probed symbol
-    # `wc_MlDsaKey_Init` is the canonical FIPS 204 entry point introduced
-    # by wolfSSL PR #10436 (post-v5.9.1-stable): wolfTPM consumes
-    # <wolfssl/wolfcrypt/wc_mldsa.h> directly, so older wolfSSL that
-    # only ships <wolfssl/wolfcrypt/dilithium.h> is not supported here.
-    AC_CHECK_DECL([wc_MlDsaKey_Init], [],
-        [AC_MSG_ERROR([--enable-v185/--enable-pqc requires wolfSSL built with --enable-mldsa (or alias --enable-dilithium) and --enable-experimental, ships post-v5.9.1-stable])],
-        [[#include <wolfssl/options.h>
-          #include <wolfssl/wolfcrypt/wc_mldsa.h>]])
-    AC_CHECK_DECL([wc_MlKemKey_Init], [],
-        [AC_MSG_ERROR([--enable-v185/--enable-pqc requires wolfSSL >= v5.8.0-stable built with --enable-mlkem --enable-experimental])],
-        [[#include <wolfssl/options.h>
-          #include <wolfssl/wolfcrypt/wc_mlkem.h>]])
+    # The PQC command set is pure marshaling, so it stands on its own with
+    # --disable-wolfcrypt (an embedded client driving a v1.85 TPM with no
+    # host-side crypto). Only probe wolfSSL when it is actually linked --
+    # otherwise no -I/-l is added and the probe would test headers this
+    # build never sees.
+    if test "x$ENABLED_WOLFCRYPT" = "xyes"
+    then
+        # Explicit opt-in: re-probe so we fail at configure time (with a
+        # clear hint about wolfSSL flags) rather than deep inside the compile
+        # with a cryptic error. Header existence alone is not enough -- the
+        # actual functions must be declared (gated by WOLFSSL_HAVE_MLDSA /
+        # HAVE_MLKEM in wolfssl/options.h). The probed symbol
+        # `wc_MlDsaKey_Init` is the canonical FIPS 204 entry point introduced
+        # by wolfSSL PR #10436 (post-v5.9.1-stable): wolfTPM consumes
+        # <wolfssl/wolfcrypt/wc_mldsa.h> directly, so older wolfSSL that
+        # only ships <wolfssl/wolfcrypt/dilithium.h> is not supported here.
+        AC_CHECK_DECL([wc_MlDsaKey_Init], [],
+            [AC_MSG_ERROR([--enable-v185/--enable-pqc requires wolfSSL built with --enable-mldsa (or alias --enable-dilithium) and --enable-experimental, ships post-v5.9.1-stable])],
+            [[#include <wolfssl/options.h>
+              #include <wolfssl/wolfcrypt/wc_mldsa.h>]])
+        AC_CHECK_DECL([wc_MlKemKey_Init], [],
+            [AC_MSG_ERROR([--enable-v185/--enable-pqc requires wolfSSL >= v5.8.0-stable built with --enable-mlkem --enable-experimental])],
+            [[#include <wolfssl/options.h>
+              #include <wolfssl/wolfcrypt/wc_mlkem.h>]])
 
-    AC_MSG_CHECKING([wolfSSL version >= v5.8.0 for PQC])
-    AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
-        #include <wolfssl/version.h>
-        #if LIBWOLFSSL_VERSION_HEX < 0x05008000
-        #error "wolfSSL < v5.8.0"
-        #endif
-        int main(void) { return 0; }
-    ]])],
-    [AC_MSG_RESULT([yes])],
-    [AC_MSG_RESULT([no])
-     AC_MSG_ERROR([wolfTPM PQC requires wolfSSL >= v5.8.0-stable. Please upgrade wolfSSL.])])
+        AC_MSG_CHECKING([wolfSSL version >= v5.8.0 for PQC])
+        AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+            #include <wolfssl/version.h>
+            #if LIBWOLFSSL_VERSION_HEX < 0x05008000
+            #error "wolfSSL < v5.8.0"
+            #endif
+            int main(void) { return 0; }
+        ]])],
+        [AC_MSG_RESULT([yes])],
+        [AC_MSG_RESULT([no])
+         AC_MSG_ERROR([wolfTPM PQC requires wolfSSL >= v5.8.0-stable. Please upgrade wolfSSL.])])
+    else
+        AC_MSG_NOTICE([--disable-wolfcrypt: PQC is command marshaling only (no host-side ML-DSA/ML-KEM)])
+    fi
 
     if test "x$ENABLED_PQC_MODE" = "xv185"
     then
@@ -1001,6 +1092,16 @@ AC_SUBST([AM_CPPFLAGS])
 AC_SUBST([AM_CFLAGS])
 AC_SUBST([AM_LDFLAGS])
 AC_SUBST([CPPCHECK])
+
+# Tools used by the SBOM targets (see scripts/sbom.am `make sbom`).  GIT is used
+# only to derive SOURCE_DATE_EPOCH for reproducible SBOM output; all three are
+# optional and the target reports a clear error when a required one is missing.
+AC_PATH_PROG([PYTHON3], [python3])
+AC_PATH_PROG([PYSPDXTOOLS], [pyspdxtools])
+AC_PATH_PROG([GIT], [git])
+AC_SUBST([PYTHON3])
+AC_SUBST([PYSPDXTOOLS])
+AC_SUBST([GIT])
 
 # FINAL
 AC_CONFIG_FILES([Makefile])
@@ -1132,12 +1233,15 @@ if test "x$ENABLED_SWTPM" = "xyes"; then
 fi
 echo "   * WINAPI:                    $ENABLED_WINAPI"
 echo "   * TIS/SPI Check Wait State:  $ENABLED_CHECKWAITSTATE"
+echo "   * HAL Reset (nRST GPIO):     $ENABLED_HAL_RESET"
+echo "   * wolfHAL IO:                $ENABLED_WOLFHAL"
 
 echo "   * Infineon SLB967X           $ENABLED_INFINEON"
 echo "   * STM ST33:                  $ENABLED_ST"
 echo "   * Microchip ATTPM20:         $ENABLED_MICROCHIP"
 echo "   * Nuvoton NPCT75x:           $ENABLED_NUVOTON"
 echo "   * Nations Tech NS350:        $ENABLED_NATIONS"
+echo "   * SealSQ QVault TPM:         $ENABLED_SEALSQ"
 
 echo "   * fwTPM Server:              $ENABLED_FWTPM"
 echo "   * fwTPM Only (no client):    $ENABLED_FWTPM_ONLY"

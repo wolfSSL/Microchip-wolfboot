@@ -255,16 +255,73 @@ Provides a value to be set with a custom tag
    * `--custom-tlv-buffer tag value`: Adds a TLV entry with arbitrary length to the manifest
    header, corresponding to the type identified by `tag`, and assigns the value `value`. The
    tag is a 16-bit number. Valid tags are in the range between 0x0030 and 0xFEFE. The length
-   is implicit, and is the length of the value.
+   is implicit, and is the length of the value. The maximum length is 65524 bytes.
    Value argument is in the form of a hex string, e.g. `--custom-tlv-buffer 0x0030 AABBCCDDEE`
    will add a TLV entry with tag 0x0030, length 5 and value 0xAABBCCDDEE.
 
    * `--custom-tlv-string tag ascii-string`: Adds a TLV entry with arbitrary length to the manifest
    header, corresponding to the type identified by `tag`, and assigns the value of `ascii-string`. The
    tag is a 16-bit number. Valid tags are in the range between 0x0030 and 0xFEFE. The length
-   is implicit, and is the length of the `ascii-string`. `ascii-string` argument is in the form of a string,
+   is implicit, and is the length of the `ascii-string`. The maximum length is 65524 bytes.
+   `ascii-string` argument is in the form of a string,
    e.g. `--custom-tlv-string 0x0030 "Version-1"` will add a TLV entry with tag 0x0030,
    length 9 and value Version-1.
+
+   * `--custom-tlv-file tag filename`: Adds a TLV entry with arbitrary length to the manifest
+   header, corresponding to the type identified by `tag`, with the value read as raw bytes
+   from the file `filename`. The tag is a 16-bit number. Valid tags are in the range between
+   0x0030 and 0xFEFE. The length is implicit, and is the size of the file. The maximum length
+   is 65524 bytes. Unlike `--custom-tlv-buffer`, the value is not passed on the command line,
+   so large binary values are not subject to the OS argument length limits.
+
+   * `--custom-tlv-pubkey-der tag filename`: Adds a TLV entry to the manifest header,
+   corresponding to the type identified by `tag`, with the value extracted from the
+   DER-encoded public key (SubjectPublicKeyInfo) in `filename`. The tag is a 16-bit
+   number. Valid tags are in the range between 0x0030 and 0xFEFE. The key algorithm is
+   detected automatically (ECC, Ed25519, Ed448 or RSA) and the stored value uses the
+   same format as the wolfBoot keystore: the raw `X||Y` point coordinates for ECC, the
+   raw public key bytes for Ed25519/Ed448, and the DER-encoded public key for RSA.
+   This avoids a manual ASN.1-stripping step before `--custom-tlv-file` when embedding
+   an application-level public key (e.g. for verifying payloads at runtime, or for key
+   rotation) in the signed manifest.
+
+   * `--cmdline "ascii-string"`: Adds the OS command line as a signature-covered TLV using the
+   wolfBoot-reserved tag `HDR_CMDLINE` (0x0034). This is a shorthand for
+   `--custom-tlv-string 0x0034 "ascii-string"` (max 255 bytes). The EFI targets (`aarch64_efi`,
+   `x86_64_efi`) read this authenticated command line from the verified image and pass it to the
+   Linux kernel EFI stub via `LoadOptions`, so kernel arguments (e.g. `root=`, `init=`) cannot be
+   altered without breaking the image signature. Example:
+   `--cmdline "root=/dev/mmcblk0p2 rw rootwait console=ttyTCU0,115200"`.
+
+   * `--dts filename`: Binds a raw (non-FIT) device tree blob to the firmware image. The sign
+   tool hashes exactly the first `totalsize` bytes of the `.dtb`, per that header field (validating the FDT magic
+   and version the same way the bootloader does) with the image hash algorithm and stores the
+   digest as a signature-covered TLV using the wolfBoot-reserved tag `HDR_DEVICE_TREE_DIGEST`
+   (0x35). At boot, the non-FIT MMU path (`src/update_ram.c`) hashes the DTB it loads from the
+   raw DTS partition or `hal_get_dts_address()` and compares it against this digest before
+   handing the tree to the kernel; a mismatch triggers `wolfBoot_panic()`. This prevents an
+   attacker who can write the DTS flash region from altering `/chosen/bootargs` or other
+   kernel-visible policy while leaving the signed kernel intact. Example: `--dts board.dtb`.
+   Note: the DTB and the kernel image are signed together, so re-signing the kernel is required
+   whenever the device tree changes. A DTB delivered inside a signed FIT image is already
+   covered by the FIT's signature and does not need `--dts`.
+
+   Enforcement of a *missing* digest is opt-in for backward compatibility: a firmware image that
+   carries the digest is always verified, but a raw DTB with no `HDR_DEVICE_TREE_DIGEST` only
+   warns and boots unless wolfBoot is built with `WOLFBOOT_REQUIRE_SIGNED_DTB=1` (see
+   `options.mk`), which makes the missing digest a hard failure. Adopt `--dts` on every raw-DTB
+   payload first, then set `WOLFBOOT_REQUIRE_SIGNED_DTB=1` to fail closed.
+
+   The 65524-byte maximum is the largest TLV value the wolfBoot header parser can walk
+   past when locating the fields that follow it, such as the signature.
+
+   If the custom TLVs do not fit in the configured header size, the sign tool automatically
+   increases the size of the manifest header, rounding up to the next power of two. wolfBoot
+   must be built with a matching `IMAGE_HEADER_SIZE`, or it will fail to locate the firmware
+   image at boot.
+
+Note: all options, including `--cmdline`, `--dts`, and the `--custom-tlv*` options, must appear
+**before** the positional `image key version` arguments.
 
 #### Three-steps signing using external provisioning tools
 

@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -379,6 +379,29 @@ int wh_MessageShe_TranslateVerifyMacRequest(
 int wh_MessageShe_TranslateVerifyMacResponse(
     uint16_t magic, const whMessageShe_VerifyMacResponse* src,
     whMessageShe_VerifyMacResponse* dest);
+
+/* Get ID Request */
+typedef struct {
+    uint8_t challenge[WH_SHE_KEY_SZ];
+} whMessageShe_GetIdRequest;
+
+/* Get ID Response */
+typedef struct {
+    int32_t rc;
+    uint8_t uid[WH_SHE_UID_SZ];
+    uint8_t sreg;
+    uint8_t mac[WH_SHE_KEY_SZ];
+    uint8_t WH_PAD[4];
+} whMessageShe_GetIdResponse;
+
+/* Get ID translation functions */
+int wh_MessageShe_TranslateGetIdRequest(uint16_t magic,
+                                        const whMessageShe_GetIdRequest* src,
+                                        whMessageShe_GetIdRequest*       dest);
+
+int wh_MessageShe_TranslateGetIdResponse(
+    uint16_t magic, const whMessageShe_GetIdResponse* src,
+    whMessageShe_GetIdResponse* dest);
 
 #endif /* WOLFHSM_CFG_SHE_EXTENSION */
 

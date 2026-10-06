@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -49,7 +49,7 @@ static const uint8_t bobKeyDer[] = {
 
 /* Helper function for ECC sign benchmark */
 int _benchEccSign(whClientContext* client, whBenchOpContext* ctx, int id,
-                  const uint8_t* key, size_t keyLen, int curveSize, int devId)
+                  const uint8_t* key, size_t keyLen, int curveSize, int useDma)
 {
     int     ret = 0;
     word32  sigLen;
@@ -63,13 +63,15 @@ int _benchEccSign(whClientContext* client, whBenchOpContext* ctx, int id,
     whKeyId keyId           = WH_KEYID_ERASED;
     char    keyLabel[]      = "bench-key";
 
+    (void)wh_Client_SetDmaMode(client, useDma);
+
     /* Initialize dummy hash data */
     for (i = 0; i < (int)sizeof(hash); i++) {
         hash[i] = (byte)i;
     }
 
     /* Initialize the RNG */
-    ret = wc_InitRng_ex(rng, NULL, devId);
+    ret = wc_InitRng_ex(rng, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_InitRng_ex %d\n", ret);
         goto exit;
@@ -85,7 +87,7 @@ int _benchEccSign(whClientContext* client, whBenchOpContext* ctx, int id,
     }
 
     /* Initialize the ECC key */
-    ret = wc_ecc_init_ex(eccKey, NULL, devId);
+    ret = wc_ecc_init_ex(eccKey, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_ecc_init_ex %d\n", ret);
         goto exit;
@@ -159,7 +161,8 @@ exit:
 
 /* Helper function for ECC verify benchmark */
 int _benchEccVerify(whClientContext* client, whBenchOpContext* ctx, int id,
-                    const uint8_t* key, size_t keyLen, int curveSize, int devId)
+                    const uint8_t* key, size_t keyLen, int curveSize,
+                    int useDma)
 {
     int     ret = 0;
     word32  sigLen;
@@ -174,13 +177,15 @@ int _benchEccVerify(whClientContext* client, whBenchOpContext* ctx, int id,
     whKeyId keyId           = WH_KEYID_ERASED;
     char    keyLabel[]      = "bench-key";
 
+    (void)wh_Client_SetDmaMode(client, useDma);
+
     /* Initialize dummy hash data */
     for (i = 0; i < (int)sizeof(hash); i++) {
         hash[i] = (byte)i;
     }
 
     /* Initialize the RNG */
-    ret = wc_InitRng_ex(rng, NULL, devId);
+    ret = wc_InitRng_ex(rng, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_InitRng_ex %d\n", ret);
         return ret;
@@ -196,7 +201,7 @@ int _benchEccVerify(whClientContext* client, whBenchOpContext* ctx, int id,
     }
 
     /* Initialize the ECC key */
-    ret = wc_ecc_init_ex(eccKey, NULL, devId);
+    ret = wc_ecc_init_ex(eccKey, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_ecc_init_ex %d\n", ret);
         goto exit;
@@ -282,10 +287,8 @@ exit:
 
 /* Helper function for ECC key generation benchmark */
 int _benchEccKeyGen(whClientContext* client, whBenchOpContext* ctx, int id,
-                    int curveSize, int devId)
+                    int curveSize, int useDma)
 {
-    (void)client;
-
     int     ret    = 0;
     ecc_key key[1] = {0};
     WC_RNG  rng[1] = {0};
@@ -293,8 +296,10 @@ int _benchEccKeyGen(whClientContext* client, whBenchOpContext* ctx, int id,
     int     initialized_rng = 0;
     int     initialized_key = 0;
 
+    (void)wh_Client_SetDmaMode(client, useDma);
+
     /* Initialize the RNG for key generation */
-    ret = wc_InitRng_ex(rng, NULL, devId);
+    ret = wc_InitRng_ex(rng, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_InitRng_ex %d\n", ret);
         goto exit;
@@ -307,7 +312,7 @@ int _benchEccKeyGen(whClientContext* client, whBenchOpContext* ctx, int id,
         int benchStopRet;
 
         /* Initialize the ECC key before each iteration */
-        ret = wc_ecc_init_ex(key, NULL, devId);
+        ret = wc_ecc_init_ex(key, NULL, WH_CLIENT_DEVID(client));
         if (ret != 0) {
             WH_BENCH_PRINTF("Failed to wc_ecc_init_ex %d\n", ret);
             break;
@@ -358,7 +363,7 @@ exit:
 int _benchEccEcdh(whClientContext* client, whBenchOpContext* ctx, int id,
                   const uint8_t* aliceKeyData, size_t aliceKeyLen,
                   const uint8_t* bobKeyData, size_t bobKeyLen, int curveSize,
-                  int devId)
+                  int useDma)
 {
     int     ret = 0;
     word32  outLen;
@@ -374,8 +379,10 @@ int _benchEccEcdh(whClientContext* client, whBenchOpContext* ctx, int id,
     whKeyId keyIdBob          = WH_KEYID_ERASED;
     char    keyLabel[]        = "bench-key";
 
+    (void)wh_Client_SetDmaMode(client, useDma);
+
     /* Initialize RNG for potential operations that require it */
-    ret = wc_InitRng_ex(rng, NULL, devId);
+    ret = wc_InitRng_ex(rng, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_InitRng_ex %d\n", ret);
         goto exit;
@@ -401,7 +408,7 @@ int _benchEccEcdh(whClientContext* client, whBenchOpContext* ctx, int id,
     }
 
     /* Initialize Alice's key structure */
-    ret = wc_ecc_init_ex(aliceKey, NULL, devId);
+    ret = wc_ecc_init_ex(aliceKey, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to initialize Alice's key %d\n", ret);
         goto exit;
@@ -422,7 +429,7 @@ int _benchEccEcdh(whClientContext* client, whBenchOpContext* ctx, int id,
     }
 
     /* Initialize Bob's key structure */
-    ret = wc_ecc_init_ex(bobKey, NULL, devId);
+    ret = wc_ecc_init_ex(bobKey, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to initialize Bob's key %d\n", ret);
         goto exit;
@@ -512,7 +519,7 @@ int wh_Bench_Mod_EccP256Sign(whClientContext* client, whBenchOpContext* ctx,
 {
     (void)params;
     return _benchEccSign(client, ctx, id, aliceKeyDer, sizeof(aliceKeyDer), 32,
-                         WH_DEV_ID);
+                         0);
 }
 
 int wh_Bench_Mod_EccP256SignDma(whClientContext* client, whBenchOpContext* ctx,
@@ -530,7 +537,7 @@ int wh_Bench_Mod_EccP256Verify(whClientContext* client, whBenchOpContext* ctx,
 {
     (void)params;
     return _benchEccVerify(client, ctx, id, aliceKeyDer, sizeof(aliceKeyDer),
-                           32, WH_DEV_ID);
+                           32, 0);
 }
 
 int wh_Bench_Mod_EccP256VerifyDma(whClientContext*  client,
@@ -547,7 +554,7 @@ int wh_Bench_Mod_EccP256KeyGen(whClientContext* client, whBenchOpContext* ctx,
                                int id, void* params)
 {
     (void)params;
-    return _benchEccKeyGen(client, ctx, id, 32, WH_DEV_ID);
+    return _benchEccKeyGen(client, ctx, id, 32, 0);
 }
 
 int wh_Bench_Mod_EccP256Ecdh(whClientContext* client, whBenchOpContext* ctx,
@@ -555,7 +562,7 @@ int wh_Bench_Mod_EccP256Ecdh(whClientContext* client, whBenchOpContext* ctx,
 {
     (void)params;
     return _benchEccEcdh(client, ctx, id, aliceKeyDer, sizeof(aliceKeyDer),
-                         bobKeyDer, sizeof(bobKeyDer), 32, WH_DEV_ID);
+                         bobKeyDer, sizeof(bobKeyDer), 32, 0);
 }
 
 #endif /* HAVE_ECC */

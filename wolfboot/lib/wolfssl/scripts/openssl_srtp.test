@@ -3,6 +3,17 @@
 #
 # TODO: add OpenSSL client with WolfSSL server
 
+# timeout(1) is GNU coreutils and absent on macOS; where it's missing, run the
+# command unbounded (the flaky hang this guards against is Linux-only CI).
+# A prefix variable rather than a shell function: backgrounding a function
+# makes $! the forked subshell, so a later "kill $server_pid" would stop the
+# wrapper and orphan the server it was meant to kill.
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_KILL_2M="timeout -s KILL 2m"
+else
+    TIMEOUT_KILL_2M=""
+fi
+
 set -e
 
 # if we can, isolate the network namespace to eliminate port collisions.
@@ -60,10 +71,15 @@ generate_port() {
 
         # Also check if the port is already bound on this system
         if [ "$collision" -eq 0 ]; then
+            # TCP and UDP, established as well as listening, matched on the
+            # local port. -lnt saw only TCP listeners, so it was blind to the
+            # UDP sockets the DTLS cases here bind and to a port held by an
+            # unrelated outbound connection - both of which still block bind.
+            # A false positive only costs another iteration of this loop.
             if command -v ss &>/dev/null; then
-                ss -lnt 2>/dev/null | grep -q ":${p}[[:space:]]" && collision=1
+                [ -n "$(ss -Hantu "sport = :${p}" 2>/dev/null)" ] && collision=1
             elif command -v netstat &>/dev/null; then
-                netstat -lnt 2>/dev/null | grep -q ":${p}[[:space:]]" && collision=1
+                netstat -an 2>/dev/null | grep -q "[:.]${p}[[:space:]]" && collision=1
             fi
         fi
 
@@ -151,7 +167,7 @@ start_wolfssl_client() {
     fi
 
     client_output_file=/tmp/wolfssl_srtp_out
-    ${WOLFSSL_CLIENT} -u\
+    $TIMEOUT_KILL_2M ${WOLFSSL_CLIENT} -u\
                       -x \
                       -v${dtls_version} \
                       --srtp "${srtp_profile}" \

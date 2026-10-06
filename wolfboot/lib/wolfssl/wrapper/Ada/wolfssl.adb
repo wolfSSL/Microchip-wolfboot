@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 with Ada.Unchecked_Conversion;
 
 package body WolfSSL is
@@ -1491,6 +1487,10 @@ package body WolfSSL is
                                   Size : Integer;
                                   Result : out Integer) is
    begin
+      if Size < 0 then
+         Result := Exception_Error;
+         return;
+      end if;
       declare
          R : int;
       begin
@@ -1516,6 +1516,10 @@ package body WolfSSL is
                                   Size : Integer;
                                   Result : out Integer) is
    begin
+      if Size < 0 then
+         Result := Exception_Error;
+         return;
+      end if;
       declare
          R : int;
       begin

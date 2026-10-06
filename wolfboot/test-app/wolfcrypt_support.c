@@ -34,9 +34,69 @@
     extern volatile uint64_t HAL_time_ms;
 #elif defined(TARGET_lpc55s69)
     extern volatile uint64_t SysTick_time_ms;
+#elif defined(TARGET_imx95_m7)
+    /* Cortex-M7 DWT cycle counter. Exact, free to read, and needs no
+     * peripheral - which matters here because the M7 has no console UART
+     * routed on this carrier.
+     *
+     * IMX95_M7_HZ is a build-time constant, not a run-time reading: the M7
+     * clock is owned by the System Manager on the M33 and the core cannot
+     * query it without an SCMI round trip. 800 MHz is what this board's
+     * clk_summary reports ("m7 800000000"); override with -DIMX95_M7_HZ if the
+     * System Manager is configured differently, or every reported figure
+     * scales by the ratio.
+     *
+     * CYCCNT is 32 bits and wraps every ~5.4 s at that rate, and the wrap
+     * accounting below can only recover one wrap per read. my_time() alone
+     * does not read often enough to guarantee that - it is called only when
+     * wolfCrypt validates a certificate date - so app_imx95_m7.c drives
+     * imx95_m7_cyc_sample() from SysTick to keep the invariant true. */
+    #include "hal/imx95_m7.h"
+
+    #ifndef IMX95_M7_HZ
+    #define IMX95_M7_HZ 800000000ULL
+    #endif
+
+    static uint64_t m7_cyc_hi = 0;
+    static uint32_t m7_cyc_last = 0;
+    static int m7_cyc_inited = 0;
+    static uint64_t m7_start_ticks = 0;
+
+    /* Reached from both thread and interrupt context, so the wrap accounting
+     * is a critical section. PRIMASK is saved and restored rather than
+     * unconditionally re-enabled, since the caller may already be masked. */
+    static uint64_t m7_get_ticks(void)
+    {
+        uint32_t now, primask;
+        uint64_t ticks;
+
+        __asm__ volatile ("mrs %0, primask" : "=r"(primask));
+        __asm__ volatile ("cpsid i" ::: "memory");
+
+        if (!m7_cyc_inited) {
+            imx95_dwt_init();
+            m7_cyc_hi = 0;
+            m7_cyc_last = 0;
+            m7_cyc_inited = 1;
+        }
+        now = DWT_CYCCNT;
+        if (now < m7_cyc_last)
+            m7_cyc_hi += 0x100000000ULL; /* wrapped since last read */
+        m7_cyc_last = now;
+        ticks = m7_cyc_hi + now;
+
+        if ((primask & 1U) == 0U)
+            __asm__ volatile ("cpsie i" ::: "memory");
+        return ticks;
+    }
+
+    /* Called from the app's SysTick handler; see app_imx95_m7.c. */
+    void imx95_m7_cyc_sample(void)
+    {
+        (void)m7_get_ticks();
+    }
 #elif defined(TARGET_nxp_t2080) || defined(TARGET_nxp_t1024)
-    /* PPC timebase register for accurate timing.
-     * Timebase frequency = platform_clock / 16. */
+    /* PPC time base register for accurate timing (e6500). */
     static uint32_t ppc_tb_hz = 0;
     static unsigned long long ppc_start_ticks = 0;
 
@@ -56,18 +116,64 @@
 
     static uint32_t ppc_get_timebase_hz(void)
     {
-        /* Read Platform PLL ratio from CLOCKING_PLLPGSR register.
-         * CCSRBAR=0xFE000000, CLOCKING_BASE=CCSRBAR+0xE1000,
-         * PLLPGSR=CLOCKING_BASE+0xC00 */
-        volatile uint32_t *pllpgsr =
-            (volatile uint32_t *)(0xFE000000UL + 0xE1C00UL);
-        uint32_t plat_ratio = ((*pllpgsr) >> 1) & 0x1F;
+        /* CoreNet (e6500): platform PLL ratio in RCWSR0 (DCFG/GUTS + 0x100),
+         * bits (RCWSR0 >> 25) & 0x1f (U-Boot mpc85xx/speed.c). Platform clock =
+         * SYSCLK * ratio; time base = platform_clock / 16 (TBCLK_DIV = 16).
+         * CCSRBAR is board-relocated: CW VPX3-152 uses 0xEF000000; reading the
+         * RDB default 0xFE000000 there is unmapped (0xFFFFFFFF -> ratio 31). */
+    #ifdef BOARD_CW_VPX3152
+        uintptr_t ccsr = 0xEF000000UL;
+    #else
+        uintptr_t ccsr = 0xFE000000UL;
+    #endif
+        volatile uint32_t *rcwsr0 = (volatile uint32_t *)(ccsr + 0xE0100UL);
+        uint32_t plat_ratio = ((*rcwsr0) >> 25) & 0x1FU;
     #if defined(BOARD_NAII_68PPC2) || defined(TARGET_nxp_t1024)
         uint32_t sys_clk = 100000000; /* 100 MHz */
     #else
-        uint32_t sys_clk = 66666667;  /* 66.66 MHz (T2080 RDB) */
+        uint32_t sys_clk = 66666667;  /* 66.66 MHz */
     #endif
-        return (sys_clk * plat_ratio) / 16;
+        return (sys_clk * plat_ratio) / 16U;
+    }
+#elif defined(TARGET_nxp_ls1028a)
+    /* ARMv8 generic system counter (enabled by the wolfBoot HAL). */
+    static unsigned long long a64_tb_hz = 0;
+    static unsigned long long a64_start_ticks = 0;
+
+    static unsigned long long a64_get_ticks(void)
+    {
+        unsigned long long v;
+        __asm__ volatile ("mrs %0, cntpct_el0" : "=r"(v));
+        return v;
+    }
+
+    static unsigned long long a64_get_hz(void)
+    {
+        unsigned long long v;
+        __asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(v));
+        /* wolfBoot programs CNTFRQ_EL0 from CNTFID0; fall back to the 25 MHz
+         * LS1028A default if it reads zero (matches now_ms). */
+        return v ? v : 25000000ULL;
+    }
+#elif defined(TARGET_mpfs250)
+    /* PolarFire SoC RISC-V timer. Mirrors hal_get_timer() in src/boot_riscv.c:
+     *  - S-mode under stock HSS: the 'time' CSR (CLINT MTIME) runs at
+     *    RISCV_SMODE_TIMER_FREQ (1 MHz), so timing is accurate.
+     *  - M-mode (no HSS): the 'time'/'cycle' user CSRs trap on the E51; read
+     *    the machine 'mcycle' counter (CPU clock) instead. */
+    #include "../hal/riscv.h"
+    #ifndef RISCV_SMODE_TIMER_FREQ
+        /* M-mode: mcycle counts the CPU clock (MSS_CPU_CLK, 600 MHz). */
+        #define RISCV_SMODE_TIMER_FREQ 600000000UL
+    #endif
+    static uint64_t mpfs_start_ticks = 0;
+    static uint64_t mpfs_get_ticks(void)
+    {
+    #ifdef WOLFBOOT_RISCV_MMODE
+        return (uint64_t)csr_read(mcycle);
+    #else
+        return (uint64_t)csr_read(time);
+    #endif
     }
 #else
     /* Simple tick counter fallback */
@@ -92,6 +198,12 @@ unsigned long my_time(unsigned long* timer)
     unsigned long t = (unsigned long)(SysTick_time_ms / 1000);
     if (timer) *timer = t;
     return t;
+#elif defined(TARGET_imx95_m7)
+    {
+        unsigned long t = (unsigned long)(m7_get_ticks() / IMX95_M7_HZ);
+        if (timer) *timer = t;
+        return t;
+    }
 #elif defined(TARGET_nxp_t2080) || defined(TARGET_nxp_t1024)
     if (ppc_tb_hz == 0)
         ppc_tb_hz = ppc_get_timebase_hz();
@@ -100,6 +212,18 @@ unsigned long my_time(unsigned long* timer)
         if (timer) *timer = t;
         return t;
     }
+#elif defined(TARGET_nxp_ls1028a)
+    if (a64_tb_hz == 0)
+        a64_tb_hz = a64_get_hz();
+    {
+        unsigned long t = (unsigned long)(a64_get_ticks() / a64_tb_hz);
+        if (timer) *timer = t;
+        return t;
+    }
+#elif defined(TARGET_mpfs250)
+    unsigned long t = (unsigned long)(mpfs_get_ticks() / RISCV_SMODE_TIMER_FREQ);
+    if (timer) *timer = t;
+    return t;
 #else
     /* Simple incrementing counter */
     tick_counter++;
@@ -124,12 +248,29 @@ double current_time(int reset)
 #elif defined(TARGET_lpc55s69)
     (void)reset;
     return (double)SysTick_time_ms / 1000.0;
+#elif defined(TARGET_imx95_m7)
+    /* Take a new origin rather than zeroing the counter: my_time() shares it
+     * and the benchmark resets once per algorithm, which would otherwise walk
+     * wolfCrypt's notion of wall-clock time backwards dozens of times a run. */
+    if (reset)
+        m7_start_ticks = m7_get_ticks();
+    return (double)(m7_get_ticks() - m7_start_ticks) / (double)IMX95_M7_HZ;
 #elif defined(TARGET_nxp_t2080) || defined(TARGET_nxp_t1024)
     if (ppc_tb_hz == 0)
         ppc_tb_hz = ppc_get_timebase_hz();
     if (reset)
         ppc_start_ticks = ppc_get_ticks();
     return (double)(ppc_get_ticks() - ppc_start_ticks) / (double)ppc_tb_hz;
+#elif defined(TARGET_nxp_ls1028a)
+    if (a64_tb_hz == 0)
+        a64_tb_hz = a64_get_hz();
+    if (reset)
+        a64_start_ticks = a64_get_ticks();
+    return (double)(a64_get_ticks() - a64_start_ticks) / (double)a64_tb_hz;
+#elif defined(TARGET_mpfs250)
+    if (reset)
+        mpfs_start_ticks = mpfs_get_ticks();
+    return (double)(mpfs_get_ticks() - mpfs_start_ticks) / (double)RISCV_SMODE_TIMER_FREQ;
 #else
     /* Simple counter-based timing */
     if (reset)

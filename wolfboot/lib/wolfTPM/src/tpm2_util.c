@@ -1,8 +1,8 @@
 /* tpm2_util.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -20,7 +20,9 @@
 
 #include <wolftpm/tpm2_types.h>
 #include <wolftpm/tpm2.h>
+#ifndef WOLFTPM_NO_STD_HEADERS
 #include <stdio.h>
+#endif
 
 #ifndef WOLFTPM2_NO_WOLFCRYPT
 #include <wolfssl/wolfcrypt/hash.h>
@@ -128,6 +130,9 @@ int TPM2_ConstantCompare(const byte* a, const byte* b, word32 len)
 void TPM2_ForceZero(void* mem, word32 len)
 {
     volatile byte* z = (volatile byte*)mem;
+    if (mem == NULL) {
+        return;
+    }
     while (len--) {
         *z++ = 0;
     }

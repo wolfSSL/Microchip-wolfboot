@@ -53,6 +53,9 @@ PKA_HandleTypeDef hpka = { };
 #define RCC_CFGR_SW_MSI               0x0
 #define RCC_CFGR_SW_PLL               0x3
 #define RCC_CFGR_SW_MASK              0x3
+/* SWS (bits 3:2, read-only) mirrors the SW encoding (RM0434 6.4.3): */
+#define RCC_CFGR_SWS_MSI              0x0
+#define RCC_CFGR_SWS_MASK             0x3
 
 #define RCC_CFGR_HPRE_MASK  0x0F
 #define RCC_CFGR_PPRE1_MASK 0x07
@@ -178,7 +181,8 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
 
     while (i < len) {
         flash_clear_errors();
-        if ((len - i > 3) && ((((address + i) & 0x07) == 0)  && ((((uint32_t)data) + i) & 0x07) == 0)) {
+        if ((len - i >= 8) && ((((address + i) & 0x07) == 0) &&
+                               ((((uint32_t)data) + i) & 0x07) == 0)) {
             uint32_t idx = i >> 2;
             src = (uint32_t *)data;
             dst = (uint32_t *)(address);
@@ -190,18 +194,17 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
             flash_wait_complete();
             i+=8;
         } else {
+            uint32_t unit_addr = (address + i) & (~0x07);
+            int off = (address + i) - unit_addr;
             uint32_t val[2];
             uint8_t *vbytes = (uint8_t *)(val);
-            int off = (address + i) - (((address + i) >> 3) << 3);
-            uint32_t base_addr = address & (~0x07); /* aligned to 64 bit */
-            int u32_idx = (i >> 2);
-            dst = (uint32_t *)(base_addr);
-            val[0] = dst[u32_idx];
-            val[1] = dst[u32_idx + 1];
+            dst = (uint32_t *)unit_addr;
+            val[0] = dst[0];
+            val[1] = dst[1];
             while ((off < 8) && (i < len))
                 vbytes[off++] = data[i++];
-            dst[u32_idx] = val[0];
-            dst[u32_idx + 1] = val[1];
+            dst[0] = val[0];
+            dst[1] = val[1];
             flash_wait_complete();
         }
     }
@@ -243,11 +246,17 @@ static void clock_pll_off(void)
     /* Enable internal high-speed oscillator. */
     RCC_CR |= RCC_CR_MSION;
     DMB();
-    while ((RCC_CFGR & RCC_CR_MSIRDY) == 0) {};
+    /* Wait for MSI to be ready. */
+    while ((RCC_CR & RCC_CR_MSIRDY) == 0)
+        ;
     /* Select MSI as SYSCLK source. */
     reg32 = RCC_CFGR;
     reg32 &= ~(RCC_CFGR_SW_MASK);
+    RCC_CFGR = reg32;
     DMB();
+    /* Wait for the switch to be confirmed (SWS, bits 3:2). */
+    while (((RCC_CFGR >> 2) & RCC_CFGR_SWS_MASK) != RCC_CFGR_SWS_MSI)
+        ;
     /* Turn off PLL */
     RCC_CR &= ~RCC_CR_PLLON;
     DMB();

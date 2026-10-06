@@ -550,12 +550,73 @@ set(WOLFBOOT_SOURCES "include/loader.h"
                      "src/loader.c")
 
 if((DEFINED WOLFCRYPT_TZ_PKCS11 AND NOT WOLFCRYPT_TZ_PKCS11 STREQUAL "0") OR
-   (DEFINED WOLFCRYPT_TZ_PSA AND NOT WOLFCRYPT_TZ_PSA STREQUAL "0"))
+   WOLFCRYPT_TZ_PSA)
     list(APPEND WOLFBOOT_SOURCES "src/store_sbrk.c")
 endif()
 
-if(DEFINED WOLFCRYPT_TZ_PSA AND NOT WOLFCRYPT_TZ_PSA STREQUAL "0")
+if(WOLFBOOT_DICE_HW AND NOT WOLFCRYPT_TZ_PSA)
+    message(FATAL_ERROR "WOLFBOOT_DICE_HW requires WOLFCRYPT_TZ_PSA=1")
+endif()
+
+if(WOLFCRYPT_TZ_PSA)
     list(APPEND WOLFBOOT_SOURCES "src/dice/dice.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_cbor.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_util.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_alg.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_ecc.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_hdr.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_key.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_struct.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_recipient.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_sign1.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_sign.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_countersign.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_encrypt0.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_mac0.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_encrypt.c")
+    list(APPEND WOLFBOOT_SOURCES "lib/wolfCOSE/src/wolfcose_mac.c")
+    # Relative glob: WOLFBOOT_SOURCES entries get ${WOLFBOOT_ROOT}/ prepended below
+    file(GLOB WOLFPSA_SRCS RELATIVE ${WOLFBOOT_ROOT} ${WOLFBOOT_ROOT}/lib/wolfPSA/src/*.c)
+    list(FILTER WOLFPSA_SRCS EXCLUDE REGEX "(posix|zephyr)\\.c$")
+    list(APPEND WOLFBOOT_SOURCES ${WOLFPSA_SRCS})
+    list(APPEND WOLFBOOT_SOURCES
+        "src/psa_store.c"
+        "src/arm_tee_psa_veneer.c"
+        "src/arm_tee_psa_ipc.c")
+    list(APPEND WOLFBOOT_INCLUDE_DIRS ${WOLFBOOT_ROOT}/lib/wolfCOSE/include)
+    list(APPEND WOLFBOOT_INCLUDE_DIRS ${WOLFBOOT_ROOT}/lib/wolfPSA ${WOLFBOOT_ROOT}/lib/wolfPSA/wolfpsa)
+    list(APPEND WOLFBOOT_DEFS WOLFCRYPT_TZ_PSA WOLFCRYPT_SECURE_MODE
+        WOLFSSL_PSA_ENGINE WC_ALLOW_ECC_ZERO_HASH WOLFSSL_AES_TOUCH_LINES
+        WOLFPSA_CUSTOM_STORE NO_DES3 NO_DES3_TLS_SUITES
+        WOLFCOSE_LEAN WOLFCOSE_ENABLE_EXT_SIGN)
+    if(WOLFBOOT_DICE_HW)
+        list(APPEND WOLFBOOT_DEFS WOLFBOOT_DICE_HW)
+        if(WOLFBOOT_TARGET STREQUAL "mcxn")
+            # DICE_HW on MCXN derives the UDS through the ELS PKC component
+            # of the NXP MCUXpresso SDK.
+            set(MCUX_SDK_ROOT "" CACHE PATH "Path to MCUXpresso SDK for MCXN")
+
+            if(NOT MCUX_SDK_ROOT OR NOT EXISTS "${MCUX_SDK_ROOT}")
+                message(FATAL_ERROR
+                    "WOLFBOOT_TARGET=mcxn with WOLFBOOT_DICE_HW requires MCUX_SDK_ROOT "
+                    "to point to a valid MCUXpresso SDK for MCXN (components/els_pkc)."
+                )
+            endif()
+
+            set(ELS_PKC ${MCUX_SDK_ROOT}/components/els_pkc)
+            list(APPEND WOLFBOOT_INCLUDE_DIRS
+                ${ELS_PKC}/includes
+                ${ELS_PKC}/src/comps/mcuxClEls/inc
+                ${ELS_PKC}/src/platforms/mcxn
+                ${ELS_PKC}/src/platforms/mcxn/inc)
+            # Absolute SDK paths: appended after the WOLFBOOT_ROOT prefix is applied
+            set(MCXN_ELS_SOURCES
+                ${ELS_PKC}/src/comps/mcuxClEls/src/mcuxClEls_Common.c
+                ${ELS_PKC}/src/comps/mcuxClEls/src/mcuxClEls_Kdf.c
+                ${ELS_PKC}/src/comps/mcuxClEls/src/mcuxClEls_KeyManagement.c
+                ${ELS_PKC}/src/comps/mcuxClEls/src/mcuxClEls_Ecc.c)
+        endif()
+    endif()
 endif()
 
 # build bin-assemble tool Windows
@@ -752,6 +813,14 @@ list(APPEND WOLFBOOT_DEFS
     WOLFBOOT_ORIGIN=${WOLFBOOT_ORIGIN}
     BOOTLOADER_PARTITION_SIZE=${BOOTLOADER_PARTITION_SIZE})
 
+# Opt-out for targets that deliberately place a partition inside the
+# bootloader write-protect region (e.g. cypsoc6). Mirrors the GNU Make
+# WOLFBOOT_ALLOW_PART_OVERLAP flag; without it the geometry guards in
+# include/target.h fire on those layouts.
+if(WOLFBOOT_ALLOW_PART_OVERLAP)
+    list(APPEND WOLFBOOT_DEFS WOLFBOOT_ALLOW_PART_OVERLAP=1)
+endif()
+
 if(${WOLFBOOT_TARGET} STREQUAL "x86_64_efi")
     if(NOT DEFINED GNU_EFI_LIB_PATH)
         set(GNU_EFI_LIB_PATH /usr/lib)
@@ -772,7 +841,7 @@ endif()
 #---------------------------------------------------------------------------------------------
 if(SIGN STREQUAL "NONE")
     list(APPEND KEYTOOL_OPTIONS --no-sign)
-    message(STATUS "Image signing disabled")
+    message(WARNING "SIGN=NONE / WOLFBOOT_NO_SIGN=1 disables firmware signature verification; images are NOT authenticated. Do not use in production.")
     set(WOLFBOOT_SIGNING_PRIVATE_KEY
         ""
         CACHE INTERNAL "")
@@ -1001,6 +1070,7 @@ if(EXT_FLASH)
 endif()
 
 if(ALLOW_DOWNGRADE)
+    message(WARNING "ALLOW_DOWNGRADE=1 disables anti-rollback enforcement; signed older firmware images can replace newer ones")
     list(APPEND WOLFBOOT_DEFS ALLOW_DOWNGRADE)
 endif()
 
@@ -1009,6 +1079,7 @@ if(NVM_FLASH_WRITEONCE)
 endif()
 
 if(DISABLE_BACKUP)
+    message(WARNING "DISABLE_BACKUP=1 disables power-fail-safe updates; losing power during an update can leave BOOT partially written and unrecoverable")
     list(APPEND WOLFBOOT_DEFS DISABLE_BACKUP)
 endif()
 
@@ -1037,6 +1108,7 @@ endif()
 list(APPEND WOLFBOOT_SOURCES ${UPDATE_SOURCES})
 
 list(TRANSFORM WOLFBOOT_SOURCES PREPEND ${WOLFBOOT_ROOT}/)
+list(APPEND WOLFBOOT_SOURCES ${MCXN_ELS_SOURCES})
 
 #---------------------------------------------------------------------------------------------
 # Hash settings
@@ -1142,8 +1214,15 @@ if(TZEN)
     endif()
 endif()
 
+# nRF5340 debug-UART CRLF conversion (host-testable, no nrfx registers)
+set(WOLFBOOT_NRF5340_UART_SRC "")
+if(WOLFBOOT_TARGET MATCHES "^nrf5340")
+    set(WOLFBOOT_NRF5340_UART_SRC hal/nrf5340_uart.c)
+endif()
+
 target_sources(wolfboothal PRIVATE include/hal.h hal/hal.c hal/${WOLFBOOT_TARGET}.c ${WOLFBOOT_FLASH_SOURCES}
-                                   ${PARTITION_SOURCE} ${WOLFBOOT_TZ_HAL_SOURCES})
+                                   ${PARTITION_SOURCE} ${WOLFBOOT_TZ_HAL_SOURCES}
+                                   ${WOLFBOOT_NRF5340_UART_SRC})
 
 
 #---------------------------------------------------------------------------------------------
@@ -1535,5 +1614,10 @@ if(HOST_IS_MSVC) # Some VS2022 helpers
     set_property(TARGET sign_host PROPERTY VS_DEBUGGER_WORKING_DIRECTORY
                         "${CMAKE_CURRENT_BINARY_DIR}")
 endif() # HOST_IS_MSVC VS2022 helpers
+
+#---------------------------------------------------------------------------------------------
+# SBOM generation (CycloneDX 1.6 + SPDX 2.3), shares the engine used by `make sbom`
+#---------------------------------------------------------------------------------------------
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/sbom.cmake)
 
 message(STATUS "End [WOLFBOOT_ROOT]/CmakeLists.txt")

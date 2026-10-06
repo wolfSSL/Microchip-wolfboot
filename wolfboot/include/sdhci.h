@@ -238,6 +238,7 @@
 #define SDHCI_SRS11_DTCV_SHIFT  16
 #define SDHCI_SRS11_DTCV_MASK   (0x0FU << 16)
 #define SDHCI_SRS11_RESET_DAT_CMD   ((1U << 25) | (1U << 26))
+#define SDHCI_SRS11_RESET_ALL       (1U << 24)
 
 /* SRS12 - Normal Interrupt Status */
 #define SDHCI_SRS12_CC          (1U << 0)   /* Command complete */
@@ -302,6 +303,9 @@
 #define SDHCI_SRS15_HV4E        (1U << 28)  /* Host version 4 enable */
 #define SDHCI_SRS15_UMS_MASK    (0x7U << 16)
 #define SDHCI_SRS15_UMS_SDR25   (0x1U << 16)
+/* Host Control 2 occupies the upper 16 bits of SRS15, so 1.8V Signaling
+ * Enable (bit 3 of Host Control 2) lands at bit 19. */
+#define SDHCI_SRS15_V18SE       (1U << 19)  /* 1.8V signaling enable */
 #define SDHCI_SRS15_DSS_MASK    (0x3U << 20)
 #define SDHCI_SRS15_DSS_TYPE_B  (0x0U << 20)
 #define SDHCI_SRS15_EXTNG       (1U << 22)  /* Execute tuning */
@@ -435,6 +439,10 @@ int sdhci_cmd(uint32_t cmd_index, uint32_t cmd_arg, uint8_t resp_type);
 /* IRQ handler (call from platform IRQ) */
 void sdhci_irq_handler(void);
 
+/* Full controller software reset for OS handoff (returns host registers to
+ * power-on defaults so the OS driver finds a clean controller) */
+void sdhci_shutdown(void);
+
 /* ============================================================================
  * HAL Interface (platform must implement in target HAL file)
  * ============================================================================ */
@@ -455,6 +463,13 @@ void sdhci_reg_write(uint32_t offset, uint32_t val);
 
 /* Platform initialization (clocks, resets, pin mux, debounce) */
 void sdhci_platform_init(void);
+
+/* Optional platform clock hook (weak no-op default in src/sdhci.c). Called
+ * from sdhci_set_clock with the requested card clock and the CAPS-derived
+ * base; returns the base clock (kHz) to divide from, or 0 on error. Platforms
+ * whose clock tree is owned by a PMC/BPMP (Tegra) set the module clock equal
+ * to the card clock and return that, keeping the internal divider ~1. */
+uint32_t sdhci_platform_set_clock(uint32_t clock_khz, uint32_t base_clk_khz);
 
 /* Platform interrupt setup (PLIC/NVIC/GIC/etc.) */
 void sdhci_platform_irq_init(void);

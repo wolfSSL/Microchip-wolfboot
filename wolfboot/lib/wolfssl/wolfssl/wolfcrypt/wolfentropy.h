@@ -9,6 +9,10 @@
  * https://www.wolfssl.com
  */
 
+/*!
+    \file wolfssl/wolfcrypt/wolfentropy.h
+*/
+
 #ifndef WOLFENTROPY_H
 #define WOLFENTROPY_H
 
@@ -53,6 +57,8 @@ WOLFSSL_API int wc_Entropy_OnDemandTest(void);
 
 WOLFSSL_LOCAL int Entropy_Init(void);
 WOLFSSL_LOCAL void Entropy_Final(void);
+
+WOLFSSL_API const char* wc_Entropy_GetVersion(void);
 
 #ifdef __cplusplus
     } /* extern "C" */

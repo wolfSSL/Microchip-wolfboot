@@ -15,7 +15,10 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-sha256-asm.c
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_32_SHA256_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -40,7 +43,7 @@
 #include <wolfssl/wolfcrypt/sha256.h>
 
 #ifndef NO_SHA256
-#ifdef WOLFSSL_ARMASM_NO_NEON
+#if !defined(WOLFSSL_ARMASM_NO_BASE_IMPL) || defined(WOLFSSL_ARMASM_NO_NEON)
 XALIGNED(8) static const word32 L_SHA256_transform_len_k[] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -2572,8 +2575,10 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len_base(wc_Sha256* sha256,
     );
 }
 
-#else
-#ifdef WOLFSSL_ARMASM_NO_HW_CRYPTO
+#endif /* !WOLFSSL_ARMASM_NO_BASE_IMPL || WOLFSSL_ARMASM_NO_NEON */
+#ifndef WOLFSSL_ARMASM_NO_NEON
+#if !defined(WOLFSSL_ARMASM_NO_NEON_IMPL) || \
+        defined(WOLFSSL_ARMASM_NO_HW_CRYPTO)
 XALIGNED(8) static const word32 L_SHA256_transform_neon_len_k[] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -3650,7 +3655,8 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len_neon(wc_Sha256* sha256,
     );
 }
 
-#else
+#endif /* !WOLFSSL_ARMASM_NO_NEON_IMPL || WOLFSSL_ARMASM_NO_HW_CRYPTO */
+#ifndef WOLFSSL_ARMASM_NO_HW_CRYPTO
 XALIGNED(8) static const word32 L_SHA256_trans_crypto_len_k[] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -3851,7 +3857,7 @@ WC_OMIT_FRAME_POINTER void Transform_Sha256_Len_crypto(wc_Sha256* sha256,
 #endif /* WOLFSSL_ARMASM_NO_HW_CRYPTO */
 #endif /* WOLFSSL_ARMASM_NO_NEON */
 #endif /* !NO_SHA256 */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #endif /* WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

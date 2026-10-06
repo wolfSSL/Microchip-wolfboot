@@ -46,7 +46,10 @@ int NOINLINEFUNCTION wolfBoot_constant_compare(const uint8_t* a, const uint8_t* 
 
     return (diff != 0U) ? 1 : 0;
 }
+#endif
 
+#if defined(WOLFBOOT_TPM_SEAL) || defined(WOLFBOOT_TPM_KEYSTORE) || \
+    defined(WOLFBOOT_MEASURED_BOOT)
 void wolfBoot_print_hexstr(const unsigned char* bin, unsigned long sz,
     unsigned long maxLine)
 {
@@ -192,6 +195,11 @@ static int TPM2_IoCb(TPM2_CTX* ctx, const uint8_t* txBuf, uint8_t* rxBuf,
     /* On error make sure SPI is de-asserted */
     else {
         spi_xfer(SPI_CS_TPM, NULL, NULL, 0, 0);
+    #ifdef WOLFTPM_ADV_IO
+        /* don't leave the command (may hold an authValue) on the stack */
+        TPM2_ForceZero(txBuf, sizeof(txBuf));
+        TPM2_ForceZero(rxBuf, sizeof(rxBuf));
+    #endif
         return ret;
     }
 #else /* Send Entire Message - no wait states */
@@ -211,6 +219,10 @@ static int TPM2_IoCb(TPM2_CTX* ctx, const uint8_t* txBuf, uint8_t* rxBuf,
         wolfBoot_print_bin(buf, size);
     #endif
     }
+    /* the staging buffers hold the raw command / response, which can carry
+     * a plaintext authValue - wipe them like TPM2_TIS_Read/Write() do */
+    TPM2_ForceZero(txBuf, sizeof(txBuf));
+    TPM2_ForceZero(rxBuf, sizeof(rxBuf));
 #endif
 
     return ret;
@@ -317,7 +329,7 @@ static int self_sha384(uint8_t *hash)
  * TPM2_PCR_Extend. Optionally, if DEBUG_WOLFTPM or WOLFBOOT_DEBUG_TPM defined,
  * prints debug info.
  *
- * @param[in] pcrIndex The PCR Index (0-24 is valid range).
+ * @param[in] pcrIndex The PCR Index (0-23 is valid range).
  * @param[in] hash Pointer to the hash value to extend into the PCR.
  * @param[in] line Line number where the function is called (for debugging).
  * @return 0 on success, an error code on failure.
@@ -374,7 +386,7 @@ int wolfBoot_load_pubkey(const uint8_t* pubkey_hint, WOLFTPM2_KEY* pubKey,
     uint32_t key_type;
     int key_slot = -1;
     uint8_t *hdr;
-    uint16_t hdrSz;
+    int hdrSz;
 
     *pAlg = TPM_ALG_NULL;
 
@@ -387,7 +399,7 @@ int wolfBoot_load_pubkey(const uint8_t* pubkey_hint, WOLFTPM2_KEY* pubKey,
         key_type = keystore_get_key_type(key_slot);
         hdr = keystore_get_buffer(key_slot);
         hdrSz = keystore_get_size(key_slot);
-        if (hdr == NULL || hdrSz <= 0)
+        if (hdr == NULL || hdrSz <= 0 || hdrSz > KEYSTORE_PUBKEY_SIZE)
             rc = -1;
     }
     /* Parse public key to TPM public key. Note: this loads as temp handle,
@@ -701,6 +713,8 @@ int wolfBoot_store_blob(TPMI_RH_NV_AUTH authHandle, uint32_t nvIndex,
         wolfBoot_printf("Error %d writing blob to NV index %x (error %s)\n",
             rc, nv.handle.hndl, wolfTPM2_GetRCString(rc));
     }
+    /* Scrub the stack NV handle: it carries the authValue copy. */
+    TPM2_ForceZero(&nv, sizeof(nv));
     return rc;
 }
 
@@ -773,6 +787,9 @@ int wolfBoot_read_blob(uint32_t nvIndex, WOLFTPM2_KEYBLOB* blob,
         wolfBoot_printf("Error %d reading blob from NV index %x (error %s)\n",
             rc, nv.handle.hndl, wolfTPM2_GetRCString(rc));
     }
+    TPM2_ForceZero(&nv, sizeof(nv));
+    /* Clear the NV auth value from the device auth slot before returning. */
+    wolfTPM2_UnsetAuth(&wolftpm_dev, 0);
     return rc;
 }
 
@@ -806,6 +823,7 @@ int wolfBoot_delete_blob(TPMI_RH_NV_AUTH authHandle, uint32_t nvIndex,
         wolfBoot_printf("Error %d deleting blob from NV index %x (error %s)\n",
             rc, nv.handle.hndl, wolfTPM2_GetRCString(rc));
     }
+    TPM2_ForceZero(&nv, sizeof(nv));
     return rc;
 }
 
@@ -889,6 +907,8 @@ int wolfBoot_seal_blob(const uint8_t* pubkey_hint,
 
     wolfTPM2_UnloadHandle(&wolftpm_dev, &policy_session.handle);
     wolfTPM2_UnsetAuthSession(&wolftpm_dev, 1, &wolftpm_session);
+    /* Scrub the session object: it holds the SRK-derived session key. */
+    TPM2_ForceZero(&policy_session, sizeof(policy_session));
 
     return rc;
 }
@@ -954,6 +974,8 @@ int wolfBoot_seal_auth(const uint8_t* pubkey_hint,
         wolfBoot_printf("Error %d sealing secret! (%s)\n",
             rc, wolfTPM2_GetRCString(rc));
     }
+    /* The blob holds the plaintext authValue copy used for the seal. */
+    TPM2_ForceZero(&seal_blob, sizeof(seal_blob));
     return rc;
 }
 int wolfBoot_seal(const uint8_t* pubkey_hint,
@@ -1150,6 +1172,10 @@ exit:
     wolfTPM2_UnloadHandle(&wolftpm_dev, &seal_blob->handle);
     wolfTPM2_UnloadHandle(&wolftpm_dev, &policy_session.handle);
     wolfTPM2_UnsetAuthSession(&wolftpm_dev, 1, &wolftpm_session);
+    /* Slot 0 held the seal auth (password path) or the policy session:
+     * clear it so no auth value outlives the unseal. */
+    wolfTPM2_UnsetAuth(&wolftpm_dev, 0);
+    TPM2_ForceZero(&policy_session, sizeof(policy_session));
 
     return rc;
 }
@@ -1183,6 +1209,7 @@ int wolfBoot_unseal_auth(const uint8_t* pubkey_hint,
         wolfBoot_printf("Error %d unsealing secret! (%s)\n",
             rc, wolfTPM2_GetRCString(rc));
     }
+    TPM2_ForceZero(&seal_blob, sizeof(seal_blob));
     return rc;
 }
 int wolfBoot_unseal(const uint8_t* pubkey_hint,
@@ -1324,14 +1351,27 @@ int CSME_NSE_API wolfBoot_tpm2_read_pcr(uint8_t pcrIndex, uint8_t* digest, int* 
 
 int CSME_NSE_API wolfBoot_tpm2_read_cert(uint32_t handle, uint8_t* cert, uint32_t* certSz)
 {
+    uint32_t certCapacity;
+    int rc;
+
     if (WOLFBOOT_TPM_NS_RW(certSz, sizeof(*certSz)) == NULL) {
         return BAD_FUNC_ARG;
     }
-    if (WOLFBOOT_TPM_NS_RW(cert, *certSz) == NULL) {
+    /* single-fetch *certSz so it cannot be re-read after validation: wolfTPM
+     * checks the capacity again before filling 'cert', and a racing non-secure
+     * agent would otherwise enlarge it in between to reopen the write past the
+     * range validated here */
+    certCapacity = *(volatile const uint32_t*)certSz;
+    if (certCapacity == 0) {
+        return BAD_FUNC_ARG;
+    }
+    if (WOLFBOOT_TPM_NS_RW(cert, certCapacity) == NULL) {
         return BAD_FUNC_ARG;
     }
     wolfTPM2_SetAuthPassword(&wolftpm_dev, 0, NULL);
-    return wolfTPM2_NVReadCert(&wolftpm_dev, handle, cert, certSz);
+    rc = wolfTPM2_NVReadCert(&wolftpm_dev, handle, cert, &certCapacity);
+    *certSz = certCapacity;
+    return rc;
 }
 
 #ifdef WOLFTPM_MFG_IDENTITY
@@ -1436,6 +1476,8 @@ int CSME_NSE_API wolfBoot_tpm2_get_timestamp(WOLFTPM2_KEY* aik, GetTime_Out* get
 
     wolfTPM2_UnsetAuth(&wolftpm_dev, 1);
     wolfTPM2_UnsetAuth(&wolftpm_dev, 0);
+    /* EH authValue consumed; clear it from the stack */
+    TPM2_ForceZero(&eh_handle, sizeof(eh_handle));
 
     return rc;
 }
@@ -1618,6 +1660,17 @@ void wolfBoot_tpm2_deinit(void)
 #endif /* WOLFBOOT_TPM_KEYSTORE */
 
     wolfTPM2_Cleanup(&wolftpm_dev);
+
+#if defined(WOLFBOOT_TPM_KEYSTORE) || defined(WOLFBOOT_TPM_SEAL)
+    /* The OS takes over from here: leave no session key or SRK auth in
+     * SRAM. UnloadHandle flushes the TPM-side context but is not
+     * documented to clear handle->auth. */
+    TPM2_ForceZero(&wolftpm_session, sizeof(wolftpm_session));
+    TPM2_ForceZero(&wolftpm_srk, sizeof(wolftpm_srk));
+#endif
+    /* The device object also holds the last auth slot contents and the
+     * last command/response buffer: scrub it on every build path. */
+    TPM2_ForceZero(&wolftpm_dev, sizeof(wolftpm_dev));
 }
 
 /**
@@ -1687,6 +1740,9 @@ int wolfBoot_check_rot(int key_slot, uint8_t* pubkey_hint)
     }
     wolfTPM2_UnsetAuthSession(&wolftpm_dev, 1, &wolftpm_session);
 
+    TPM2_ForceZero(&nv, sizeof(nv));
+    /* Clear the NV auth value from the device auth slot before returning. */
+    wolfTPM2_UnsetAuth(&wolftpm_dev, 0);
     return rc;
 }
 #endif

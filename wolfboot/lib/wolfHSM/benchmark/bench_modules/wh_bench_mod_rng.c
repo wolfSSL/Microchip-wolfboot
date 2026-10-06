@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -16,10 +16,9 @@
 
 #if !defined(WC_NO_RNG)
 
-int _benchRng(whClientContext* client, whBenchOpContext* ctx, int id, int devId)
+int _benchRng(whClientContext* client, whBenchOpContext* ctx, int id,
+              int useDma)
 {
-    (void)client;
-
     int      ret = 0;
     WC_RNG   rng;
     int      i              = 0;
@@ -27,7 +26,9 @@ int _benchRng(whClientContext* client, whBenchOpContext* ctx, int id, int devId)
     uint8_t* out            = WH_BENCH_DATA_OUT_BUFFER;
     word32   outLen         = WOLFHSM_CFG_BENCH_DATA_BUFFER_SIZE;
 
-    ret = wc_InitRng_ex(&rng, NULL, devId);
+    (void)wh_Client_SetDmaMode(client, useDma);
+
+    ret = wc_InitRng_ex(&rng, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_BENCH_PRINTF("Failed to wc_InitRng_ex %d\n", ret);
         return ret;
@@ -80,7 +81,7 @@ int wh_Bench_Mod_Rng(whClientContext* client, whBenchOpContext* ctx, int id,
 {
     (void)params;
 
-    return _benchRng(client, ctx, id, WH_DEV_ID);
+    return _benchRng(client, ctx, id, 0);
 }
 
 #endif /* !defined(WC_NO_RNG) */

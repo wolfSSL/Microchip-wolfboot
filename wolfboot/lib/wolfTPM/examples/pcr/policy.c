@@ -1,8 +1,8 @@
 /* policy.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -84,7 +84,7 @@ int TPM2_PCR_Policy_Test(void* userCtx, int argc, char *argv[])
         else if (XSTRCMP(argv[argc-1], "-xor") == 0) {
             paramEncAlg = TPM_ALG_XOR;
         }
-        else if (XMEMCMP(argv[argc-1], "-digest=", XSTRLEN("-digest=")) == 0) {
+        else if (XSTRNCMP(argv[argc-1], "-digest=", XSTRLEN("-digest=")) == 0) {
             const char *digestStr, *end;
             digestStr = argv[argc-1] + XSTRLEN("-digest=");
             end = XSTRSTR(digestStr, " ");
@@ -98,13 +98,13 @@ int TPM2_PCR_Policy_Test(void* userCtx, int argc, char *argv[])
                 digestLen > sizeof(digest)*2) {
                 printf("Invalid digest! Must be 16 or 32 bytes of hex like 01020304050607080910111213141516\n");
                 usage();
-                return 0;
+                return BAD_FUNC_ARG;
             }
             hexRet = hexToByte(digestStr, digest, digestLen);
             if (hexRet < 0) {
                 printf("Invalid hex digest string\n");
                 usage();
-                return 0;
+                return BAD_FUNC_ARG;
             }
             digestLen = (word32)hexRet;
         }
@@ -114,7 +114,7 @@ int TPM2_PCR_Policy_Test(void* userCtx, int argc, char *argv[])
             if (pcrIndex < (int)PCR_FIRST || pcrIndex > (int)PCR_LAST) {
                 printf("PCR index is out of range (0-23)\n");
                 usage();
-                return 0;
+                return BAD_FUNC_ARG;
             }
         }
         else {
@@ -135,15 +135,15 @@ int TPM2_PCR_Policy_Test(void* userCtx, int argc, char *argv[])
     }
     printf("wolfTPM2_Init: success\n");
 
-    if (paramEncAlg != TPM_ALG_NULL) {
-        /* Start an authenticated policy session (salted / unbound) */
-        rc = wolfTPM2_StartSession(&dev, &tpmSession, NULL, NULL,
-            TPM_SE_POLICY, paramEncAlg);
-        if (rc != 0) goto exit;
-        printf("TPM2_StartAuthSession: sessionHandle 0x%x\n",
-            (word32)tpmSession.handle.hndl);
+    /* Start an authenticated policy session (salted / unbound) */
+    rc = wolfTPM2_StartSession(&dev, &tpmSession, NULL, NULL,
+        TPM_SE_POLICY, paramEncAlg);
+    if (rc != 0) goto exit;
+    printf("TPM2_StartAuthSession: sessionHandle 0x%x\n",
+        (word32)tpmSession.handle.hndl);
 
-        /* set session for authorization of the storage key */
+    if (paramEncAlg != TPM_ALG_NULL) {
+        /* set session for parameter encryption */
         rc = wolfTPM2_SetAuthSession(&dev, 0, &tpmSession,
             (TPMA_SESSION_decrypt | TPMA_SESSION_encrypt | TPMA_SESSION_continueSession));
         if (rc != 0) goto exit;

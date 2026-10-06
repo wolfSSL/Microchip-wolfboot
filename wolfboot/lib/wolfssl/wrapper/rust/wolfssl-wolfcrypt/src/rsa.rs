@@ -85,13 +85,13 @@ impl RSA {
     #[cfg(sha512)]
     pub const HASH_TYPE_SHA512     : u32 = sys::wc_HashType_WC_HASH_TYPE_SHA512;
     pub const HASH_TYPE_MD5_SHA    : u32 = sys::wc_HashType_WC_HASH_TYPE_MD5_SHA;
-    #[cfg(sha3)]
+    #[cfg(sha3_224)]
     pub const HASH_TYPE_SHA3_224   : u32 = sys::wc_HashType_WC_HASH_TYPE_SHA3_224;
-    #[cfg(sha3)]
+    #[cfg(sha3_256)]
     pub const HASH_TYPE_SHA3_256   : u32 = sys::wc_HashType_WC_HASH_TYPE_SHA3_256;
-    #[cfg(sha3)]
+    #[cfg(sha3_384)]
     pub const HASH_TYPE_SHA3_384   : u32 = sys::wc_HashType_WC_HASH_TYPE_SHA3_384;
-    #[cfg(sha3)]
+    #[cfg(sha3_512)]
     pub const HASH_TYPE_SHA3_512   : u32 = sys::wc_HashType_WC_HASH_TYPE_SHA3_512;
     pub const HASH_TYPE_BLAKE2B    : u32 = sys::wc_HashType_WC_HASH_TYPE_BLAKE2B;
     pub const HASH_TYPE_BLAKE2S    : u32 = sys::wc_HashType_WC_HASH_TYPE_BLAKE2S;
@@ -1067,9 +1067,6 @@ impl RSA {
 
     /// Check the PSS data to ensure the signature matches.
     ///
-    /// `set_rng()` must be called previously when wolfSSL is built with
-    /// WC_RSA_BLINDING option enabled.
-    ///
     /// # Parameters
     ///
     /// * `din`: Hash of data being verified.
@@ -1291,7 +1288,7 @@ impl RSA {
     /// # Example
     ///
     /// ```rust
-    /// #[cfg(all(rsa_direct, rsa_const_api))]
+    /// #[cfg(all(rsa_direct, rsa_const_api, random))]
     /// {
     /// use std::fs;
     /// use wolfssl_wolfcrypt::random::RNG;
@@ -1314,7 +1311,7 @@ impl RSA {
     /// assert_eq!(plain_out, plain);
     /// }
     /// ```
-    #[cfg(all(rsa_direct, rsa_const_api))]
+    #[cfg(all(rsa_direct, rsa_const_api, random))]
     pub fn rsa_direct(&mut self, din: &[u8], dout: &mut [u8], typ: i32, rng: &RNG) -> Result<usize, i32> {
         let din_size = crate::buffer_len_to_u32(din.len())?;
         let mut dout_size = crate::buffer_len_to_u32(dout.len())?;

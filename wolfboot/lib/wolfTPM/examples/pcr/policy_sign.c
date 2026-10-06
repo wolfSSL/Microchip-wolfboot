@@ -1,8 +1,8 @@
 /* policy_sign.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -186,17 +186,17 @@ static int PolicySign(TPM_ALG_ID alg, const char* keyFile, const char* password,
                 rc = mp_init_multi(&r, &s, NULL, NULL, NULL, NULL);
                 if (rc == 0) {
                     rc = wc_ecc_sign_hash_ex(hash, hashSz, &rng, &key.ecc, &r, &s);
-                }
-                if (rc == 0) {
-                    word32 keySz = key.ecc.dp->size;
-                    *sigSz = keySz * 2;
-                    /* Pre-zero in case mp export fails and leaves the buffer
-                     * partially written. Fixed-width export of r and s
-                     * removes the data-dependent wire offset that previously
-                     * leaked the leading-zero count. */
-                    XMEMSET(sig, 0, *sigSz);
-                    mp_to_unsigned_bin_len(&r, &sig[0], keySz);
-                    mp_to_unsigned_bin_len(&s, &sig[keySz], keySz);
+                    if (rc == 0) {
+                        word32 keySz = key.ecc.dp->size;
+                        *sigSz = keySz * 2;
+                        /* Pre-zero in case mp export fails and leaves the buffer
+                         * partially written. Fixed-width export of r and s
+                         * removes the data-dependent wire offset that previously
+                         * leaked the leading-zero count. */
+                        XMEMSET(sig, 0, *sigSz);
+                        mp_to_unsigned_bin_len(&r, &sig[0], keySz);
+                        mp_to_unsigned_bin_len(&s, &sig[keySz], keySz);
+                    }
                     mp_clear(&r);
                     mp_clear(&s);
                 }
@@ -282,15 +282,17 @@ int TPM2_PCR_PolicySign_Example(void* userCtx, int argc, char *argv[])
         else if (XSTRNCMP(argv[argc-1], "-pcrdigest=", XSTRLEN("-pcrdigest=")) == 0) {
             const char* hashHexStr = argv[argc-1] + XSTRLEN("-pcrdigest=");
             int hashHexStrLen = (int)XSTRLEN(hashHexStr);
-            if (hashHexStrLen > (int)sizeof(pcrDigest)*2+1)
-                pcrDigestSz = -1;
+            int hexRet;
+            if (hashHexStrLen > (int)sizeof(pcrDigest)*2)
+                hexRet = -1;
             else
-                pcrDigestSz = hexToByte(hashHexStr, pcrDigest, hashHexStrLen);
-            if (pcrDigestSz <= 0) {
+                hexRet = hexToByte(hashHexStr, pcrDigest, hashHexStrLen);
+            if (hexRet <= 0) {
                 fprintf(stderr, "Invalid PCR hash length\n");
                 usage();
                 return -1;
             }
+            pcrDigestSz = (word32)hexRet;
         }
         else if (XSTRNCMP(argv[argc-1], "-password=",
                 XSTRLEN("-password=")) == 0) {

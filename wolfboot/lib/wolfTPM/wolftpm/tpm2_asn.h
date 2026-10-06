@@ -1,8 +1,8 @@
 /* tpm2_asn.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -133,7 +133,10 @@ WOLFTPM_API int TPM2_ASN_DecodeRsaPubKey(uint8_t* input, int inputSz,
 
 /*!
     \ingroup ASN
-    \brief Removes PKCS#1 v1.5 padding from RSA signature
+    \brief Removes PKCS#1 v1.5 padding from RSA signature. The padding checks
+        are not constant time, so this must only be used on public signature
+        data such as the output of an RSA public key operation. Do not apply it
+        to a value recovered with a private key.
     \param pSig Pointer to buffer containing padded signature, updated to point
         to unpadded data
     \param sigSz Size of signature buffer, updated with unpadded size

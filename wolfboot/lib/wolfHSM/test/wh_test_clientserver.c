@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -612,8 +612,19 @@ static int _testClientCounter(whClientContext* client)
     uint32_t       reclaim_size;
     whNvmId        avail_objects;
     whNvmId        reclaim_objects;
+    whNvmId        baseAvailObjects;
 
     WH_TEST_PRINT("Testing NVM counters...\n");
+
+    /* Capture the available-object baseline before creating any counters.
+     * When the server is configured with an NVM-backed auth manager it stores
+     * user records as NVM objects, so an "empty" NVM is not necessarily
+     * WOLFHSM_CFG_NVM_OBJECT_COUNT objects. */
+    WH_TEST_RETURN_ON_FAIL(rc = wh_Client_NvmGetAvailable(
+                               client, &server_rc, &avail_size, &avail_objects,
+                               &reclaim_size, &reclaim_objects));
+    WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
+    baseAvailObjects = avail_objects;
 
     WH_TEST_RETURN_ON_FAIL(wh_Client_CounterReset(client, counterId, &counter));
     WH_TEST_ASSERT_RETURN(counter == 0);
@@ -669,7 +680,7 @@ static int _testClientCounter(whClientContext* client)
             wh_Client_CounterRead(client, (whNvmId)i, &counter));
     }
 
-    /* Ensure NVM is empty */
+    /* Ensure NVM is back to the pre-test baseline */
     WH_TEST_RETURN_ON_FAIL(rc = wh_Client_NvmGetAvailable(
                                client, &server_rc, &avail_size, &avail_objects,
                                &reclaim_size, &reclaim_objects));
@@ -679,7 +690,7 @@ static int _testClientCounter(whClientContext* client)
         rc, (int)server_rc, (int)avail_size, (int)avail_objects,
         (int)reclaim_size, (int)reclaim_objects);
     WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
-    WH_TEST_ASSERT_RETURN(avail_objects == WOLFHSM_CFG_NVM_OBJECT_COUNT);
+    WH_TEST_ASSERT_RETURN(avail_objects == baseAvailObjects);
 
     return WH_ERROR_OK;
 }
@@ -1440,6 +1451,12 @@ int whTest_ClientServerClientConfig(whClientConfig* clientCfg)
     uint32_t reclaim_size = 0;
     whNvmId avail_objects = 0;
     whNvmId reclaim_objects = 0;
+    /* Baseline count of available NVM objects before this test writes any.
+     * When the server is configured with an NVM-backed auth manager it stores
+     * user records as NVM objects, so the empty baseline is not necessarily
+     * WOLFHSM_CFG_NVM_OBJECT_COUNT. Capture it and assert the client's NVM
+     * operations return to this baseline rather than to the absolute maximum. */
+    whNvmId baseAvailObjects = 0;
 
     /* Init client/server comms */
     WH_TEST_RETURN_ON_FAIL(wh_Client_CommInit(client, &client_id, &server_id));
@@ -1483,7 +1500,9 @@ int whTest_ClientServerClientConfig(whClientConfig* clientCfg)
                   ret, (int)server_rc, (int)avail_size, (int)avail_objects,
                   (int)reclaim_size, (int)reclaim_objects);
     WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
-    WH_TEST_ASSERT_RETURN(avail_objects == WOLFHSM_CFG_NVM_OBJECT_COUNT);
+    WH_TEST_ASSERT_RETURN(avail_objects <= WOLFHSM_CFG_NVM_OBJECT_COUNT);
+    /* Record the empty baseline (may be reduced by NVM-backed auth records) */
+    baseAvailObjects = avail_objects;
 
     /* Reset NVM state after flag tests */
     WH_TEST_RETURN_ON_FAIL(ret = wh_Client_NvmCleanup(client, &server_rc));
@@ -1495,7 +1514,7 @@ int whTest_ClientServerClientConfig(whClientConfig* clientCfg)
                                client, &server_rc, &avail_size, &avail_objects,
                                &reclaim_size, &reclaim_objects));
     WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
-    WH_TEST_ASSERT_RETURN(avail_objects == WOLFHSM_CFG_NVM_OBJECT_COUNT);
+    WH_TEST_ASSERT_RETURN(avail_objects == baseAvailObjects);
 
 
     for (counter = 0; counter < 5; counter++) {
@@ -1575,6 +1594,17 @@ int whTest_ClientServerClientConfig(whClientConfig* clientCfg)
     whNvmFlags  list_flags  = WH_NVM_FLAGS_NONE;
     whNvmId     list_id     = 0;
     whNvmId     list_count  = 0;
+    whNvmId     testIds[5];
+    int         testFound   = 0;
+    int         destroyIdx;
+
+    /* Enumerate every object currently in NVM. When the server is configured
+     * with an NVM-backed auth manager it also stores user records as NVM
+     * objects (at high reserved IDs), so the list is not guaranteed to hold
+     * only the 5 objects this test wrote. Collect the IDs this test owns
+     * (20..24) and leave any other objects (e.g. auth records) untouched so
+     * the available-object count returns to the captured baseline. Reusing
+     * list_id as both the cursor input and result advances through the list. */
     do {
         WH_TEST_RETURN_ON_FAIL(
             ret = wh_Client_NvmList(client, list_access, list_flags, list_id,
@@ -1582,39 +1612,41 @@ int whTest_ClientServerClientConfig(whClientConfig* clientCfg)
         WH_TEST_PRINT("Client NvmList:%d, server_rc:%d count:%u id:%u\n", ret,
                       (int)server_rc, (unsigned int)list_count,
                       (unsigned int)list_id);
+        WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
 
-        if (list_count > 0) {
-            /* ensure list_id contains ID of object written, and list_count
-             * shows remaining items in list */
-            WH_TEST_ASSERT_RETURN(list_id == 20 + (5 - list_count));
-
-            WH_TEST_RETURN_ON_FAIL(
-                ret = wh_Client_NvmDestroyObjects(client, 1, &list_id, &server_rc));
-
-            WH_TEST_PRINT("Client NvmDestroyObjects:%d, server_rc:%d for "
-                          "id:%u with count:%u\n",
-                          ret, (int)server_rc, (unsigned int)list_id,
-                          (unsigned int)list_count);
-            WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
-
-            /* Ensure object was destroyed and no longer exists */
-            WH_TEST_RETURN_ON_FAIL(ret = wh_Client_NvmGetMetadata(client, list_id, &server_rc, NULL, NULL, NULL, NULL, 0, NULL));
-            WH_TEST_ASSERT_RETURN(WH_ERROR_NOTFOUND == server_rc);
-
-            WH_TEST_PRINT(
-                "Client NvmGetMetadata:%d, server_rc:%d count:%u id:%u\n", ret,
-                (int)server_rc, (unsigned int)list_count,
-                (unsigned int)list_id);
-
-            list_id = 0;
+        if ((list_count > 0) && (list_id >= 20) && (list_id <= 24)) {
+            WH_TEST_ASSERT_RETURN(testFound < 5);
+            testIds[testFound++] = list_id;
         }
     } while (list_count > 0);
+
+    /* This test wrote exactly 5 objects with IDs 20..24 */
+    WH_TEST_ASSERT_RETURN(testFound == 5);
+
+    for (destroyIdx = 0; destroyIdx < testFound; destroyIdx++) {
+        whNvmId destroyId = testIds[destroyIdx];
+
+        WH_TEST_RETURN_ON_FAIL(ret = wh_Client_NvmDestroyObjects(
+                                   client, 1, &destroyId, &server_rc));
+        WH_TEST_PRINT("Client NvmDestroyObjects:%d, server_rc:%d for id:%u\n",
+                      ret, (int)server_rc, (unsigned int)destroyId);
+        WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
+
+        /* Ensure object was destroyed and no longer exists */
+        WH_TEST_RETURN_ON_FAIL(ret = wh_Client_NvmGetMetadata(
+                                   client, destroyId, &server_rc, NULL, NULL,
+                                   NULL, NULL, 0, NULL));
+        WH_TEST_ASSERT_RETURN(WH_ERROR_NOTFOUND == server_rc);
+
+        WH_TEST_PRINT("Client NvmGetMetadata:%d, server_rc:%d id:%u\n", ret,
+                      (int)server_rc, (unsigned int)destroyId);
+    }
 
 
     WH_TEST_RETURN_ON_FAIL(wh_Client_NvmGetAvailable(
         client, &server_rc, &avail_size, &avail_objects, &reclaim_size,
         &reclaim_objects));
-    WH_TEST_ASSERT_RETURN(avail_objects == WOLFHSM_CFG_NVM_OBJECT_COUNT);
+    WH_TEST_ASSERT_RETURN(avail_objects == baseAvailObjects);
 
 #ifdef WOLFHSM_CFG_DMA
     /* Same writeback test, but with DMA */
@@ -1729,7 +1761,7 @@ int whTest_ClientServerClientConfig(whClientConfig* clientCfg)
                   ret, (int)server_rc, (int)avail_size, (int)avail_objects,
                   (int)reclaim_size, (int)reclaim_objects);
     WH_TEST_ASSERT_RETURN(server_rc == WH_ERROR_OK);
-    WH_TEST_ASSERT_RETURN(avail_objects == WOLFHSM_CFG_NVM_OBJECT_COUNT);
+    WH_TEST_ASSERT_RETURN(avail_objects == baseAvailObjects);
 
 #endif /* WOLFHSM_CFG_DMA */
 
@@ -1850,6 +1882,7 @@ static void _whClientServerThreadTest(whClientConfig* c_conf,
 
 static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
 {
+    int     ret              = WH_ERROR_OK;
     uint8_t req[BUFFER_SIZE] = {0};
     uint8_t resp[BUFFER_SIZE] = {0};
 
@@ -1868,8 +1901,18 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
                  .transport_config  = (void*)tmcf,
                  .client_id         = WH_TEST_DEFAULT_CLIENT_ID,
     }};
+#ifdef WOLFHSM_CFG_DMA
+    /* Route every *Dma op (NVM + cert) through the bounce-pool callback so a
+     * missing translation is rejected (see test/wh_test_dma.c). */
+    whClientDmaConfig clientDmaConfig = {
+        .cb = whTestDma_BounceClientCb,
+    };
+#endif
     whClientConfig c_conf[1] = {{
        .comm = cc_conf,
+#ifdef WOLFHSM_CFG_DMA
+       .dmaConfig = &clientDmaConfig,
+#endif
     }};
     /* Server configuration/contexts */
     whTransportServerCb         tscb[1]   = {WH_TRANSPORT_MEM_SERVER_CB};
@@ -1880,6 +1923,12 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
                  .transport_config  = (void*)tmcf,
                  .server_id         = 124,
     }};
+#ifdef WOLFHSM_CFG_DMA
+    /* Server rejects any untranslated client pointer (out of the pool). */
+    whServerDmaConfig serverDmaConfig = {
+        .cb = whTestDma_BounceServerCb,
+    };
+#endif
 
     /* RamSim Flash state and configuration */
     uint8_t memory[FLASH_RAM_SIZE] = {0};
@@ -1913,15 +1962,38 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
         .crypto = crypto,
         .devId  = INVALID_DEVID,
 #endif
+#ifdef WOLFHSM_CFG_DMA
+        .dmaConfig = &serverDmaConfig,
+#endif
     }};
 
     WH_TEST_RETURN_ON_FAIL(wh_Nvm_Init(nvm, n_conf));
+
+#ifdef WOLFHSM_CFG_DMA
+    whTestDma_BounceReset();
+#endif
 
 #ifndef WOLFHSM_CFG_NO_CRYPTO
     WH_TEST_RETURN_ON_FAIL(wolfCrypt_Init());
     WH_TEST_RETURN_ON_FAIL(wc_InitRng_ex(crypto->rng, NULL, INVALID_DEVID));
 #endif
     _whClientServerThreadTest(c_conf, s_conf);
+
+#ifdef WOLFHSM_CFG_DMA
+    /* No mapping may be outstanding and no POST may have hit a stale slot. */
+    if (whTestDma_BounceOutstanding() != 0) {
+        WH_ERROR_PRINT("wh_test bounce: %d DMA mapping(s) leaked across the "
+                       "clientserver suite\n",
+                       whTestDma_BounceOutstanding());
+        ret = WH_ERROR_ABORTED;
+    }
+    if (whTestDma_BounceStrayPosts() != 0) {
+        WH_ERROR_PRINT("wh_test bounce: %d stray/double DMA POST(s) across the "
+                       "clientserver suite\n",
+                       whTestDma_BounceStrayPosts());
+        ret = WH_ERROR_ABORTED;
+    }
+#endif
 
     wh_Nvm_Cleanup(nvm);
 
@@ -1930,12 +2002,13 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
     wolfCrypt_Cleanup();
 #endif
 
-    return WH_ERROR_OK;
+    return ret;
 }
 
 
 static int wh_ClientServer_PosixMemMapThreadTest(whTestNvmBackendType nvmType)
 {
+    int                     ret     = WH_ERROR_OK;
     posixTransportShmConfig tmcf[1] = {{
         .name       = "/wh_test_clientserver_shm",
         .req_size   = BUFFER_SIZE,
@@ -1951,8 +2024,18 @@ static int wh_ClientServer_PosixMemMapThreadTest(whTestNvmBackendType nvmType)
                     .transport_config  = (void*)tmcf,
                     .client_id         = WH_TEST_DEFAULT_CLIENT_ID,
     }};
+#ifdef WOLFHSM_CFG_DMA
+    /* Route every *Dma op (NVM + cert) through the bounce-pool callback so a
+     * missing translation is rejected (see test/wh_test_dma.c). */
+    whClientDmaConfig clientDmaConfig = {
+        .cb = whTestDma_BounceClientCb,
+    };
+#endif
     whClientConfig                 c_conf[1]  = {{
                          .comm = cc_conf,
+#ifdef WOLFHSM_CFG_DMA
+                         .dmaConfig = &clientDmaConfig,
+#endif
     }};
     /* Server configuration/contexts */
     whTransportServerCb            tscb[1]    = {POSIX_TRANSPORT_SHM_SERVER_CB};
@@ -1963,6 +2046,12 @@ static int wh_ClientServer_PosixMemMapThreadTest(whTestNvmBackendType nvmType)
                     .transport_config  = (void*)tmcf,
                     .server_id         = 124,
     }};
+#ifdef WOLFHSM_CFG_DMA
+    /* Server rejects any untranslated client pointer (out of the pool). */
+    whServerDmaConfig serverDmaConfig = {
+        .cb = whTestDma_BounceServerCb,
+    };
+#endif
 
     /* RamSim Flash state and configuration */
     uint8_t memory[FLASH_RAM_SIZE] = {0};
@@ -1994,6 +2083,9 @@ static int wh_ClientServer_PosixMemMapThreadTest(whTestNvmBackendType nvmType)
 #ifndef WOLFHSM_CFG_NO_CRYPTO
         .crypto = crypto,
 #endif
+#ifdef WOLFHSM_CFG_DMA
+        .dmaConfig = &serverDmaConfig,
+#endif
     }};
 #ifdef WOLFHSM_CFG_ENABLE_AUTHENTICATION
     s_conf->auth = NULL; /* For non authenticated tests set auth context to NULL
@@ -2002,11 +2094,31 @@ static int wh_ClientServer_PosixMemMapThreadTest(whTestNvmBackendType nvmType)
 
     WH_TEST_RETURN_ON_FAIL(wh_Nvm_Init(nvm, n_conf));
 
+#ifdef WOLFHSM_CFG_DMA
+    whTestDma_BounceReset();
+#endif
+
 #ifndef WOLFHSM_CFG_NO_CRYPTO
     WH_TEST_RETURN_ON_FAIL(wolfCrypt_Init());
     WH_TEST_RETURN_ON_FAIL(wc_InitRng_ex(crypto->rng, NULL, INVALID_DEVID));
 #endif
     _whClientServerThreadTest(c_conf, s_conf);
+
+#ifdef WOLFHSM_CFG_DMA
+    /* No mapping may be outstanding and no POST may have hit a stale slot. */
+    if (whTestDma_BounceOutstanding() != 0) {
+        WH_ERROR_PRINT("wh_test bounce: %d DMA mapping(s) leaked across the "
+                       "clientserver suite\n",
+                       whTestDma_BounceOutstanding());
+        ret = WH_ERROR_ABORTED;
+    }
+    if (whTestDma_BounceStrayPosts() != 0) {
+        WH_ERROR_PRINT("wh_test bounce: %d stray/double DMA POST(s) across the "
+                       "clientserver suite\n",
+                       whTestDma_BounceStrayPosts());
+        ret = WH_ERROR_ABORTED;
+    }
+#endif
 
     wh_Nvm_Cleanup(nvm);
 
@@ -2015,7 +2127,7 @@ static int wh_ClientServer_PosixMemMapThreadTest(whTestNvmBackendType nvmType)
     wolfCrypt_Cleanup();
 #endif
 
-    return WH_ERROR_OK;
+    return ret;
 }
 #endif /* WOLFHSM_CFG_TEST_POSIX && WOLFHSM_CFG_ENABLE_CLIENT && \
           WOLFHSM_CFG_ENABLE_SERVER */

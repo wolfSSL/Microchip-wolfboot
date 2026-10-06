@@ -9,7 +9,7 @@
  * https://www.wolfssl.com
  */
 
-#include "board.h"  /* provides WHAL_CFG_NVIC_DEV initializer */
+#include "wolfHAL_board.h"  /* provides WHAL_CFG_NVIC_DEV initializer */
 #include <wolfHAL/irq/cortex_m4_nvic.h>
 #include <wolfHAL/error.h>
 #include <wolfHAL/reg.h>

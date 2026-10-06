@@ -1,8 +1,8 @@
 /* spdm_context.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -243,7 +243,7 @@ int wolfSPDM_SetMode(WOLFSPDM_CTX* ctx, WOLFSPDM_MODE mode)
 WOLFSPDM_MODE wolfSPDM_GetMode(WOLFSPDM_CTX* ctx)
 {
     if (ctx == NULL) {
-        return (WOLFSPDM_MODE)0;
+        return WOLFSPDM_MODE_AUTO;
     }
     return ctx->mode;
 }
@@ -345,8 +345,22 @@ int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx)
         rxSz = sizeof(rxBuf);
         rc = wolfSPDM_SecuredExchange(ctx, txBuf, txSz, rxBuf, &rxSz);
     }
+    if (rc == WOLFSPDM_SUCCESS) {
+        if (rxSz < 4) {
+            rc = WOLFSPDM_E_BUFFER_SMALL;
+        }
+        else if (wolfSPDM_CheckError(rxBuf, rxSz, NULL)) {
+            rc = WOLFSPDM_E_PEER_ERROR;
+        }
+        else if (rxSz != 4 || rxBuf[0] != ctx->spdmVersion ||
+                 rxBuf[1] != SPDM_END_SESSION_ACK ||
+                 rxBuf[2] != 0 || rxBuf[3] != 0) {
+            rc = WOLFSPDM_E_PEER_ERROR;
+        }
+    }
 
-    /* Reset state and zero ALL key material */
+    /* Reset session state and wipe session-scoped keys; configured identity
+     * keys remain for a later connection */
     ctx->state = WOLFSPDM_STATE_INIT;
     ctx->sessionId = 0;
     ctx->reqSeqNum = 0;

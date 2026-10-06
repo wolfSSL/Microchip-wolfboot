@@ -9,13 +9,17 @@
  * https://www.wolfssl.com
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
-
 /* Generated using (from wolfssl):
  *   cd ../scripts
  *   ruby ./sha2/sha256.rb arm64 \
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-sha256-asm.S
  */
+
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_SHA256_ASM_S
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+
 #ifdef WOLFSSL_ARMASM
 #ifdef __aarch64__
 #ifndef WOLFSSL_ARMASM_INLINE
@@ -54,12 +58,14 @@ L_SHA256_transform_neon_len_k:
 #ifndef __APPLE__
 .text
 .globl	Transform_Sha256_Len_neon
+WC_ASM_ATT_HIDDEN(Transform_Sha256_Len_neon)
 .type	Transform_Sha256_Len_neon,@function
 .align	2
 Transform_Sha256_Len_neon:
 #else
 .section	__TEXT,__text
 .globl	_Transform_Sha256_Len_neon
+WC_ASM_ATT_HIDDEN(_Transform_Sha256_Len_neon)
 .p2align	2
 _Transform_Sha256_Len_neon:
 #endif /* __APPLE__ */
@@ -1042,6 +1048,7 @@ L_sha256_len_neon_start:
 	.size	Transform_Sha256_Len_neon,.-Transform_Sha256_Len_neon
 #endif /* __APPLE__ */
 #ifndef WOLFSSL_ARMASM_NO_HW_CRYPTO
+.arch_extension crypto
 #ifndef __APPLE__
 	.text
 	.section	.rodata
@@ -1076,12 +1083,14 @@ L_SHA256_trans_crypto_len_k:
 #ifndef __APPLE__
 .text
 .globl	Transform_Sha256_Len_crypto
+WC_ASM_ATT_HIDDEN(Transform_Sha256_Len_crypto)
 .type	Transform_Sha256_Len_crypto,@function
 .align	2
 Transform_Sha256_Len_crypto:
 #else
 .section	__TEXT,__text
 .globl	_Transform_Sha256_Len_crypto
+WC_ASM_ATT_HIDDEN(_Transform_Sha256_Len_crypto)
 .p2align	2
 _Transform_Sha256_Len_crypto:
 #endif /* __APPLE__ */

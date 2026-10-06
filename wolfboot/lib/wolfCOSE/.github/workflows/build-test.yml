@@ -1,0 +1,428 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    uses: ./.github/workflows/_resolve-wolfssl.yml
+
+  build:
+    name: ${{ matrix.os }} (wolfSSL ${{ matrix.wolfssl-ref }})
+    needs: discover
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04, macos-latest]
+        wolfssl-ref: ${{ fromJson(needs.discover.outputs.refs) }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: brew install autoconf automake libtool
+
+    - name: Cache wolfSSL (${{ matrix.wolfssl-ref }})
+      if: matrix.wolfssl-ref != 'master'
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-${{ matrix.os }}-${{ matrix.wolfssl-ref }}-v5-lms
+
+    - name: Build wolfSSL (${{ matrix.wolfssl-ref }})
+      if: matrix.wolfssl-ref == 'master' || steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} \
+            https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        # PQC (ML-DSA wc_MlDsaKey) only exists on master or stable releases
+        # strictly newer than the v5.9.1 floor.
+        REF="${{ matrix.wolfssl-ref }}"
+        if [ "$REF" = "master" ] || \
+           [ "$(printf '%s\n%s\n' v5.9.1-stable "$REF" | sort -V | tail -n1)" != "v5.9.1-stable" ]; then
+          PQC_FLAGS="--enable-mldsa"
+        else
+          PQC_FLAGS=""
+        fi
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-curve448 \
+                    --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 \
+                    --enable-keygen --enable-hkdf --enable-aeskeywrap \
+                    --enable-chacha --enable-poly1305 \
+                    --enable-lms \
+                    $PQC_FLAGS --enable-rsapss \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+        make install
+
+    - name: Build wolfCOSE
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        make CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run unit tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                  LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run RFC 9783 PSA/EAT conformance tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run RFC 9783 PSA/EAT device-onboarding example
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make psa-eat-demo CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run RFC 9783 PSA/EAT floating-point decoder-safety tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-float-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                 LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run RFC 9783 PSA/EAT constrained-buffer tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-min-buffers-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                      LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run RFC 9783 PSA/EAT claim-limit boundary tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-claim-limits-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                            LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run isolated RFC 9783 PSA/EAT feature-profile tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-profile-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                   LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Check PSA/EAT feature-gate matrix
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-config-check CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                   LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run zeroize-hook regression test
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make zeroize-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run delegated signing test
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make ext-sign-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                           LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run deprecated RFC 9053 alg IDs test
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make deprecated-algs-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                  LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+
+    - name: Run delegated signing forced-failure test
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make ext-sign-force-failure CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                    LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run PSA/EAT delegated signing tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-ext-sign-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                   LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+        make eat-psa-ext-sign-force-failure CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                             LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run generic reduced-algorithm regression
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make generic-reduced-alg-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                                       LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run tool round-trip test
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        export DYLD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make tool-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+                       LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+  lms-lean:
+    name: LMS lean profiles (wolfSSL ${{ matrix.wolfssl-ref }})
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        wolfssl-ref: ${{ fromJson(needs.discover.outputs.refs) }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    - name: Cache wolfSSL (${{ matrix.wolfssl-ref }})
+      if: matrix.wolfssl-ref != 'master'
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-ubuntu-latest-${{ matrix.wolfssl-ref }}-v5-lms
+
+    - name: Build wolfSSL (${{ matrix.wolfssl-ref }})
+      if: matrix.wolfssl-ref == 'master' || steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} \
+            https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        REF="${{ matrix.wolfssl-ref }}"
+        if [ "$REF" = "master" ] || \
+           [ "$(printf '%s\n%s\n' v5.9.1-stable "$REF" | sort -V | tail -n1)" != "v5.9.1-stable" ]; then
+          PQC_FLAGS="--enable-mldsa"
+        else
+          PQC_FLAGS=""
+        fi
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-curve448 \
+                    --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 \
+                    --enable-keygen --enable-hkdf --enable-aeskeywrap \
+                    --enable-chacha --enable-poly1305 \
+                    --enable-lms \
+                    $PQC_FLAGS --enable-rsapss \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+        make install
+
+    # LMS-only sign+verify profile (WOLFCOSE_LEAN_LMS), warnings fatal.
+    - name: LMS lean sign and verify
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make lms-demo CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -I./include -isystem $WOLFSSL_DIR/include" \
+                      LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    # Smallest verify-only profile (WOLFCOSE_LEAN_VERIFY_LMS), warnings fatal.
+    - name: LMS lean verify-only
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make lms-verify CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -I./include -isystem $WOLFSSL_DIR/include" \
+                        LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    # Strict ISO C99 (-pedantic-errors, -Wvla) over the LMS-gated branches and
+    # both lean LMS profiles, which the default c99-check cannot reach without
+    # an LMS wolfSSL.
+    - name: Strict C99 gate (LMS)
+      run: |
+        make c99-check-lms WOLFSSL_INC=$HOME/wolfssl-install/include
+
+  lms-verify-only:
+    name: LMS verify-only wolfSSL profile
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    # Build wolfSSL with LMS support that cannot sign, mirroring a verifier
+    # deployment. --enable-lms=verify-only records WOLFSSL_LMS_VERIFY_ONLY in
+    # options.h, which wolfCOSE reads to compile out its own signing paths.
+    - name: Build wolfSSL (LMS verify-only)
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-curve448 \
+                    --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 \
+                    --enable-keygen --enable-hkdf --enable-aeskeywrap \
+                    --enable-chacha --enable-poly1305 \
+                    --enable-lms=verify-only \
+                    --enable-mldsa --enable-rsapss \
+                    --prefix=$HOME/wolfssl-lmsvo
+        make -j$(nproc)
+        make install
+
+    - name: Assert signing symbol absent from verify-only build
+      run: |
+        if nm -D $HOME/wolfssl-lmsvo/lib/libwolfssl.so 2>/dev/null \
+             | grep -qw wc_LmsKey_Sign; then
+          echo "FAIL: wc_LmsKey_Sign present in a verify-only wolfSSL"
+          exit 1
+        fi
+        echo "OK: wc_LmsKey_Sign absent from verify-only wolfSSL"
+
+    # Fixed-vector verify with no sign-capable code in either library.
+    - name: LMS fixed-vector verify
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-lmsvo
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make lms-verify CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -I./include -isystem $WOLFSSL_DIR/include" \
+                        LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    # Delegated LMS signing against a backend that cannot sign: the callback
+    # supplies the signature, the public LmsKey only its length.
+    - name: Delegated LMS with verify-only backend
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-lmsvo
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make ext-sign-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -I./include -isystem $WOLFSSL_DIR/include" \
+                           LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+  coverage:
+    name: Code Coverage (wolfSSL ${{ matrix.wolfssl-version }})
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool lcov
+
+    - name: Cache wolfSSL (${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version != 'master'
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-coverage-${{ matrix.wolfssl-version }}-v5-lms
+
+    - name: Build wolfSSL (${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version == 'master' || steps.cache-wolfssl.outputs.cache-hit != 'true'
+      env:
+        PQC: ${{ matrix.pqc }}
+      run: |
+        cd ~
+        git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} \
+            https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        if [ "$PQC" = "true" ]; then
+          PQC_FLAGS="--enable-mldsa"
+        else
+          PQC_FLAGS=""
+        fi
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-curve448 \
+                    --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 \
+                    --enable-keygen --enable-hkdf --enable-aeskeywrap \
+                    --enable-chacha --enable-poly1305 \
+                    --enable-lms \
+                    $PQC_FLAGS --enable-rsapss \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    - name: Build with coverage
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        make clean
+        make CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os --coverage -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="--coverage -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run tests with coverage
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os --coverage -I./include -isystem $WOLFSSL_DIR/include" \
+                  LDFLAGS="--coverage -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Generate coverage report
+      run: |
+        lcov --capture --directory . --output-file coverage.info
+        lcov --remove coverage.info '/usr/*' '*/tests/*' --output-file coverage.info
+        lcov --list coverage.info
+
+    - name: Check coverage threshold
+      run: |
+        # Extract line coverage percentage
+        COVERAGE=$(lcov --summary coverage.info 2>&1 | grep "lines" | sed 's/.*: //' | sed 's/%.*//')
+        echo "Line coverage: ${COVERAGE}%"
+        if (( $(echo "$COVERAGE < 75" | bc -l) )); then
+          echo "Coverage ${COVERAGE}% is below threshold of 75%"
+          exit 1
+        fi
+        echo "Coverage ${COVERAGE}% meets threshold of 75%"
+
+    - name: Upload coverage report
+      if: matrix.wolfssl-version == 'master'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage.info

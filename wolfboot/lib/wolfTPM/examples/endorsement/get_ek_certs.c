@@ -1,8 +1,8 @@
 /* get_ek_certs.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -495,10 +495,10 @@ int TPM2_EndorsementCert_Example(void* userCtx, int argc, char *argv[])
         #ifndef WOLFCRYPT_ONLY
             if (rc == 0) {
                 /* Validate EK certificate against trusted certificates */
-                rc = wolfSSL_CertManagerVerifyBuffer(cm, certBuf, certSz,
+                int vfyRc = wolfSSL_CertManagerVerifyBuffer(cm, certBuf, certSz,
                     WOLFSSL_FILETYPE_ASN1);
                 printf("EK Certificate is %s\n",
-                    (rc == WOLFSSL_SUCCESS) ? "VALID" : "INVALID");
+                    (vfyRc == WOLFSSL_SUCCESS) ? "VALID" : "INVALID");
             }
         #endif
 

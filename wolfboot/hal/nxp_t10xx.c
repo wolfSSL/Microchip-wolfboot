@@ -447,29 +447,7 @@ static void hal_flash_unlock_sector(uint32_t sector);
 
 #define UART_BASE(n) (CCSRBAR + 0x11C500 + (n * 0x1000))
 
-#define UART_RBR(n)  ((volatile uint8_t*)(UART_BASE(n) + 0)) /* receiver buffer register */
-#define UART_THR(n)  ((volatile uint8_t*)(UART_BASE(n) + 0)) /* transmitter holding register */
-#define UART_IER(n)  ((volatile uint8_t*)(UART_BASE(n) + 1)) /* interrupt enable register */
-#define UART_IIR(n)  ((volatile uint8_t*)(UART_BASE(n) + 2)) /* interrupt ID register */
-#define UART_FCR(n)  ((volatile uint8_t*)(UART_BASE(n) + 2)) /* FIFO control register */
-#define UART_LCR(n)  ((volatile uint8_t*)(UART_BASE(n) + 3)) /* line control register */
-#define UART_MCR(n)  ((volatile uint8_t*)(UART_BASE(n) + 4)) /* modem control register */
-#define UART_LSR(n)  ((volatile uint8_t*)(UART_BASE(n) + 5)) /* line status register */
-
-/* enabled when UART_LCR_DLAB set */
-#define UART_DLB(n)  ((volatile uint8_t*)(UART_BASE(n) + 0)) /* divisor least significant byte register */
-#define UART_DMB(n)  ((volatile uint8_t*)(UART_BASE(n) + 1)) /* divisor most significant byte register */
-
-#define UART_FCR_TFR  (0x04) /* Transmitter FIFO reset */
-#define UART_FCR_RFR  (0x02) /* Receiver FIFO reset */
-#define UART_FCR_FEN  (0x01) /* FIFO enable */
-#define UART_LCR_DLAB (0x80) /* Divisor latch access bit */
-#define UART_LCR_WLS  (0x03) /* Word length select: 8-bits */
-#define UART_LSR_TEMT (0x40) /* Transmitter empty */
-#define UART_LSR_THRE (0x20) /* Transmitter holding register empty */
-
-
-/* T1024 IFC (Integrated Flash Controller) - RM 23.1 */
+/* Register layout and bit names live in include/ns16550.h. */
 #define IFC_BASE        (CCSRBAR + 0x00124000)
 #define IFC_MAX_BANKS   8
 
@@ -1786,10 +1764,13 @@ static int hal_pcie_init(void)
         memset(&enum_info, 0, sizeof(enum_info));
         enum_info.curr_bus_number = 0;
         enum_info.mem = CONFIG_PCIE_MEM_BUS;
-        enum_info.mem_limit = enum_info.mem + (CONFIG_PCIE_MEM_LENGTH - 1);
+        /* Pool limits are exclusive ends (the allocator accepts a
+         * region when its end is <= limit). */
+        enum_info.mem_limit = (uint64_t)enum_info.mem +
+            CONFIG_PCIE_MEM_LENGTH;
         enum_info.mem_pf = (enum_info.mem + CONFIG_PCIE_MEM_PREFETCH_LENGTH);
-        enum_info.mem_pf_limit = enum_info.mem_pf +
-            (CONFIG_PCIE_MEM_PREFETCH_LENGTH - 1);
+        enum_info.mem_pf_limit = (uint64_t)enum_info.mem_pf +
+            CONFIG_PCIE_MEM_PREFETCH_LENGTH;
         enum_info.io = CONFIG_PCIE_IO_BASE;
 
         /* Setup PCIe Output Windows */
@@ -2035,6 +2016,7 @@ struct qe_firmware {
 static int qe_check_firmware(const struct qe_firmware *firmware, const char* t)
 {
     unsigned int i;
+    uint64_t mcode_end;
 #ifdef ENABLE_QE_CRC32
     uint32_t crc;
 #endif
@@ -2077,6 +2059,19 @@ static int qe_check_firmware(const struct qe_firmware *firmware, const char* t)
     if (length != calc_size + sizeof(uint32_t)) {
         wolfBoot_printf("%s: length %d invalid!\n", t, length);
         return -1;
+    }
+
+    /* The microcode must lie inside the declared image: the upload
+     * reads code_offset + 4*count bytes from the firmware start, so an
+     * out-of-image offset would copy arbitrary memory into QE IRAM and
+     * program arbitrary traps. 64-bit so the sum cannot wrap. */
+    for (i = 0; i < firmware->count; i++) {
+        mcode_end = (uint64_t)firmware->microcode[i].code_offset +
+            (uint64_t)4 * firmware->microcode[i].count;
+        if (mcode_end > length) {
+            wolfBoot_printf("%s: microcode %u out of bounds!\n", t, i);
+            return -1;
+        }
     }
 
 #ifdef ENABLE_QE_CRC32
@@ -3225,6 +3220,7 @@ static int hal_flash_status_wait(uint32_t sector, uint16_t mask, uint32_t timeou
 int hal_flash_write(uint32_t address, const uint8_t *data, int len)
 {
     uint32_t i, pos, sector, offset, xfer, nwords;
+    int ret = 0;
 
     /* adjust for flash base */
     if (address >= FLASH_BASE_ADDR)
@@ -3264,7 +3260,9 @@ int hal_flash_write(uint32_t address, const uint8_t *data, int len)
             FLASH_IO16_WRITE(sector, offset, 0);
             FLASH_IO16_WRITE(sector, offset, word);
             FLASH_IO8_WRITE(sector, offset, AMD_CMD_WRITE_BUFFER_CONFIRM);
-            hal_flash_status_wait(sector, 0x44, 200*1000);
+            ret = hal_flash_status_wait(sector, 0x44, 200*1000);
+            if (ret != 0)
+                return ret;
             address++;
             pos++;
             len--;
@@ -3283,9 +3281,9 @@ int hal_flash_write(uint32_t address, const uint8_t *data, int len)
         for (i=0; i<nwords; i++) {
             const uint8_t* ptr = &data[pos];
         #if FLASH_CFI_WIDTH == 16
-            FLASH_IO16_WRITE(sector, i, *((const uint16_t*)ptr));
+            FLASH_IO16_WRITE(sector, offset + i, *((const uint16_t*)ptr));
         #else
-            FLASH_IO8_WRITE(sector, i, *ptr);
+            FLASH_IO8_WRITE(sector, offset + i, *ptr);
         #endif
             pos += (FLASH_CFI_WIDTH/8);
         }
@@ -3293,7 +3291,9 @@ int hal_flash_write(uint32_t address, const uint8_t *data, int len)
         /* Typical 410us */
 
         /* poll for program completion - max 200ms */
-        hal_flash_status_wait(sector, 0x44, 200*1000);
+        ret = hal_flash_status_wait(sector, 0x44, 200*1000);
+        if (ret != 0)
+            return ret;
 
         address += xfer;
         len -= xfer;
@@ -3304,6 +3304,7 @@ int hal_flash_write(uint32_t address, const uint8_t *data, int len)
 int hal_flash_erase(uint32_t address, int len)
 {
     uint32_t sector;
+    int ret = 0;
 
     /* adjust for flash base */
     if (address >= FLASH_BASE_ADDR)
@@ -3326,7 +3327,9 @@ int hal_flash_erase(uint32_t address, int len)
         /* Typical is 200ms (max 1100ms) */
 
         /* poll for erase completion - max 1.1 sec */
-        hal_flash_status_wait(sector, 0x4C, 1100*1000);
+        ret = hal_flash_status_wait(sector, 0x4C, 1100*1000);
+        if (ret != 0)
+            return ret;
 
         address += FLASH_SECTOR_SIZE;
         len -= FLASH_SECTOR_SIZE;
@@ -3362,28 +3365,33 @@ void* hal_get_dts_address(void)
     return (void*)WOLFBOOT_DTS_BOOT_ADDRESS;
 }
 
-int hal_dts_fixup(void* dts_addr)
+int hal_dts_fixup(void* dts_addr, uint32_t capacity)
 {
 #ifndef BUILD_LOADER_STAGE1
-    struct fdt_header *fdt = (struct fdt_header *)dts_addr;
+    fdt_ctx ctx;
+    fdt_ctx* fdt = &ctx;
     int off, i;
+    uint32_t cell;
     uint32_t *reg;
     const char* prev_compat;
 
-    /* verify the FTD is valid */
-    off = fdt_check_header(dts_addr);
+    /* Validate the blob against the window it actually occupies. */
+    off = fdt_open(&ctx, dts_addr, capacity);
     if (off != 0) {
         wolfBoot_printf("FDT: Invalid header! %d\n", off);
         return off;
     }
 
     /* display FTD information */
-    wolfBoot_printf("FDT: Version %d, Size %d\n",
-        fdt_version(fdt), fdt_totalsize(fdt));
+    wolfBoot_printf("FDT: Size %d\n", (int)fdt_size(fdt));
 
-    /* expand total size */
-    fdt->totalsize += 2048; /* expand by 2KB */
-    wolfBoot_printf("FDT: Expanded (2KB) to %d bytes\n", fdt->totalsize);
+    /* Reserve headroom for the fixups below. */
+    off = fdt_grow(fdt, 2048U);
+    if (off != 0) {
+        wolfBoot_printf("FDT: No headroom for fixups (%d)\n", off);
+        return off;
+    }
+    wolfBoot_printf("FDT: Expanded (2KB) to %d bytes\n", (int)fdt_size(fdt));
 
     /* fixup the memory region - single bank */
     off = fdt_find_devtype(fdt, -1, "memory");
@@ -3480,6 +3488,11 @@ int hal_dts_fixup(void* dts_addr)
 
         wolfBoot_printf("FDT: Set %s@%d (%d), %s=%d,%d\n",
             "qman-portal", i, off, "fsl,liodn", liodns[0], liodns[1]);
+        /* Property cells are big-endian on the wire. Identity on the
+         * PowerPC targets that run this, but without it the host tests
+         * write host-order bytes that hardware never produces. */
+        liodns[0] = cpu_to_fdt32(liodns[0]);
+        liodns[1] = cpu_to_fdt32(liodns[1]);
         fdt_setprop(fdt, off, "fsl,liodn", liodns, sizeof(liodns));
 
         /* Add fman@0 node and fsl,liodon = FMAN_DMA_LIODN + index */
@@ -3488,6 +3501,7 @@ int hal_dts_fixup(void* dts_addr)
             liodns[0] = FMAN_DMA_LIODN + i + 1;
             wolfBoot_printf("FDT: Set %s@%d/%s (%d), %s=%d\n",
                 "qman-portal", i, "fman@0", childoff, "fsl,liodn", liodns[0]);
+            liodns[0] = cpu_to_fdt32(liodns[0]);
             fdt_setprop(fdt, childoff, "fsl,liodn", liodns, sizeof(liodns[0]));
             off = childoff;
         }
@@ -3497,7 +3511,7 @@ int hal_dts_fixup(void* dts_addr)
 
     /* fixup the fman clock */
     off = fdt_node_offset_by_compatible(fdt, -1, "fsl,fman");
-    if (off != !FDT_ERR_NOTFOUND) {
+    if (off != -FDT_ERR_NOTFOUND) {
         fdt_fixup_val(fdt, off, "fman@", "clock-frequency", hal_get_bus_clk());
     }
 
@@ -3507,7 +3521,24 @@ int hal_dts_fixup(void* dts_addr)
         reg = (uint32_t*)fdt_getprop(fdt, off, "cell-index", NULL);
         if (reg == NULL)
             break;
-        i = (int)fdt32_to_cpu(*reg);
+        cell = fdt32_to_cpu(*reg);
+
+        /* NXP's qoriq-fman3 dtsi numbers the 1G memacs 0..3 and the
+         * 10G memacs 0x8/0x9; phydevs holds 1G at 0..3 and the single
+         * 10G port at FM1_10GEC1. Skip anything with no slot. */
+        if (cell <= FM1_DTSEC4)
+            i = (int)cell;
+        else if (cell == 8)
+            i = FM1_10GEC1;
+        else
+            i = -1;
+
+        if (i < 0 || i >= (int)(sizeof(phydevs) / sizeof(phydevs[0]))) {
+            wolfBoot_printf("FDT: Ethernet cell-index %u unsupported, "
+                "skipping\n", (unsigned)cell);
+            off = fdt_node_offset_by_compatible(fdt, off, "fsl,fman-memac");
+            continue;
+        }
 
         wolfBoot_printf("FDT: Ethernet%d: Offset %d\n", i, off);
 
@@ -3535,8 +3566,14 @@ int hal_dts_fixup(void* dts_addr)
                         0x10, 0x00,       0x00, 0x00,       0x00, 0x80000000
         };
         uint32_t bus_range[2], base;
-        bus_range[0] = 0;
-        bus_range[1] = i-1;
+        unsigned int c;
+
+        /* Cells are big-endian on the wire; a no-op on PowerPC. */
+        for (c = 0; c < sizeof(dma_ranges)/sizeof(dma_ranges[0]); c++) {
+            dma_ranges[c] = cpu_to_fdt32(dma_ranges[c]);
+        }
+        bus_range[0] = cpu_to_fdt32(0);
+        bus_range[1] = cpu_to_fdt32((uint32_t)(i-1));
 
         /* find offset for pci controlller base register */
         off = fdt_node_offset_by_compatible(fdt, -1, "fsl,qoriq-pcie");
@@ -3575,13 +3612,14 @@ int hal_dts_fixup(void* dts_addr)
 
     /* fix SDHC */
     off = fdt_node_offset_by_compatible(fdt, -1, "fsl,esdhc");
-    if (off != !FDT_ERR_NOTFOUND) {
+    if (off != -FDT_ERR_NOTFOUND) {
         fdt_fixup_val(fdt, off, "sdhc@", "clock-frequency", hal_get_bus_clk());
-        fdt_fixup_str(fdt, off, "cpu", "status", "okay");
+        fdt_fixup_str(fdt, off, "sdhc@", "status", "okay");
     }
 
 #endif /* !BUILD_LOADER_STAGE1 */
     (void)dts_addr;
+    (void)capacity;
     return 0;
 }
 #endif /* MMU */

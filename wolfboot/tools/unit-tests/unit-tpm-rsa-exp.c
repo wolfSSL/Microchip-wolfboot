@@ -29,7 +29,10 @@ static uint8_t test_exponent_der[] = { 0xAA, 0x01, 0x00, 0x01, 0x7B };
 static uint8_t test_nv_digest[WOLFBOOT_SHA_DIGEST_SIZE];
 static uint32_t captured_exponent;
 static int forbidden_memcmp_calls;
+static int unset_auth0_calls;
 static uint32_t mock_nv_digest_sz;
+static int mock_keystore_size;
+static int decode_calls;
 
 int keyslot_id_by_sha(const uint8_t* pubkey_hint)
 {
@@ -52,7 +55,7 @@ uint8_t *keystore_get_buffer(int id)
 int keystore_get_size(int id)
 {
     ck_assert_int_eq(id, 0);
-    return (int)sizeof(test_hdr);
+    return mock_keystore_size;
 }
 
 int wc_RsaPublicKeyDecode_ex(const byte* input, word32* inOutIdx, word32 inSz,
@@ -61,6 +64,7 @@ int wc_RsaPublicKeyDecode_ex(const byte* input, word32* inOutIdx, word32 inSz,
     (void)input;
     (void)inSz;
 
+    decode_calls++;
     *inOutIdx = 0;
     *n = test_modulus;
     *nSz = sizeof(test_modulus);
@@ -106,7 +110,9 @@ int wolfTPM2_SetAuthSession(WOLFTPM2_DEV* dev, int index,
 int wolfTPM2_UnsetAuth(WOLFTPM2_DEV* dev, int index)
 {
     (void)dev;
-    (void)index;
+    if (index == 0) {
+        unset_auth0_calls++;
+    }
     return 0;
 }
 
@@ -164,6 +170,15 @@ static int forbidden_memcmp(const void *a, const void *b, size_t n)
 }
 
 #define memcmp forbidden_memcmp
+void TPM2_ForceZero(void* mem, word32 len)
+{
+    volatile uint8_t* p = (volatile uint8_t*)mem;
+    word32 i;
+
+    for (i = 0; i < len; i++)
+        p[i] = 0;
+}
+
 #include "../../src/tpm.c"
 #undef memcmp
 
@@ -174,7 +189,10 @@ static void setup(void)
     memset(test_nv_digest, 0x7C, sizeof(test_nv_digest));
     captured_exponent = 0;
     forbidden_memcmp_calls = 0;
+    unset_auth0_calls = 0;
     mock_nv_digest_sz = WOLFBOOT_SHA_DIGEST_SIZE;
+    mock_keystore_size = (int)sizeof(test_hdr);
+    decode_calls = 0;
 }
 
 START_TEST(test_wolfBoot_load_pubkey_decodes_der_exponent_bytes)
@@ -194,6 +212,26 @@ START_TEST(test_wolfBoot_load_pubkey_decodes_der_exponent_bytes)
 }
 END_TEST
 
+/* A failed keystore_get_size() (-1: invalid or oversized OTP slot) must be
+ * rejected, not narrowed to uint16_t (65535) and fed to the key parser. */
+START_TEST(test_wolfBoot_load_pubkey_rejects_failed_keystore_size)
+{
+    uint8_t hint[WOLFBOOT_SHA_DIGEST_SIZE] = { 0 };
+    WOLFTPM2_KEY key;
+    TPM_ALG_ID alg = TPM_ALG_NULL;
+    int rc;
+
+    memset(&key, 0, sizeof(key));
+    mock_keystore_size = -1;
+
+    rc = wolfBoot_load_pubkey(hint, &key, &alg);
+
+    ck_assert_int_eq(rc, -1);
+    ck_assert_uint_eq(decode_calls, 0);
+    ck_assert_int_eq(alg, TPM_ALG_NULL);
+}
+END_TEST
+
 START_TEST(test_wolfBoot_check_rot_avoids_memcmp_on_digest_compare)
 {
     uint8_t hint[WOLFBOOT_SHA_DIGEST_SIZE];
@@ -205,6 +243,8 @@ START_TEST(test_wolfBoot_check_rot_avoids_memcmp_on_digest_compare)
 
     ck_assert_int_eq(rc, 0);
     ck_assert_int_eq(forbidden_memcmp_calls, 0);
+    /* the NV auth slot must be unset before returning */
+    ck_assert_int_ge(unset_auth0_calls, 1);
 }
 END_TEST
 
@@ -245,6 +285,7 @@ static Suite *tpm_suite(void)
     tc = tcase_create("wolfBoot_load_pubkey");
     tcase_add_checked_fixture(tc, setup, NULL);
     tcase_add_test(tc, test_wolfBoot_load_pubkey_decodes_der_exponent_bytes);
+    tcase_add_test(tc, test_wolfBoot_load_pubkey_rejects_failed_keystore_size);
     tcase_add_test(tc, test_wolfBoot_check_rot_avoids_memcmp_on_digest_compare);
     tcase_add_test(tc, test_wolfBoot_check_rot_rejects_mismatched_digest);
     tcase_add_test(tc, test_wolfBoot_check_rot_rejects_wrong_digest_size);

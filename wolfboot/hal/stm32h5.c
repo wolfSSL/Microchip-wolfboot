@@ -39,12 +39,17 @@
 #if TZ_SECURE()
 static int is_flash_nonsecure(uint32_t address)
 {
+#if defined(WOLFBOOT_SECURE_APP)
+    (void)address;
+    return 0;
+#else
     if (address >= WOLFBOOT_PARTITION_BOOT_ADDRESS &&
             address < WOLFBOOT_PARTITION_BOOT_ADDRESS +
             WOLFBOOT_PARTITION_SIZE) {
         return 1;
     }
     return 0;
+#endif
 }
 #endif
 
@@ -157,10 +162,11 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
     return 0;
 }
 
-#define STM32H5_BSEC_BASE 0x46009000u
-#define STM32H5_BSEC_UID0 (*(volatile uint32_t *)(STM32H5_BSEC_BASE + 0x14))
-#define STM32H5_BSEC_UID1 (*(volatile uint32_t *)(STM32H5_BSEC_BASE + 0x18))
-#define STM32H5_BSEC_UID2 (*(volatile uint32_t *)(STM32H5_BSEC_BASE + 0x1C))
+/* STM32H5 96-bit unique device ID, factory-programmed (RM0481). */
+#define STM32H5_UID_BASE 0x08FFF800u
+#define STM32H5_UID0 (*(volatile uint32_t *)(STM32H5_UID_BASE + 0x0u))
+#define STM32H5_UID1 (*(volatile uint32_t *)(STM32H5_UID_BASE + 0x4u))
+#define STM32H5_UID2 (*(volatile uint32_t *)(STM32H5_UID_BASE + 0x8u))
 
 #ifdef WOLFBOOT_UDS_OBKEYS
 __attribute__((weak)) int stm32h5_obkeys_read_uds(uint8_t *out, size_t out_len)
@@ -195,18 +201,18 @@ static int uds_from_uid(uint8_t *out, size_t out_len)
 #endif
     size_t copy_len;
 
-    uid[0] = (uint8_t)(STM32H5_BSEC_UID0 >> 0);
-    uid[1] = (uint8_t)(STM32H5_BSEC_UID0 >> 8);
-    uid[2] = (uint8_t)(STM32H5_BSEC_UID0 >> 16);
-    uid[3] = (uint8_t)(STM32H5_BSEC_UID0 >> 24);
-    uid[4] = (uint8_t)(STM32H5_BSEC_UID1 >> 0);
-    uid[5] = (uint8_t)(STM32H5_BSEC_UID1 >> 8);
-    uid[6] = (uint8_t)(STM32H5_BSEC_UID1 >> 16);
-    uid[7] = (uint8_t)(STM32H5_BSEC_UID1 >> 24);
-    uid[8] = (uint8_t)(STM32H5_BSEC_UID2 >> 0);
-    uid[9] = (uint8_t)(STM32H5_BSEC_UID2 >> 8);
-    uid[10] = (uint8_t)(STM32H5_BSEC_UID2 >> 16);
-    uid[11] = (uint8_t)(STM32H5_BSEC_UID2 >> 24);
+    uid[0] = (uint8_t)(STM32H5_UID0 >> 0);
+    uid[1] = (uint8_t)(STM32H5_UID0 >> 8);
+    uid[2] = (uint8_t)(STM32H5_UID0 >> 16);
+    uid[3] = (uint8_t)(STM32H5_UID0 >> 24);
+    uid[4] = (uint8_t)(STM32H5_UID1 >> 0);
+    uid[5] = (uint8_t)(STM32H5_UID1 >> 8);
+    uid[6] = (uint8_t)(STM32H5_UID1 >> 16);
+    uid[7] = (uint8_t)(STM32H5_UID1 >> 24);
+    uid[8] = (uint8_t)(STM32H5_UID2 >> 0);
+    uid[9] = (uint8_t)(STM32H5_UID2 >> 8);
+    uid[10] = (uint8_t)(STM32H5_UID2 >> 16);
+    uid[11] = (uint8_t)(STM32H5_UID2 >> 24);
 
 #if defined(WOLFBOOT_HASH_SHA256)
     wc_InitSha256(&hash);
@@ -236,14 +242,15 @@ static int uds_from_uid(uint8_t *out, size_t out_len)
 
 static int buffer_is_all_value(const uint8_t *buf, size_t len, uint8_t value)
 {
+    volatile uint8_t diff = 0U;
     size_t i;
 
+    /* Constant-time scan: the buffer holds the UDS, the DICE root
+     * secret, so the loop must not early-exit on a data-dependent byte. */
     for (i = 0; i < len; i++) {
-        if (buf[i] != value) {
-            return 0;
-        }
+        diff |= (uint8_t)(buf[i] ^ value);
     }
-    return 1;
+    return diff == 0;
 }
 
 int hal_uds_derive_key(uint8_t *out, size_t out_len)
@@ -289,11 +296,17 @@ int hal_uds_derive_key(uint8_t *out, size_t out_len)
 
 int hal_attestation_get_lifecycle(uint32_t *lifecycle)
 {
+    uint32_t debugAuthStatus;
+    uint32_t productState;
+
     if (lifecycle == NULL) {
         return -1;
     }
 
-    *lifecycle = 0x3000u; /* PSA_LIFECYCLE_SECURED (default) */
+    productState = (FLASH_OPTSR_CUR & FLASH_OPTSR_PRODUCT_STATE_MASK) >>
+        FLASH_OPTSR_PRODUCT_STATE_SHIFT;
+    debugAuthStatus = *(volatile uint32_t *)CORTEX_M_DAUTHSTATUS_ADDRESS;
+    *lifecycle = stm32h5_attestation_lifecycle(productState, debugAuthStatus);
     return 0;
 }
 
@@ -764,9 +777,12 @@ void hal_init(void)
 void hal_prepare_boot(void)
 {
 
-    /* Keep clock settings when staging a NS-application */
+    /* Keep clock settings when staging a NS-application. A secure application
+     * owns the TrustZone peripherals after the handoff. */
 #if (TZ_SECURE())
+#if !defined(WOLFBOOT_SECURE_APP)
     periph_unsecure();
+#endif
 #else
     #ifdef WOLFBOOT_RESTORE_CLOCK
     clock_pll_off();

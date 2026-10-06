@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -17,8 +17,10 @@
 
 #include "wolfhsm/wh_settings.h"
 
-/* Only compile if we have crypto, client, server, and crypto callbacks */
-#if !defined(WOLFHSM_CFG_NO_CRYPTO) && defined(WOLF_CRYPTO_CB)
+/* Only compile if the crypto affinity feature is enabled and we have crypto,
+ * client, server, and crypto callbacks */
+#if !defined(WOLFHSM_CFG_NO_CRYPTO) && defined(WOLF_CRYPTO_CB) && \
+    defined(WOLFHSM_CFG_CRYPTO_AFFINITY)
 
 #include <stdint.h>
 #include <stdio.h>
@@ -509,4 +511,5 @@ int whTest_CryptoAffinity(void)
     return WH_ERROR_OK;
 }
 
-#endif /* !WOLFHSM_CFG_NO_CRYPTO && WOLF_CRYPTO_CB */
+#endif /* !WOLFHSM_CFG_NO_CRYPTO && WOLF_CRYPTO_CB && \
+          WOLFHSM_CFG_CRYPTO_AFFINITY */

@@ -591,6 +591,89 @@ START_TEST(test_decode_asn1_tag_start_bounds)
     free(input);
 }
 END_TEST
+
+START_TEST(test_rsa_decode_signature_pins_digest_info)
+{
+    /* DigestInfo as produced by wc_EncodeSignature():
+     * SEQUENCE(49) { SEQUENCE(13) { OID, NULL }, OCTET STRING(32) } */
+    static const uint8_t valid[] = {
+        0x30, 0x31,
+        0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
+        0x04, 0x02, 0x01, 0x05, 0x00,
+        0x04, 0x20
+    };
+    uint8_t msg[sizeof(valid) + WOLFBOOT_SHA_DIGEST_SIZE + 1];
+    uint8_t *in = NULL;
+    int i;
+    int ret;
+
+    memcpy(msg, valid, sizeof(valid));
+    for (i = 0; i < WOLFBOOT_SHA_DIGEST_SIZE; i++)
+        msg[sizeof(valid) + i] = (uint8_t)(0xA0 + i);
+
+    /* The valid encoding is accepted and yields the digest */
+    in = msg;
+    ret = RsaDecodeSignature(&in,
+        (int)sizeof(valid) + WOLFBOOT_SHA_DIGEST_SIZE);
+    ck_assert_int_eq(ret, WOLFBOOT_SHA_DIGEST_SIZE);
+    ck_assert_ptr_eq(in, msg + sizeof(valid));
+
+    /* Trailing byte after the SEQUENCE: rejected */
+    msg[sizeof(valid) + WOLFBOOT_SHA_DIGEST_SIZE] = 0x00;
+    in = msg;
+    ret = RsaDecodeSignature(&in,
+        (int)sizeof(valid) + WOLFBOOT_SHA_DIGEST_SIZE + 1);
+    ck_assert_int_eq(ret, -1);
+
+    /* Trailing byte inside the SEQUENCE: rejected */
+    msg[1] = 0x32;
+    in = msg;
+    ret = RsaDecodeSignature(&in,
+        (int)sizeof(valid) + WOLFBOOT_SHA_DIGEST_SIZE + 1);
+    ck_assert_int_eq(ret, -1);
+    msg[1] = 0x31;
+
+    /* Empty AlgorithmIdentifier (the forgeable shape): rejected */
+    memcpy(msg, valid, 2);
+    msg[1] = 0x24;
+    msg[2] = 0x30;
+    msg[3] = 0x00;
+    msg[4] = 0x04;
+    msg[5] = 0x20;
+    for (i = 0; i < WOLFBOOT_SHA_DIGEST_SIZE; i++)
+        msg[6 + i] = (uint8_t)(0xA0 + i);
+    in = msg;
+    ret = RsaDecodeSignature(&in, 6 + WOLFBOOT_SHA_DIGEST_SIZE);
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
+/* The pinned AlgorithmIdentifier tables must match the spec bytes for
+ * the configured hash. */
+START_TEST(test_rsa_digest_info_table_matches_spec)
+{
+#if defined(WOLFBOOT_HASH_SHA256)
+    static const uint8_t expected[] = {
+        0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
+        0x04, 0x02, 0x01, 0x05, 0x00 /* SHA-256 */
+    };
+#elif defined(WOLFBOOT_HASH_SHA384)
+    static const uint8_t expected[] = {
+        0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
+        0x04, 0x02, 0x02, 0x05, 0x00 /* SHA-384 */
+    };
+#elif defined(WOLFBOOT_HASH_SHA3_384)
+    static const uint8_t expected[] = {
+        0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
+        0x04, 0x02, 0x09, 0x05, 0x00 /* SHA3-384 */
+    };
+#endif
+    ck_assert_int_eq((int)sizeof(rsa_digest_info_algoid),
+                     (int)sizeof(expected));
+    ck_assert_int_eq(memcmp(rsa_digest_info_algoid, expected,
+                             sizeof(expected)), 0);
+}
+END_TEST
 #endif
 
 
@@ -638,6 +721,9 @@ START_TEST(test_sha_ops)
     ck_assert_ptr_eq(retp, ext_hash_block);
     retp = wolfBoot_peek_image(&test_img, offset, &sz);
     ck_assert_ptr_eq(retp, ext_hash_block);
+    /* Full block fits in this image (fw_size 0x1000): the reported
+     * size stays the block size. The clamped tail case is covered by
+     * test_peek_image_bounds. */
     ck_assert_uint_eq(sz, WOLFBOOT_SHA_BLOCK_SIZE);
 
     /* Test image hash */
@@ -669,6 +755,61 @@ START_TEST(test_sha_ops)
     /* Only the SHA-256 ECC256 fixture has a fixed expected digest here. */
     (void)hash;
 #endif
+}
+END_TEST
+
+START_TEST(test_peek_image_bounds)
+{
+    static uint8_t FlashImg[0x1000];
+    struct wolfBoot_image test_img;
+    uint32_t sz;
+    uint8_t *retp;
+
+    /* Internal image: a peek at offset == fw_size must be rejected
+     * (no bytes remain) and the reported size must be clamped to the
+     * bytes that remain in the image. */
+    memset(&test_img, 0, sizeof(test_img));
+    test_img.part = PART_BOOT;
+    test_img.fw_size = 0x100;
+    test_img.fw_base = FlashImg;
+
+    sz = 0xFFFF;
+    retp = wolfBoot_peek_image(&test_img, 0x100, &sz);
+    ck_assert_ptr_null(retp);
+    ck_assert_uint_eq(sz, 0);
+
+    sz = 0xFFFF;
+    retp = wolfBoot_peek_image(&test_img, 0xF0, &sz);
+    ck_assert_ptr_nonnull(retp);
+    ck_assert_uint_eq(sz, 0x10);
+
+    /* A block that fits fully must still report the full block size. */
+    memset(&test_img, 0, sizeof(test_img));
+    test_img.part = PART_BOOT;
+    test_img.fw_size = 0x1000;
+    test_img.fw_base = FlashImg;
+
+    sz = 0xFFFF;
+    retp = wolfBoot_peek_image(&test_img, 0, &sz);
+    ck_assert_ptr_nonnull(retp);
+    ck_assert_uint_eq(sz, WOLFBOOT_SHA_BLOCK_SIZE);
+
+    /* External image: same contract through the ext flash reader. */
+    memset(&test_img, 0, sizeof(test_img));
+    test_img.part = PART_UPDATE;
+    test_img.fw_base = 0;
+    test_img.fw_size = test_img_len;
+    ext_flash_write(0, test_img_v200000000_signed_bin, test_img_len);
+
+    sz = 0xFFFF;
+    retp = wolfBoot_peek_image(&test_img, test_img_len, &sz);
+    ck_assert_ptr_null(retp);
+    ck_assert_uint_eq(sz, 0);
+
+    sz = 0xFFFF;
+    retp = wolfBoot_peek_image(&test_img, test_img_len - 10, &sz);
+    ck_assert_ptr_nonnull(retp);
+    ck_assert_uint_eq(sz, 10);
 }
 END_TEST
 
@@ -1095,6 +1236,74 @@ START_TEST(test_open_image_address_without_partitions_rejects_oversized_fw_size)
 END_TEST
 #endif
 
+#if defined(WOLFBOOT_FDT) || defined(MMU)
+/* Exercises wolfBoot_verify_dts_digest(), the raw-DTB authentication used by
+ * the non-FIT MMU boot path in src/update_ram.c (Fenrir #7998). The reference
+ * digest is computed with whichever WOLFBOOT_HASH the build selected, so the
+ * SHA256, SHA384 and SHA3-384 variants of wolfBoot_hash_buffer() are all
+ * covered (see the unit-image-dts* Makefile targets). */
+START_TEST(test_verify_dts_digest)
+{
+    uint8_t dtb[256];
+    uint8_t tampered[256];
+    uint8_t good[WOLFBOOT_SHA_DIGEST_SIZE];
+    unsigned int i;
+
+    for (i = 0; i < sizeof(dtb); i++)
+        dtb[i] = (uint8_t)(i * 7U + 1U);
+
+    /* Reference digest computed the same way the signer does (image hash over
+     * the DTB bytes), using the configured hash algorithm. */
+#if defined(WOLFBOOT_HASH_SHA256)
+    {
+        wc_Sha256 sha;
+        ck_assert_int_eq(wc_InitSha256_ex(&sha, NULL, INVALID_DEVID), 0);
+        ck_assert_int_eq(wc_Sha256Update(&sha, dtb, sizeof(dtb)), 0);
+        ck_assert_int_eq(wc_Sha256Final(&sha, good), 0);
+        wc_Sha256Free(&sha);
+    }
+#elif defined(WOLFBOOT_HASH_SHA384)
+    {
+        wc_Sha384 sha;
+        ck_assert_int_eq(wc_InitSha384_ex(&sha, NULL, INVALID_DEVID), 0);
+        ck_assert_int_eq(wc_Sha384Update(&sha, dtb, sizeof(dtb)), 0);
+        ck_assert_int_eq(wc_Sha384Final(&sha, good), 0);
+        wc_Sha384Free(&sha);
+    }
+#elif defined(WOLFBOOT_HASH_SHA3_384)
+    {
+        wc_Sha3 sha;
+        ck_assert_int_eq(wc_InitSha3_384(&sha, NULL, INVALID_DEVID), 0);
+        ck_assert_int_eq(wc_Sha3_384_Update(&sha, dtb, sizeof(dtb)), 0);
+        ck_assert_int_eq(wc_Sha3_384_Final(&sha, good), 0);
+        wc_Sha3_384_Free(&sha);
+    }
+#else
+    #error "test_verify_dts_digest: no supported WOLFBOOT_HASH selected"
+#endif
+
+    /* Matching digest -> accept. */
+    ck_assert_int_eq(wolfBoot_verify_dts_digest(good, dtb, sizeof(dtb)), 0);
+
+    /* Tampered DTB (single flipped byte) -> reject. */
+    memcpy(tampered, dtb, sizeof(dtb));
+    tampered[100] ^= 0xFFU;
+    ck_assert_int_eq(
+        wolfBoot_verify_dts_digest(good, tampered, sizeof(tampered)), -1);
+
+    /* Wrong expected digest -> reject. */
+    good[0] ^= 0xFFU;
+    ck_assert_int_eq(wolfBoot_verify_dts_digest(good, dtb, sizeof(dtb)), -1);
+    good[0] ^= 0xFFU;
+
+    /* Bad arguments -> reject. */
+    ck_assert_int_eq(wolfBoot_verify_dts_digest(NULL, dtb, sizeof(dtb)), -1);
+    ck_assert_int_eq(wolfBoot_verify_dts_digest(good, NULL, sizeof(dtb)), -1);
+    ck_assert_int_eq(wolfBoot_verify_dts_digest(good, dtb, 0), -1);
+}
+END_TEST
+#endif /* WOLFBOOT_FDT || MMU */
+
 
 Suite *wolfboot_suite(void)
 {
@@ -1106,6 +1315,16 @@ Suite *wolfboot_suite(void)
     tcase_set_timeout(tcase_key_hash, 20);
     tcase_add_test(tcase_key_hash, test_key_hash_zeroes_output_on_invalid_slot);
     suite_add_tcase(s, tcase_key_hash);
+    return s;
+#endif
+
+#if defined(UNIT_IMAGE_DTS_ONLY) && (defined(WOLFBOOT_FDT) || defined(MMU))
+    /* Only the raw-DTB digest test. Used by the sha384/sha3-384 variants,
+     * whose non-SHA256 hash config would break the other unit-image tests. */
+    TCase* tcase_dts_only = tcase_create("dts_digest");
+    tcase_set_timeout(tcase_dts_only, 20);
+    tcase_add_test(tcase_dts_only, test_verify_dts_digest);
+    suite_add_tcase(s, tcase_dts_only);
     return s;
 #endif
 
@@ -1134,6 +1353,8 @@ Suite *wolfboot_suite(void)
     TCase* tcase_rsa_asn1 = tcase_create("rsa_asn1");
     tcase_set_timeout(tcase_rsa_asn1, 20);
     tcase_add_test(tcase_rsa_asn1, test_decode_asn1_tag_start_bounds);
+    tcase_add_test(tcase_rsa_asn1, test_rsa_decode_signature_pins_digest_info);
+    tcase_add_test(tcase_rsa_asn1, test_rsa_digest_info_table_matches_spec);
     suite_add_tcase(s, tcase_rsa_asn1);
 #endif
 
@@ -1162,6 +1383,7 @@ Suite *wolfboot_suite(void)
     TCase* tcase_sha_ops = tcase_create("sha_ops");
     tcase_set_timeout(tcase_sha_ops, 20);
     tcase_add_test(tcase_sha_ops, test_sha_ops);
+    tcase_add_test(tcase_sha_ops, test_peek_image_bounds);
     suite_add_tcase(s, tcase_sha_ops);
 
     TCase* tcase_headers = tcase_create("headers");
@@ -1185,6 +1407,13 @@ Suite *wolfboot_suite(void)
         test_open_image_address_without_partitions_rejects_oversized_fw_size);
 #endif
     suite_add_tcase(s, tcase_open_image);
+#endif
+
+#if defined(WOLFBOOT_FDT) || defined(MMU)
+    TCase* tcase_dts_digest = tcase_create("dts_digest");
+    tcase_set_timeout(tcase_dts_digest, 20);
+    tcase_add_test(tcase_dts_digest, test_verify_dts_digest);
+    suite_add_tcase(s, tcase_dts_digest);
 #endif
     return s;
 }

@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 #include <wolfHAL/wolfHAL.h>
-#include "board.h"
+#include "wolfHAL_board.h"
 
 void main(void)
 {

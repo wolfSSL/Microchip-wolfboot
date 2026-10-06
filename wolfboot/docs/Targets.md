@@ -5,9 +5,12 @@ This README describes configuration of supported targets.
 ## Supported Targets
 
 * [Simulated](#simulated)
+* [Analog Devices MAX32666](#analog-devices-max32666)
 * [Cortex-A53 / Raspberry PI 3](#cortex-a53--raspberry-pi-3-experimental)
+* [Cortex-A72 / Raspberry Pi Compute Module 4](#cortex-a72--raspberry-pi-compute-module-4-bcm2711)
 * [Cypress PSoC-6](#cypress-psoc-6)
 * [Infineon AURIX TC3xx](#infineon-aurix-tc3xx)
+* [Infineon AURIX TC4xx](#infineon-aurix-tc4xx)
 * [Intel x86-64 Intel FSP](#intel-x86_64-with-intel-fsp-support)
 * [Kontron VX3060-S2](#kontron-vx3060-s2)
 * [Microchip PIC32CK](#microchip-pic32ck)
@@ -18,10 +21,14 @@ This README describes configuration of supported targets.
 * [Nordic nRF52840](#nordic-nrf52840)
 * [Nordic nRF5340](#nordic-nrf5340)
 * [Nordic nRF54L15](#nordic-nrf54l15)
+* [NXP i.MX 8QuadMax](#nxp-imx-8quadmax)
+* [NXP i.MX95 Cortex-M7](#nxp-imx95-cortex-m7)
 * [NXP iMX-RT](#nxp-imx-rt)
+* [NXP i.MX RT700](#nxp-imx-rt700)
 * [NXP Kinetis](#nxp-kinetis)
 * [NXP Kinetis KL26Z](#nxp-kinetis-kl26z)
 * [NXP LPC546xx](#nxp-lpc546xx)
+* [Nuvoton NuMaker M2354](#nuvoton-numaker-m2354-numicro-m2354)
 * [NXP LPC540xx / LPC54S0xx (SPIFI boot)](#nxp-lpc540xx--lpc54s0xx-spifi-boot)
 * [NXP LPC55S69](#nxp-lpc55s69)
 * [NXP LS1028A](#nxp-ls1028a)
@@ -33,7 +40,10 @@ This README describes configuration of supported targets.
 * [NXP T10xx PPC (T1024 / T1040)](#nxp-qoriq-t10xx-ppc-t1024--t1040)
 * [NXP T2080 PPC](#nxp-qoriq-t2080-ppc)
 * [Qemu x86-64 UEFI](#qemu-x86-64-uefi)
+* [NVIDIA Jetson Orin (aarch64_efi)](#nvidia-jetson-orin-aarch64_efi)
+* [NVIDIA Jetson Orin (NVIDIA Tegra234) BL33 firmware](#nvidia-jetson-orin-nvidia-tegra234-bl33-firmware)
 * [Raspberry Pi pico 2 (rp2350)](#raspberry-pi-pico-rp2350)
+* [RealTek RTL8735B (AmebaPro2)](#realtek-rtl8735b-amebapro2)
 * [Renesas RA6M4](#renesas-ra6m4)
 * [Renesas RX65N](#renesas-rx65n)
 * [Renesas RX72N](#renesas-rx72n)
@@ -54,6 +64,7 @@ This README describes configuration of supported targets.
 * [STM32L5](#stm32l5)
 * [STM32U5](#stm32u5)
 * [STM32WB55](#stm32wb55)
+* [TI C2000 C28x (LAUNCHXL-F28P55X)](#ti-c2000-c28x-launchxl-f28p55x)
 * [TI Hercules TMS570LC435](#ti-hercules-tms570lc435)
 * [Vorago VA416x0](#vorago-va416x0)
 * [Xilinx Zynq UltraScale](#xilinx-zynq-ultrascale)
@@ -865,6 +876,8 @@ add-symbol-file test-app/image.elf 0x20020100
 
 ## Microchip PolarFire SoC
 
+> **Filesystem boot:** this target can also read its signed image from a **file** on a read-only FAT32 or ext4 partition instead of from raw offset 0. Build with `DISK_FS=fat32|ext4|both` and set `BOOT_FILE_A` / `BOOT_FILE_B`. See [Disk boot from a read-only filesystem (FAT32 / ext4)](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
+
 The PolarFire SoC is a 64-bit RISC-V SoC featuring a five-core CPU cluster (1× E51 monitor core and 4× U54 application cores) and FPGA fabric. Tested with MPFS250.
 
 ### Features
@@ -878,7 +891,7 @@ The PolarFire SoC is a 64-bit RISC-V SoC featuring a five-core CPU cluster (1× 
 
 ### Supported Boot Configurations
 
-Five ready-to-use config templates cover all supported boot mode / storage / memory combinations:
+Six ready-to-use config templates cover all supported boot mode / storage / memory combinations:
 
 | Configuration | Config File | Boot Mode | Storage | Memory | HSS |
 |---------------|-------------|-----------|---------|--------|-----|
@@ -887,21 +900,51 @@ Five ready-to-use config templates cover all supported boot mode / storage / mem
 | **QSPI (S-mode)** | `polarfire_mpfs250_qspi.config` | S-mode (U54 via HSS) | MSS or SC QSPI | DDR | Yes |
 | **QSPI + L2-LIM** | `polarfire_mpfs250_hss_l2lim.config` | S-mode (U54 via HSS) | SC QSPI | L2-LIM (no DDR) | Yes |
 | **M-Mode (no HSS)** | `polarfire_mpfs250_m_qspi.config` | M-mode (E51, no HSS) | SC QSPI | L2 Scratchpad | No |
+| **M-Mode + DDR** | `polarfire_mpfs250_m.config` | M-mode (E51, no HSS) | SD Card | LPDDR4 (DDR) | No |
+
+The **M-Mode + DDR** configuration brings up the LPDDR4 controller from
+the E51 in M-mode (no HSS), then loads a signed FIT image from SD card,
+verifies it (SHA384 + ECC384) and hands off to a U54 hart in S-mode.
+wolfBoot includes a minimal SBI runtime (`src/riscv_sbi.c`) so the
+hand-off target can be a Linux kernel: tested booting 4-CPU SMP Yocto
+Linux to a login prompt in ~40 s from power-on on the MPFS250T Video
+Kit. Because all
+LIBERO_SETTING_\* values are board-specific, this build pulls them from
+a Libero/HSS-generated `fpga_design_config.h` pointed at by the
+`LIBERO_FPGA_CONFIG_DIR` makefile variable - typical sources are an
+HSS Video Kit build at
+`<hss>/build/boards/mpfs-video-kit/fpga_design_config` or a Libero MSS
+Configurator export. Setting `LIBERO_FPGA_CONFIG_DIR` automatically
+defines `MPFS_DDR_INIT` and adds the directory to the include path
+(see `arch.mk`); when unset, the DDR HAL is excluded and the build
+still produces a working M-mode wolfBoot without DDR. Add
+`-DDEBUG_DDR` to `CFLAGS_EXTRA` for verbose register-level traces
+during bring-up.
+
+For GitHub Actions, `tools/ci/gen_mpfs_libero_stub.sh` generates a
+compile-only stub (every `LIBERO_SETTING_*` symbol referenced by the
+HAL, defined to `0`; loop-bound settings to `1U`) so the M-Mode + DDR
+build path stays under continuous integration. The generated header is
+**not** committed and **not** runnable - real boards must point
+`LIBERO_FPGA_CONFIG_DIR` at the actual Libero / HSS output.
 
 Key build settings that differ between configurations:
 
-| Setting | SDCard | eMMC | QSPI | L2-LIM | M-Mode |
-|---------|--------|------|------|--------|--------|
-| `WOLFBOOT_ORIGIN` | `0x80000000` | `0x80000000` | `0x80000000` | `0x08040000` | `0x0A000000` |
-| `WOLFBOOT_LOAD_ADDRESS` | `0x8E000000` | `0x8E000000` | `0x8E000000` | `0x08060000` | `0x0A010200` |
-| `EXT_FLASH` | 0 | 0 | 1 | 1 | 1 |
-| `DISK_SDCARD` | 1 | 0 | 0 | 0 | 0 |
-| `DISK_EMMC` | 0 | 1 | 0 | 0 | 0 |
-| `MPFS_L2LIM` | – | – | – | 1 | – |
-| `RISCV_MMODE` | – | – | – | – | 1 |
-| Linker script | `mpfs250.ld` | `mpfs250.ld` | `mpfs250.ld` | `mpfs250-hss.ld` | `mpfs250-m.ld` |
-| HSS YAML | `mpfs.yaml` | `mpfs.yaml` | `mpfs.yaml` | `mpfs-l2lim.yaml` | N/A |
-| `ELF` output | 1 | 1 | 1 | 0 (raw .bin) | 1 |
+| Setting | SDCard | eMMC | QSPI | L2-LIM | M-Mode | M-Mode + DDR |
+|---------|--------|------|------|--------|--------|--------------|
+| `WOLFBOOT_ORIGIN` | `0x80000000` | `0x80000000` | `0x80000000` | `0x08040000` | `0x0A000000` | `0x0A000000` |
+| `WOLFBOOT_LOAD_ADDRESS` | `0x8E000000` | `0x8E000000` | `0x8E000000` | `0x08060000` | `0x0A010200` | `0x82000000` |
+| `WOLFBOOT_LOAD_DTS_ADDRESS` | `0x8A000000` | `0x8A000000` | `0x8A000000` | – | – | `0x8A000000` |
+| `EXT_FLASH` | 0 | 0 | 1 | 1 | 1 | 0 |
+| `DISK_SDCARD` | 1 | 0 | 0 | 0 | 0 | 1 |
+| `DISK_EMMC` | 0 | 1 | 0 | 0 | 0 | 0 |
+| `MPFS_L2LIM` | – | – | – | 1 | – | – |
+| `RISCV_MMODE` | – | – | – | – | 1 | 1 |
+| `LIBERO_FPGA_CONFIG_DIR` | – | – | – | – | – | required |
+| `WOLFBOOT_MMODE_SMODE_BOOT` | – | – | – | – | – | 1 |
+| Linker script | `mpfs250.ld` | `mpfs250.ld` | `mpfs250.ld` | `mpfs250-hss.ld` | `mpfs250-m.ld` | `mpfs250-m.ld` |
+| HSS YAML | `mpfs.yaml` | `mpfs.yaml` | `mpfs.yaml` | `mpfs-l2lim.yaml` | N/A | N/A |
+| `ELF` output | 1 | 1 | 1 | 0 (raw .bin) | 1 | 1 |
 
 > **Note:** All configurations require `NO_ASM=1` because the MPFS250 U54/E51 cores lack RISC-V
 > crypto extensions (Zknh); wolfBoot uses portable C implementations for all cryptographic operations.
@@ -933,6 +976,10 @@ The current `STACK_SIZE` in `hal/mpfs250-m.ld` is **32 KB**. Measured peak for E
 
 `hal/mpfs250.c` - Hardware abstraction layer (UART, QSPI, SD/eMMC, multi-hart)
 `hal/mpfs250.h` - Register definitions and hardware interfaces
+`hal/mpfs250_ddr.c` - LPDDR4 PHY/PLL/training and DDR bring-up (M-mode, no HSS)
+`src/ddr_cadence.c` - Generic Cadence DDR controller driver (controller CSR
+programming, Memory Test Controller, LPDDR4 mode-register protocol)
+`include/ddr_cadence.h` - Generic Cadence DDR controller register map + interface
 `hal/mpfs250.ld` - Linker script for S-mode (HSS-based boot)
 `hal/mpfs250-m.ld` - Linker script for M-mode (eNVM + L2 SRAM)
 `hal/mpfs250-hss.ld` - Linker script for S-mode (HSS with L2-LIM)
@@ -1043,9 +1090,9 @@ Notes:
 ### PolarFire SoC HSS S-Mode with L2-LIM (no DDR)
 
 wolfBoot can run in S-mode via HSS without DDR by targeting the on-chip **L2 Loosely Integrated
-Memory (L2-LIM)**. HSS loads wolfBoot from SC QSPI flash into L2-LIM on a U54 application core,
-and wolfBoot loads the signed application from SC QSPI into L2-LIM as well. This is useful for
-early bring-up or power-constrained scenarios where DDR is not yet initialized.
+Memory (L2-LIM)**. HSS loads wolfBoot into L2-LIM on a U54 application core, and wolfBoot loads
+the signed application from SC QSPI into L2-LIM as well. This is the configuration for systems
+that keep HSS and run without DDR.
 
 **Features:**
 * S-mode on U54 application core (hart 1), loaded by HSS
@@ -1080,13 +1127,15 @@ sudo dd if=wolfboot.bin of=/dev/sdc1 bs=512 && sudo cmp wolfboot.bin /dev/sdc1
 make test-app/image_v1_signed.bin
 ```
 
-**Flash the signed application to QSPI:**
+**Flash the signed application to QSPI** using the UART programmer (enabled by default via
+`UART_QSPI_PROGRAM=1`; requires `pyserial` installed):
 ```sh
 python3 tools/scripts/mpfs_qspi_prog.py /dev/ttyUSB1 \
     test-app/image_v1_signed.bin 0x20000
 ```
 
 **Notes:**
+- `UART_QSPI_PROGRAM=1` adds a 3-second boot pause every time. Set to `0` once the flash contents are stable.
 - `ELF=0` is required: the test-app linker script (`test-app/RISCV64-mpfs250.ld`) places `.init`
   (containing `_reset()`) first so the raw binary entry point is at offset 0. The full ELF with
   debug symbols exceeds L2-LIM capacity.
@@ -1101,16 +1150,15 @@ python3 tools/scripts/mpfs_qspi_prog.py /dev/ttyUSB1 \
 
 wolfBoot supports running directly in Machine Mode (M-mode) on PolarFire SoC, replacing the Hart
 Software Services (HSS) as the first-stage bootloader. wolfBoot runs on the E51 monitor core from
-eNVM and loads a signed application from SC QSPI flash into L2 Scratchpad (on-chip RAM) — no HSS
-or DDR required. This is the simplest bring-up path.
+eNVM and loads a signed application from SC QSPI flash into L2 Scratchpad (on-chip RAM) -- no HSS
+or DDR required. This is the minimal on-chip-only configuration.
 
 **Features:**
 * Runs on E51 monitor core (hart 0) directly from eNVM
 * Executes from L2 Scratchpad SRAM (256 KB at `0x0A000000`)
 * Loads signed application from SC QSPI flash to L2 Scratchpad (`0x0A010200`)
 * No HSS or DDR required — boots entirely from on-chip memory
-* Wakes and manages secondary U54 harts via IPI
-* Per-hart UART output (each hart uses its own MMUART)
+* Parks and releases secondary U54 harts via CLINT IPI
 * ECC384 + SHA384 signature verification
 
 **Relevant files:**
@@ -1215,8 +1263,57 @@ Booting at 0x...
 - **Strip debug symbols** before signing the test-app ELF. The debug build is ~150 KB but the
   stripped ELF is ~5 KB. L2 Scratchpad has ~150 KB available between wolfBoot code and the stack:
   `riscv64-unknown-elf-strip --strip-debug test-app/image.elf`
-- **DDR support:** DDR initialization is available on the `polarfire_ddr` branch for use cases
-  that require loading larger applications to DDR memory.
+- **DDR support:** software LPDDR4 initialization is included via the **M-Mode + DDR**
+  configuration (`polarfire_mpfs250_m.config`, requires `LIBERO_FPGA_CONFIG_DIR`) for use cases
+  that require loading larger images (e.g. a Linux FIT) to DDR memory. See the next section.
+
+### PolarFire SoC M-Mode + DDR: booting Linux (minimal SBI)
+
+The **M-Mode + DDR** configuration (`config/examples/polarfire_mpfs250_m.config`) replaces both
+HSS and OpenSBI: wolfBoot performs the LPDDR4 init/training on the E51, loads and verifies a
+signed Yocto FIT image (kernel + dtb) from SD card into DDR, applies device-tree fixups, releases
+U54 hart 1 into S-mode at the kernel entry, and then remains resident as a minimal M-mode SBI
+runtime. Validated on the MPFS250T Video Kit: 4-CPU SMP Yocto Linux to login in ~40 s from
+power-on.
+
+**Minimal SBI runtime** (`src/riscv_sbi.c`, a clean-room implementation of the OpenSBI/SBI spec; generic RISC-V with HAL hooks; enabled by
+`WOLFBOOT_MMODE_SMODE_BOOT`):
+* SBI v0.2 extensions: BASE, TIME (per-hart `mtimecmp`, MTIP-to-STIP injection), IPI (SSIP
+  injection via CLINT MSIP), RFENCE (remote `fence.i` / `sfence.vma` with completion wait),
+  HSM (`hart_start`/`hart_stop`/`hart_status` backed by per-hart start mailboxes), DBCN and the
+  legacy console putchar (shared with the wolfBoot UART), SRST.
+* `rdtime` emulation: the U54/E51 have no `time` CSR, so `rdtime` is emulated from CLINT MTIME.
+  The M-mode HAL starts the MTIME time base before hand-off via SYSREG `RTC_CLOCK_CR` at 1 MHz
+  (`mpfs_enable_mtime()`), matching the device-tree `timebase-frequency`.
+* Misaligned load/store emulation (not delegatable on these harts), including compressed forms,
+  for the kernel's unaligned copy tails.
+* Per-hart M-mode trap stacks live in the `hss-buffer` reserved (nomap) DDR region; cross-hart
+  state (HSM mailboxes, IPI flags, the hart-release gate flag) lives in the E51 DTIM at
+  `0x01000000`, which is uncached and coherent for all harts. Cacheable L2-scratchpad memory
+  must not be used for cross-hart signalling (stores can be lost on dirty-line eviction).
+
+**Device-tree fixups** applied to the loaded dtb (`hal/mpfs250.c`): bootargs/root device
+(the DTB's own `/chosen/bootargs` wins unless `LINUX_BOOTARGS`/`LINUX_BOOTARGS_ROOT` is set;
+see "Linux kernel command line (bootargs)" in `docs/compile.md`),
+MAC addresses from the device serial number, and all five MSS watchdog nodes are disabled.
+
+**Watchdog policy:** the MSS watchdogs always count and reset the chip on timeout (they cannot
+be disabled in hardware, and `CONTROL=0` does not prevent the reset). After hand-off the parked
+E51 acts as a monitor and refreshes all five watchdogs; the OS watchdog driver is disabled via
+the dtb fixup so the two never conflict.
+
+**Hand-off / SMP flow:** secondary harts park in eNVM until the E51 signals image-copy
+completion (DTIM gate flag), then park in a WFI loop. The boot hart is released with a staged
+mailbox {entry, dtb} plus MSIP; Linux brings up the remaining harts through SBI HSM
+`hart_start`, which uses the same mailbox + MSIP path. The release path must stay fast
+(no UART access): the kernel allows roughly one second for a started hart to come online.
+
+**Driver structure:** the licensed Cadence DDR controller logic (controller CSR programming, the
+Memory Test Controller engine, and the LPDDR4 mode-register protocol) lives in the
+target-independent `src/ddr_cadence.c` / `include/ddr_cadence.h` (controller base overridable via
+`DDR_CADENCE_CTRL_BASE`). The Microchip-specific PHY, PLL, clock mux and training, plus the
+board's `LIBERO_SETTING_*` values, stay in `hal/mpfs250_ddr.c`, which builds the controller
+register table and composes the generic calls. Both compile only when `MPFS_DDR_INIT` is set.
 
 ### PolarFire testing
 
@@ -1294,11 +1391,11 @@ make test-app/image.elf
 sudo dd if=test-app/image_v1_signed.bin of=/dev/sdc2 bs=512 && sudo cmp test-app/image_v1_signed.bin /dev/sdc2
 ```
 
-4) Insert SDCARD into PolarFire and let HSS start wolfBoot. You may need to use `boot sdcard` or configure/build HSS to disable MMC / enable SDCARD.
+4) Insert the SD card into the PolarFire and let HSS start wolfBoot. If HSS defaults to eMMC, select the SD card with `boot sdcard` at the HSS console, or build HSS with MMC disabled / SD card enabled.
 
 ### PolarFire Building Hart Software Services (HSS)
 
-The Hart Software Services (HSS) is the zero-stage bootloader for the PolarFire SoC. It runs on the E51 monitor core and is responsible for system initialization, hardware configuration, and booting the U54 application cores. The HSS provides essential services including watchdog management, inter-processor communication (IPC), and loading payloads from various boot sources (eMMC, SD card, or SPI flash).
+The Hart Software Services (HSS) is the PolarFire SoC zero-stage bootloader (E51 monitor core); it is required only for the HSS-based S-mode configurations above, not for the M-mode + DDR path which replaces it.
 
 ```sh
 git clone https://github.com/polarfire-soc/hart-software-services.git
@@ -1310,7 +1407,7 @@ make BOARD=mpfs-video-kit program
 
 ### PolarFire Building Yocto-SDK Linux
 
-The Yocto Project provides a customizable embedded Linux distribution for PolarFire SoC. Microchip maintains the `meta-mchp` layer with board support packages (BSP), drivers, and example applications for their devices. The build system uses OpenEmbedded and produces bootable images that can be flashed to eMMC or SD card.
+The signed Yocto FIT image booted by wolfBoot is produced from Microchip's `meta-mchp` Yocto layer (BSP, drivers, and kernel for the board).
 
 See:
 * https://github.com/linux4microchip/meta-mchp/blob/scarthgap/meta-mchp-common/README.md
@@ -1367,11 +1464,10 @@ mkimage -f hal/mpfs250.its fitImage
 ```
 
 At boot, wolfBoot decompresses the kernel into `0x80200000` directly out of
-the FIT `data` blob. Image integrity is provided by the outer wolfBoot
-signature over the entire FIT (which covers the compressed `data` bytes per
-the FIT spec), and post-decompress integrity by gzip's CRC32 + ISIZE
-trailer; per-image `hash-1` subnodes are not re-verified at runtime since
-they would be redundant with the outer signature.
+the FIT `data` blob. The outer wolfBoot signature covers the whole FIT
+(including the compressed `data`), and gzip's CRC32 + ISIZE trailer covers
+the decompressed output; the per-image `hash-1` subnodes are not re-checked
+at runtime as they would duplicate the outer signature.
 
 ##### Option B - Uncompressed FIT (`GZIP=0`)
 
@@ -1583,59 +1679,62 @@ set architecture riscv:rv64
 ### PolarFire Example Boot Output
 
 ```
-wolfBoot Version: 2.7.0 (Dec 31 2025 15:33:35)
-Disk encryption enabled
+wolfBoot Version: 2.8.0
+Running on E51 (hart 0) in M-mode
+Boot RESET_SR: 1FF (bit0=PERIPH bit1=MSS bit2=CPU bit3=DBG bit4=FABRIC bit5=WDOG bit6=GPIO bit7=BUS bit8=SOFT)
+========================================
+DDR: Training+MTC PASS after 0 retries
+DDR: Initialization COMPLETE
+SDHCI: platform init
 Reading MBR...
 Found GPT PTE at sector 1
-Found valid boot signature in MBR
 Valid GPT partition table
-Current LBA: 0x1
-Backup LBA: 0x3B723FF
 Max number of partitions: 128
-Software limited: only allowing up to 16 partitions per disk.
-Disk size: 1849146880
-disk0.p0 (0_7FFE00h@ 0_100000)
-disk0.p1 (0_3FFFE00h@ 0_900000)
-disk0.p2 (0_3FFFE00h@ 0_4900000)
-disk0.p3 (7_65AFFE00h@ 0_8900000)
-Total partitions on disk0: 4
-Checking primary OS image in 0,1...
-Checking secondary OS image in 0,2...
+  GPT part 0: 0_2000000h @ 0_100000
+  GPT part 1: 0_2000000h @ 0_2100000
+  GPT part 2: 7_6A300000h @ 0_4100000
+Total partitions on disk0: 3
+Checking primary OS image in 0,0...
+Checking secondary OS image in 0,1...
 Versions, A:1 B:0
-Load address 0x8E000000
+Load block size: 512KB
+Load address 0x82000000
 Attempting boot from P:A
-Boot partition: 0x801FFD90 (sz 19767004, ver 0x0, type 0x0)
-Loading image from disk...done. (877 ms)
-Decrypting image...done. (2894 ms)
-Boot partition: 0x8E000000 (sz 19767004, ver 0x0, type 0x0)
-Checking image integrity...done. (1507 ms)
-Verifying image signature...done. (68 ms)
+Boot partition: 0xA03FD90 (sz 19766364, ver 0x1, type 0x601)
+Loading image from disk...
+done
+Checking image integrity...
+done
+Verifying image signature...
+done
 Firmware Valid.
-Flattened uImage Tree: Version 17, Size 19767004
-Loading Image kernel-1: 0x8E0002C8 -> 0x80200000 (19745280 bytes)
-Image kernel-1: 0x80200000 (19745280 bytes)
-Loading Image fdt-1: 0x8F2D4DCC -> 0x8A000000 (19897 bytes)
-Image fdt-1: 0x8A000000 (19897 bytes)
+Flattened uImage Tree: Version 17, Size 19766364
+Loading Image kernel-1: 0x820000C8 -> 0x80200000 (19745280 bytes)
+Loading Image fdt-1: 0x832D4BCC -> 0x8A000000 (19897 bytes)
 Loading DTS: 0x8A000000 -> 0x8A000000 (19897 bytes)
-Invalid elf, falling back to raw binary
 Booting at 80200000
-FDT: Version 17, Size 19897
-FDT: Set chosen (13840), bootargs=earlycon root=/dev/mmcblk0p4 rootwait uio_pdrv_genirq.of_id=generic-uio
+FDT: Set chosen, bootargs=earlycon=sbi root=/dev/mmcblk0p3 rootwait uio_pdrv_genirq.of_id=generic-uio
 FDT: Device serial: 219A437C-6AE1F1C2-8EDC4324-685B2288
 FDT: MAC0 = 00:04:A3:5B:22:88
-FDT: MAC1 = 00:04:A3:5B:22:89
-[    0.000000] Linux version 6.12.22-linux4microchip+fpga-2025.07-g032a7095303a (oe-user@oe-host) (riscv64-oe-linux-gcc (GCC) 13.3.0, GNU ld (GNU Binutils) 2.42.0.20240723) #1 SMP Tue Jul 22 10:04:20 UTC 2025
+FDT: Set watchdog@20001000 status=disabled   (... all five MSS WDT nodes)
+M->S handoff: entry=0x80200000 hart=0 dtb=0x8A000000
+Releasing hart 1 into S-mode at 0x80200000 (dtb=0x8A000000)
+[    0.000000] Linux version 6.12.22-linux4microchip+fpga-2025.07 ... #1 SMP
 [    0.000000] Machine model: Microchip PolarFire-SoC VIDEO Kit
-[    0.000000] SBI specification v1.0 detected
-[    0.000000] SBI implementation ID=0x8 Version=0x10002
+[    0.000000] SBI specification v0.2 detected
+[    0.000000] SBI implementation ID=0x776f6c66 Version=0x1
 [    0.000000] SBI TIME extension detected
 [    0.000000] SBI IPI extension detected
 [    0.000000] SBI RFENCE extension detected
-[    0.000000] SBI SRST extension detected
-[    0.000000] earlycon: ns16550a0 at MMIO32 0x0000000020100000 (options '115200n8')
-[    0.000000] printk: legacy bootconsole [ns16550a0] enabled
+[    0.000000] riscv: providing IPIs using SBI IPI extension
+[    0.016264] smp: Bringing up secondary CPUs ...
+[    0.040738] smp: Brought up 1 node, 4 CPUs
+[    3.764474] Run /sbin/init as init process
 ...
+mpfs-video-kit login:
 ```
+
+The Linux SBI lines confirm the kernel is talking to wolfBoot's own SBI runtime: the implementation ID `0x776f6c66` is ASCII `"wolf"`, distinguishing it from OpenSBI (ID `0x8`).
 
 ### PolarFire Benchmarks
 
@@ -2610,6 +2709,159 @@ arm-none-eabi-gdb wolfboot.elf -ex "target remote localhost:3333"
 ```
 
 
+## Nuvoton NuMaker M2354 (NuMicro M2354)
+
+The NuMicro M2354 is a Cortex-M23 (ARMv8-M baseline) part with 1 MB of APROM in two 512 KB banks, 16 KB of LDROM, and 256 KB of SRAM, running at up to 96 MHz. The reference board is the NuMaker-M2354. Flash erases in 2048 byte pages and programs one 32-bit word at a time through the FMC ISP engine.
+
+wolfBoot drives the hardware directly and does **not** build against the Nuvoton M2354 BSP. The ISP engine is a four register handshake and the clock tree needs three writes, so the HAL in `hal/m2354.c` is self-contained. The BSP is useful as a register reference only.
+
+This is currently a non-TrustZone target: `TZEN` is 0 and wolfBoot plus the application both run in the secure world, which is where a non-TrustZone M2354 application runs anyway.
+
+### Flash layout (m2354.config)
+
+```
+0x00000000  wolfBoot            64 KB
+0x00010000  BOOT partition     448 KB
+0x00080000  UPDATE partition   448 KB   <- start of APROM bank 1
+0x000F0000  SWAP                 2 KB   (one page)
+0x000F0800  unused              62 KB
+```
+
+The UPDATE partition deliberately begins on the bank 1 boundary so that a future `DUALBANK_SWAP` configuration remains possible.
+
+### Clock and UART
+
+Out of reset HCLK runs from HIRC, the 12 MHz internal RC oscillator. `hal_init()` starts the 12 MHz crystal, runs it through the PLL to 96 MHz (NR=2, NF=16, output divider 2) and switches HCLK over. Each wait is bounded and falls through on timeout, so a board with no crystal populated still boots at the reset clock rather than hanging in the bootloader.
+
+UART0 is deliberately left on HIRC rather than HCLK, so the console baud rate does not move when the PLL engages and a failed PLL bring-up still prints.
+
+The console is UART0 at 115200 8N1 on **PA6 (RXD) / PA7 (TXD)**, which the NuMaker-M2354 routes to the Nu-Link2-Me virtual COM port. These were confirmed on the board. UART0 has eleven possible pin pairs on this part and choosing the wrong one fails silently: the UART reports its transmitter empty exactly as it would if the bytes had reached the host.
+
+### Building
+
+```
+cp config/examples/m2354.config .config
+make keysclean
+make
+```
+
+`IMAGE_HEADER_SIZE` is 1024 rather than the wolfBoot default of 256. `do_boot()` programs VTOR with the application's address, and the low bits of VTOR are RES0: the M2354 implements 132 exceptions (16 system plus 116 external), so the vector table must be 1024-aligned. At the default header size the application would land 256-aligned and its exception fetches would resolve to the wrong address.
+
+The default configuration signs with ECC256 / SHA256 and builds with `NO_ASM=0`, which selects `sp_armthumb.c`, the Thumb-1 SP assembly tier shared with Cortex-M0. Do not select the Cortex-M33 tier: `sp_cortexm.S` is Thumb-2 and will not assemble for ARMv8-M baseline.
+
+The assembly tier matters at boot, because signature verification is the one latency a user notices. Measured on a NuMaker-M2354, from reset to the application's first output, with a small test image:
+
+| SP math | Boot latency | wolfBoot size |
+|---|---|---|
+| `NO_ASM=1` (`sp_c32.c`, portable C) | 2619 ms | 19,192 bytes |
+| `NO_ASM=0` (`sp_armthumb.c`, Thumb-1 assembly) | 623 ms | 22,084 bytes |
+
+That is one ECDSA P-256 verification plus a SHA-256 over the image, so the absolute saving grows with firmware size while the extra 2,892 bytes does not. `NO_ASM=1` still builds and boots if a smaller bootloader matters more than boot time.
+
+`NO_MPU=1` is required. wolfBoot's MPU code uses the ARMv7-M `MPU_RASR` programming model, which is not valid on any ARMv8-M part.
+
+### Flashing
+
+Use pyOCD, which ships a builtin target definition for this part:
+
+```
+pyocd erase -t m2354kjfae --chip
+pyocd flash -t m2354kjfae factory.bin
+```
+
+Upstream OpenOCD cannot program the M2354: its `numicro` flash driver has no entry for this part. The NuMaker-M2354's on-board Nu-Link2-Me also presents a USB mass-storage device that programs APROM from a dropped `.bin`, which works without any host tool.
+
+### Flash programming performance
+
+A full update cycle - swap, verify and boot - takes about 4 seconds on the
+board with a small application image.
+
+Two things get it there, and it is worth knowing which one mattered. The
+obvious optimisation was the write path: `hal_flash_write()` uses the FMC
+multi-word command to program 16 bytes per ISP operation instead of one
+32-bit word, cutting ISP round trips by 4x. Measured on hardware, that made
+**no difference at all** to update time.
+
+The cost was in the erase. After a swap, wolfBoot erases the remainder of
+both partitions, which is 440 page erases at roughly 88 ms each, and that
+alone accounted for 39 of the original 47 seconds. Reading a 2 KB page back
+to check whether it is already blank takes tens of microseconds, so
+`hal_flash_erase()` skips pages that already read as erased. In the common
+case most of an update partition is already blank and the erase phase all but
+disappears: 47 seconds down to 4.
+
+The multi-word write path is kept because it is correct and tested, and it
+will matter for application images large enough for programming time to
+register. It simply is not what dominates a typical update on this part.
+
+### Testing an update
+
+```
+make test-app/image_v2_signed.bin WOLFBOOT_VERSION=2
+pyocd flash -t m2354kjfae --base-address 0x80000 test-app/image_v2_signed.bin
+```
+
+The test application prints its version over UART0. Version 1 sets the update flag and resets; wolfBoot then performs the swap and boots version 2, which calls `wolfBoot_success()` so the update sticks.
+
+### TrustZone (m2354-tz.config)
+
+`config/examples/m2354-tz.config` builds wolfBoot into the secure world, with the application non-secure.
+
+Note the alias polarity, which is the **opposite** of the NXP ARMv8-M parts: on the M2354 the secure view is the base address and the non-secure view is base + `0x10000000`. Secure flash is `0x00000000`, non-secure flash `0x10000000`; secure SRAM is `0x20000000`, non-secure SRAM `0x30000000`; non-secure peripherals are at `0x50000000`.
+
+```
+Secure (bank 0, NSCBA = 0x00080000):
+  0x00000000  wolfBoot secure image        120 KB
+  0x0001E000  NSC secure-gateway veneers     8 KB
+  SRAM 0x20000000                           96 KB
+
+Non-secure (bank 1, at the +0x10000000 alias):
+  0x10080000  BOOT partition               252 KB
+  0x100BF000  UPDATE partition             252 KB
+  0x100FE000  SWAP                           2 KB
+  SRAM 0x30018000                          160 KB
+```
+
+`hal_init()` programs the SAU and the SCU on every boot. `hal_prepare_boot()` then hands UART0 and its pins to the non-secure world, so wolfBoot keeps the console for the whole of verification.
+
+`IMAGE_HEADER_SIZE` is 1024 because the non-secure vector table must be aligned to a power of two at least its own size, and the M2354 has 132 vector entries.
+
+#### NSCBA is a provisioning step
+
+The secure/non-secure flash split is fixed by **NSCBA, a flash configuration word at `0x00210800`**, not by a register, and it only takes effect after a chip reset. wolfBoot **only ever reads it back**: `hal_init()` compares the live value in `SCU->FNSADDR` against what the build was linked for and panics on a mismatch, because the SAU regions and the linker script would otherwise describe a layout the hardware does not have. A bootloader that reprograms its own secure boundary at runtime is a good way to brick a part.
+
+Provision it once, before the first TrustZone boot:
+
+```
+./tools/scripts/set-m2354-nscba.sh 0x80000
+```
+
+Set `M2354_PROBE` first if more than one debug probe is attached. The script drives the FMC ISP engine over SWD to erase and reprogram the config word, then resets and prints `SCU->FNSADDR` so you can confirm the boundary took. This mirrors what `tools/scripts/set-stm32-tz-option-bytes.sh` does for the STM32 TrustZone targets.
+
+A wrong value is not permanent: `pyocd erase -t m2354kjfae --chip` returns NSCBA to its erased state. Note that a chip erase therefore also *removes* the provisioning, so it must be re-run after one.
+
+#### Hardware validation
+
+The TrustZone configuration has been run on a NuMaker-M2354. wolfBoot boots
+secure, verifies the signed image, and hands off to the non-secure application
+through `BLXNS`; the application reads its version back through the
+`wolfBoot_nsc_*` secure-gateway veneers. A full update completes across the
+security boundary: the update partition lives in non-secure flash, and the
+secure world programs it through the FMC ISP engine without difficulty, so
+there is no equivalent of the STM32 `SECBB` claim/release dance.
+
+#### Building and flashing
+
+Because the secure and non-secure views are 256 MB apart in the address map, no contiguous `factory.bin` is produced. Flash the two images separately, at their **physical** addresses:
+
+```
+cp config/examples/m2354-tz.config .config
+make keysclean
+make
+pyocd flash -t m2354kjfae --base-address 0x0     wolfboot.bin
+pyocd flash -t m2354kjfae --base-address 0x80000 test-app/image_v1_signed.bin
+```
+
 ## NXP LPC540xx / LPC54S0xx (SPIFI boot)
 
 This section covers the LPC540xx and LPC54S0xx family (LPC54005, LPC54016,
@@ -3450,6 +3702,11 @@ The LS1028A is a AARCH64 armv8-a Cortex-A72 processor. Support has been tested w
 Example configurations for this target are provided in:
 * NXP LS1028A: [/config/examples/nxp-ls1028a.config](/config/examples/nxp-ls1028a.config).
 * NXP LS1028A with TPM: [/config/examples/nxp-ls1028a-tpm.config](/config/examples/nxp-ls1028a-tpm.config).
+* NXP LS1028A with SD card boot: [/config/examples/nxp-ls1028a-sdcard.config](/config/examples/nxp-ls1028a-sdcard.config).
+
+### LS1028A SD Card Boot (eSDHC)
+
+The LS1028A can load the signed application image from the SD card slot (eSDHC1) using the same Freescale eSDHC driver as the T1040 (`hal/nxp_esdhc.c`, built as its own object). The card layout is identical to the T1040 SD target: GPT (or MBR) partitioned, with the signed image at offset 0 of the first two partitions (`BOOT_PART_A`/`BOOT_PART_B`, 0-based). wolfBoot reads both headers, picks the higher version, loads it to DDR (`WOLFBOOT_LOAD_ADDRESS=0x80100000`), verifies the signature and boots it. The driver reprograms the eSDHC source clock (HWA2) at init, because the NOR-boot RCW leaves it on a source too fast for card identification. Define `DEBUG_ESDHC` (see the config) for controller bring-up trace on the DUART console. Validated on the LS1028ARDB booting a signed image from SD.
 
 ### Building wolfBoot for NXP LS1028A
 
@@ -3670,8 +3927,27 @@ make wolfboot.bin CROSS_COMPILE=aarch64-linux-gnu-
 * Create the decrypt key + nonce
 
 ```
-printf "0123456789abcdef0123456789abcdef0123456789ab" > /tmp/enc_key.der
+printf "0123456789abcdef0123456789abcdef0123456789abcdef" > /tmp/enc_key.der
 ```
+
+  AES256-CTR takes a 32-byte key followed by a 16-byte IV, so the file is
+  48 bytes. A shorter one fails with `Error reading IV`.
+
+* Provision the same key into the bootloader
+
+  The raspi3 HAL no longer ships a hardcoded key, so the bootloader has
+  none until one is provisioned and encrypted updates fail closed. To run
+  this demo, call `wolfBoot_set_encrypt_key()` with the key and nonce from
+  the file above at the end of `hal_init()` in `hal/raspi3.c`. That is a
+  development-only shortcut; a real deployment provisions a per-device key
+  from outside the firmware image (see
+  [encrypted_partitions.md](encrypted_partitions.md)).
+
+  CI builds this example and runs the signing, encryption and assembly
+  steps above (`.github/workflows/test-raspi3-encrypted.yml`), but does not
+  boot the result: the target produces no console output under QEMU, so
+  there is nothing for a boot test to assert on. Runtime coverage would
+  need that fixed and a provisioning hook the target does not have.
 
 * Sign and encrypt Linux kernel image
 ```
@@ -3694,7 +3970,126 @@ qemu-system-aarch64 -M raspi3b -m 1024 -serial stdio -kernel wolfboot_linux_rasp
 ```
 
 
+## Cortex-A72 / Raspberry Pi Compute Module 4 (BCM2711)
+
+> **Filesystem boot:** this target can also read its signed image from a **file** on a read-only FAT32 or ext4 partition instead of from raw offset 0. Build with `DISK_FS=fat32|ext4|both` and set `BOOT_FILE_A` / `BOOT_FILE_B`. See [Disk boot from a read-only filesystem (FAT32 / ext4)](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
+
+wolfBoot runs on the Raspberry Pi Compute Module 4 (CM4), a Broadcom BCM2711 with a quad-core Cortex-A72 (AArch64). wolfBoot takes the place of the second-stage OS loader: the BCM2711 boot ROM loads the VideoCore firmware, the firmware loads `kernel8.img` from the boot partition, and that `kernel8.img` is wolfBoot. wolfBoot then verifies the signed application image and boots it, extending the platform root of trust into the OS.
+
+```
+BCM2711 boot ROM -> SPI EEPROM bootloader -> VideoCore firmware (start4.elf)
+   -> kernel8.img (wolfBoot) -> verify (ECDSA/SHA) -> application
+```
+
+On CM4 modules with onboard eMMC the boot files live on the eMMC FAT boot partition; on CM4 Lite they live on a microSD. Either way the medium hangs off the BCM2711 EMMC2 controller (a standard SDHCI v3.0 Arasan block at `0xFE340000`).
+
+### Building
+
+```
+cp config/examples/cm4.config .config
+make CROSS_COMPILE=aarch64-none-elf- DEBUG_UART=1
+```
+
+`cm4.config` defaults `DEBUG?=0` and `DEBUG_UART?=0` for a silent, optimized release build; the `DEBUG_UART=1` above enables the boot log shown under "Boot output". The example uses `SIGN=ECC384 HASH=SHA384` (both FIPS-approved). wolfBoot is built as an AArch64 Linux kernel image (`kernel8.img`): `src/boot_aarch64_start.S` prepends the 64-byte ARM64 image header (`"ARM\x64"` magic), and `hal/cm4.ld` links at `0x200000`. The VideoCore firmware only transfers control to a 64-bit kernel that carries this header, and it runs the image in place at the 2 MB-aligned load address `0x200000` (it does not relocate a header image down to `0x80000`) at EL2. The image is loaded from RAM: wolfBoot reads the signed application at `kernel_addr` (`0x2C0000`), verifies it, copies it to `WOLFBOOT_LOAD_ADDRESS`, and boots.
+
+### Signing and assembling the boot image
+
+Sign the application, then concatenate wolfBoot and the signed image so the signed image lands at `kernel_addr` (`0x2C0000` = `0x200000` load + `0xC0000`):
+
+```
+make keytools tools/bin-assemble/bin-assemble
+IMAGE_HEADER_SIZE=1024 ./tools/keytools/sign --ecc384 --sha384 \
+    app.bin wolfboot_signing_private_key.der 1
+tools/bin-assemble/bin-assemble kernel8.img \
+    0x0     wolfboot.bin \
+    0xC0000 app_v1_signed.bin
+```
+
+### config.txt
+
+The debug console on GPIO14/15 is the BCM2711 mini-UART (AUX, Linux `ttyS0`); the PL011 is used by Bluetooth. wolfBoot drives the **mini-UART** by default (it inherits the firmware's stable baud, which `enable_uart=1` fixes by pinning `core_freq`), so no baud reprogramming is needed. Boards where `dtoverlay=disable-bt` actually routes the PL011 onto GPIO14/15 can build with `CFLAGS_EXTRA=-DCM4_UART_PL011` to use the PL011 instead.
+
+```
+arm_64bit=1
+kernel=kernel8.img
+# wolfBoot is linked absolutely at 0x200000; pin the load address to match.
+kernel_address=0x200000
+enable_uart=1
+uart_2ndstage=1
+dtoverlay=disable-bt
+init_uart_clock=48000000
+init_uart_baud=115200
+```
+
+`kernel_address=0x200000` is required: wolfBoot is linked absolutely at `0x200000`, and its startup code self-checks the runtime base against that link-time base. If the firmware loads the image at any other address the check fails and wolfBoot halts silently, before any UART output, so a missing or mismatched `kernel_address` looks like a dead board with no console log. All the `prepare_emmc*.sh` scripts emit this line.
+
+### Flashing
+
+- CM4 Lite: write `kernel8.img` + the RPi firmware (`start4.elf`, `fixup4.dat`) + `config.txt` to the microSD FAT boot partition.
+- CM4 with eMMC: put the module in USB boot mode (nRPIBOOT), run `rpiboot` to expose the eMMC as USB mass storage, and write the same files to its FAT boot partition. See https://github.com/raspberrypi/usbboot .
+
+### Boot output
+
+With `DEBUG_UART=1`, a successful authenticated boot prints (115200 8N1):
+
+```
+wolfBoot CM4 (BCM2711 Cortex-A72) hal_init, EL2
+Trying partition 0 at 0x2C0000
+Checking integrity...done
+Verifying signature...done
+Firmware Valid
+Booting at 0x3080000
+```
+
+### Optional: eMMC/SD A/B disk boot
+
+`config/examples/cm4_emmc.config` (onboard eMMC) and `config/examples/cm4_sdcard.config` (microSD) enable the disk updater (`DISK_EMMC`/`DISK_SDCARD`), driving the BCM2711 EMMC2 controller through the generic SDHCI driver (`src/sdhci.c` + the `hal/cm4.c` register glue) to read A/B signed images from GPT partitions. wolfBoot reads the GPT, selects the higher-version image, verifies it, ELF-loads it (`ELF=1`) to `WOLFBOOT_LOAD_ADDRESS`, and boots.
+
+The **eMMC** path (`cm4_emmc.config`) has been validated end to end on CM4 hardware: SDHCI/eMMC card init -> GPT parse -> A/B version select -> SHA-384 integrity -> ECDSA-P384 signature verify -> ELF64 load -> boot of a signed payload. `tools/scripts/cm4/prepare_emmc.sh` builds the GPT layout (FAT boot partition with `kernel8.img` + firmware, plus raw A/B image partitions), signs a minimal test payload (`tools/scripts/cm4/disk_app.S`), and writes it to the eMMC over `rpiboot`. Uncomment `DEBUG_SDHCI` / `DEBUG_DISK` / `DEBUG_GPT` in the config for verbose bring-up tracing. The **microSD** path shares the same driver but is validated only on modules whose SD lines reach the microSD slot (a CM4 with onboard eMMC disables that slot).
+
+### FIPS 140-3
+
+The CM4 target uses `SIGN=ECC384 HASH=SHA384` (FIPS-approved) and can perform its signature verification with the wolfCrypt FIPS 140-3 module (build `config/examples/cm4.config` with `FIPS=1`, pointing `WOLFBOOT_LIB_WOLFSSL` at a FIPS wolfSSL tree). At boot the module runs its power-on self-test and in-core integrity check, and wolfBoot refuses to boot unless the module is operational. Entropy for the FIPS DRBG comes from the BCM2711 RNG200 hardware TRNG. The FIPS configuration builds with the CM4 hardware-boot support (ARM64 image header, `0x200000` load address, mini-UART console) and has been validated end to end on CM4 hardware with the FIPS-ready bundle: after sealing the in-core integrity hash, wolfBoot reports `FIPS 140-3 module operational` and the module gates the boot with SHA-384 integrity and ECDSA-P384 signature verification of the eMMC A/B image (`cm4_emmc.config` with `FIPS=1`; wolfBoot's `src/loader.c` runs the power-on self-test and in-core check before booting). A production, CMVP-validated deployment additionally requires the licensed validated wolfCrypt FIPS bundle at the validated revision (see [FIPS.md](FIPS.md)). On an in-core hash mismatch, wolfBoot prints the runtime hash (`FIPS in-core hash = ...`, from `src/loader.c`) to seal into `verifyCore[]`. Re-seal by recompiling only `fips_test.o` with `-DWOLFCRYPT_FIPS_CORE_HASH_VALUE=<hash>` (a full rebuild shifts the module boundary and the hash); see [FIPS.md](FIPS.md) for the full build, entropy, and hash-sealing procedure.
+
+### Optional: Linux kernel FIT boot
+
+`config/examples/cm4_emmc_linux.config` boots a real Linux kernel instead of the `disk_app` prove-out stub. wolfBoot loads a wolfBoot-signed FIT (kernel-only, gzip-compressed) from an eMMC GPT partition, verifies the outer ECDSA-P384/SHA-384 signature, decompresses the kernel to `0x10000000`, relocates the RPi-firmware-provided DTB to `WOLFBOOT_LOAD_DTS_ADDRESS` (`0x08000000`) and injects the kernel command line (`root=`, `console=`) into `/chosen/bootargs`, then boots Linux at EL2.
+
+Key config points: `GZIP=1` (the FIT kernel subimage is `Image.gz`), `ELF=1`, `DISK_EMMC=1`, and `WOLFBOOT_LOAD_ADDRESS=0x18000000` - the FIT is staged above the decompressed kernel so gunzip does not overwrite its own compressed input mid-stream. `CFLAGS_EXTRA+=-DCM4_FIRMWARE_DTB` captures and reuses the firmware DTB (which already carries the RAM size and mini-UART clock), `CFLAGS_EXTRA+=-DCM4_UART_PL011` puts the Linux console on the PL011 (`ttyAMA0`, via `dtoverlay=disable-bt`), and `CFLAGS_EXTRA+=-DLINUX_BOOTARGS_ROOT=...` sets `root=`. The FIT is built from `hal/cm4.its` with `mkimage` and signed with the wolfBoot key; `tools/scripts/cm4/prepare_emmc_linux.sh` stages it on the eMMC. This path was hardware-validated booting a Yocto (Scarthgap, kernel 6.6) rootfs.
+
+### Device tree trust boundary
+
+wolfBoot's signature covers the kernel FIT it loads from the raw eMMC partition. It does **not** cover the device tree used on the Linux paths. Both shipped Linux configurations (`cm4_emmc_linux.config` and `cm4_emmc_rauc.config`) enable `CM4_FIRMWARE_DTB`, so this applies to anyone following the recipes above - it is a compile-time switch, not a default-off feature.
+
+On this path wolfBoot reuses the device tree that the VideoCore firmware left in memory, relocates it, and overwrites only `/chosen/bootargs`. Everything else in that DTB - `/memory`, `/reserved-memory`, per-device `reg` windows, and any `initrd` pointers - reaches the kernel exactly as the firmware supplied it, from the unsigned FAT boot partition. Anyone who can write that partition can influence how Linux sees the machine, without invalidating any wolfBoot signature.
+
+wolfBoot does provide a mechanism to bind a raw DTB to a signed image (`HDR_DEVICE_TREE_DIGEST`, produced by `sign --dts`), but it does not apply here, for two independent reasons:
+
+1. The digest is verified only on the RAM-boot path (`src/update_ram.c`). The CM4 boots through `src/update_disk.c`, which performs no device-tree digest check.
+2. Even with that plumbing in place, the hash is not predictable when the image is signed. The VideoCore firmware patches the DTB at runtime: the shipped `bcm2711-rpi-cm4.dtb` declares `/memory@0 reg = <0 0 0>` and receives the real RAM size, the mini-UART clock and the board serial number before handoff. The blob wolfBoot receives is therefore never byte-identical to any blob that could have been signed.
+
+That runtime patching is also *why* the firmware DTB is used rather than one carried inside the signed FIT: a FIT-carried device tree boots with no RAM size.
+
+The only thing that actually closes this boundary on a CM4 is the **Raspberry Pi EEPROM secure boot**, which authenticates the boot partition itself; with it enabled, the firmware and the DTB it hands over are covered by the platform's own root of trust. Deployments that need the device tree to be within the verified boundary should enable it. Note that the bring-up board used for this port has secure boot disabled (its OTP customer key hash reads all zeros), so the validation described above was performed with this boundary open.
+
+### Optional: RAUC A/B redundant boot
+
+`config/examples/cm4_emmc_rauc.config` makes wolfBoot replace U-Boot as the RAUC slot arbiter. wolfBoot reads a raw U-Boot-environment partition (`mkenvimage`/`fw_setenv` compatible), runs the RAUC `BOOT_ORDER` / `BOOT_<slot>_LEFT` try-counter state machine, decrements the selected slot's counter and writes it back (so a hung slot fails over to the other on the next boot), then boots the shared signed kernel FIT with `root=` pointing at the active slot's rootfs and `rauc.slot=<name>` on the command line.
+
+The eMMC uses a 6-partition layout:
+
+- `p1` boot FAT: RPi firmware + `kernel8.img` + `config.txt`
+- `p2` uboot-env raw: RAUC `fw_env.config` target. wolfBoot and RAUC read the first `0x4000` bytes (= `UBOOT_ENV_SIZE`, the env-image size written by `mkenvimage -s 0x4000`); the partition itself only needs to be `>= 0x4000` (the layout script makes it 8 MB for alignment/headroom)
+- `p3` fitImage raw: shared wolfBoot-signed kernel FIT
+- `p4` rootfs_A ext4: slot A
+- `p5` rootfs_B ext4: slot B
+- `p6` data ext4: persistent data
+
+Key config: `CM4_RAUC_AB=1` (a make var that pulls in `src/ubootenv.o` and the RAUC branch of `hal/cm4.c`), `CFLAGS_EXTRA+=-DCM4_UBOOT_ENV_PART=<n>` (0-based GPT index of `p2`), `CFLAGS_EXTRA+=-DCM4_ROOT_A=...` / `-DCM4_ROOT_B=...` (slot rootfs devices), and optionally `-DCM4_SLOT_A_NAME=...` / `-DCM4_SLOT_B_NAME=...` (RAUC bootnames, default `"A"` / `"B"`). `tools/scripts/cm4/prepare_emmc_rauc.sh` lays out the disk and writes an initial env (`BOOT_ORDER "A B"`, tries `3`). Both slot-switch and hung-slot failover were hardware-validated. On the Yocto side, RAUC's `fw_env.config` must point at the raw `p2` partition (offset `0`, size `0x4000`) and the `system.conf` slot devices must match `p4`/`p5`, so userspace (`rauc mark-good` / `fw_setenv`) and wolfBoot agree on the env layout.
+
 ## Xilinx Zynq UltraScale
+
+> **Filesystem boot:** this target can also read its signed image from a **file** on a read-only FAT32 or ext4 partition instead of from raw offset 0. Build with `DISK_FS=fat32|ext4|both` and set `BOOT_FILE_A` / `BOOT_FILE_B`. See [Disk boot from a read-only filesystem (FAT32 / ext4)](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
 
 AMD Zynq UltraScale+ MPSoC ZCU102 Evaluation Kit - Quad-core ARM Cortex-A53 (plus dual Cortex-R5).
 
@@ -3708,6 +4103,70 @@ wolfBoot runs from DDR at `0x8000000` (128MB, EL2, non-secure) for both QSPI and
 This target supports **two boot paths**:
 - **QSPI boot** (primary, production-style): `config/examples/zynqmp.config`
 - **SD card boot** (MBR, A/B images): `config/examples/zynqmp_sdcard.config`
+
+In both of the above, wolfBoot is loaded *by* the Xilinx FSBL and runs at EL2. wolfBoot can also replace the FSBL entirely -- see the next section.
+
+### wolfBoot as a full FSBL replacement (`ZYNQMP_FSBL=1`)
+
+Instead of being loaded by the Xilinx FSBL, wolfBoot can *be* the FSBL. The BootROM authenticates and loads wolfBoot directly (as the boot-image `[bootloader]` partition) into the 256 KB OCM at `0xFFFC0000` and enters it at EL3. wolfBoot then runs the board `psu_init()` (PLLs, DDR controller + PHY training, MIO mux, clocks) and loads + verifies the downstream images with its own keys:
+
+```
+BootROM -> wolfBoot (OCM, EL3) -> psu_init -> verify+load BL31 + kernel + DTB -> BL31 (EL3) -> Linux
+```
+
+PMUFW is still loaded by the BootROM via the `[pmufw_image]` BIF tag. Milestone 1 keeps real ARM Trusted Firmware (BL31) as the resident EL3 monitor.
+
+**Board PS init (psu_init) drop-in.** DDR controller init and PHY training are board/XSA specific and are generated by the Xilinx tools; they carry the Xilinx copyright and are not part of the wolfBoot tree. Copy your generated `psu_init_gpl.c` and `psu_init_gpl.h` into `hal/board/zynqmp/` (gitignored) or point `ZYNQMP_PSU_INIT_DIR` at them. For the ZCU102 these come from PetaLinux/Vitis (`project-spec/hw-description/psu_init_gpl.*`). See `hal/board/zynqmp/README.txt`. wolfBoot-owned shims at `hal/zynqmp/` (`xil_io.h`, `sleep.h`) let the unmodified file compile.
+
+**Build.** Link/run from OCM and run psu_init at boot:
+
+```sh
+make ZYNQMP_FSBL=1                            # QSPI: config/examples/zynqmp_fsbl.config
+make ZYNQMP_FSBL=1 \
+  ZYNQMP_PSU_INIT_DIR=/path/to/hw-description # if not in hal/board/zynqmp/
+```
+
+The SD variant is `config/examples/zynqmp_fsbl_sd.config`. wolfBoot is ~197 KB of the 256 KB OCM (single-stage; wolfBoot's own code does not need DDR).
+
+**Package the boot image.** wolfBoot is the bootloader; there is no `zynqmp_fsbl.elf`:
+
+```sh
+cp wolfboot.elf pmufw.elf tools/scripts/zcu102/   # pmufw.elf from PetaLinux/Vitis
+cd tools/scripts/zcu102
+bootgen -arch zynqmp -image zynqmp_wolfboot_fsbl.bif -w -o BOOT.BIN
+```
+
+Use `zynqmp_wolfboot_fsbl_auth.bif` for the Xilinx hardware root of trust (RSA authentication via the eFuse PPK; see comments in that file).
+
+**Flash QSPI** (over JTAG, any boot mode; `program_flash` is under the Vitis `bin/`):
+
+```sh
+program_flash -f BOOT.BIN -fsbl zynqmp_fsbl.elf \
+  -flash_type qspi-x8-dual_parallel -flash_density 1024 \
+  -verify -url tcp:127.0.0.1:3121
+```
+
+`zynqmp_fsbl.elf` here is the stock Xilinx FSBL used only as the `program_flash` flash-writer bootstrap (it is not flashed). Then set SW6 to QSPI32 and power-cycle.
+
+**SD card.** Write `BOOT.BIN` to the FAT (boot) partition of the SD card, set SW6 to SD, power-cycle.
+
+**Boot mode switches (SW6).** See the SD-card SW6 table below (JTAG `0000`, QSPI32 `0010`, SD1 `1110`).
+
+**Downstream images (direct-kernel BL33).** The boot image wolfBoot loads is a wolfBoot-signed FIT containing an `atf` (BL31) sub-image plus the kernel and DTB. Two requirements: build BL31 with its link base in DDR (the default OCM `0xFFFE0000` overlaps wolfBoot), and, because BL33 is the kernel directly (no U-Boot), apply `tools/scripts/zcu102/tf-a-zynqmp-wolfboot-dtb.patch` so BL31 forwards the DTB (which wolfBoot publishes in `PMU_GLOBAL.GLOBAL_GEN_STORAGE5`) into the kernel's `x0`.
+
+**Building BL31 (ARM Trusted Firmware).** BL31 is upstream Xilinx Arm Trusted Firmware - clone `https://github.com/Xilinx/arm-trusted-firmware.git` (validated on branch `xlnx_rebase_v2.12`); it is not vendored in the wolfBoot tree. Apply the in-tree DTB-forwarding patch and build for ZynqMP with the reset base relocated into DDR (so it does not overlap wolfBoot in OCM), for example:
+
+```sh
+git clone -b xlnx_rebase_v2.12 https://github.com/Xilinx/arm-trusted-firmware.git
+cd arm-trusted-firmware
+git apply /path/to/wolfboot/tools/scripts/zcu102/tf-a-zynqmp-wolfboot-dtb.patch
+make CROSS_COMPILE=aarch64-none-elf- PLAT=zynqmp RESET_TO_BL31=1 \
+  PRELOADED_BL33_BASE=0x0 ZYNQMP_ATF_MEM_BASE=0x8000000 bl31
+```
+
+`ZYNQMP_ATF_MEM_BASE` sets the DDR link base; use the value your FIT `atf` sub-image loads to (must not overlap the OCM range wolfBoot runs in). The resulting `bl31.elf` is what you place in the signed FIT's `atf` sub-image. The `tf-a-zynqmp-wolfboot-dtb.patch` is the only wolfBoot-specific change; everything else is stock upstream TF-A.
+
+**Validation status (ZCU102).** The FSBL path is hardware-validated: wolfBoot runs at `Current EL: 3`, cold-boot `psu_init` brings up DDR (read/write tested), clocks, MIO, UART, and QSPI (flash ID read), from both a JTAG load and a real BootROM QSPI cold boot. The full downstream chain to Linux (FIT + DDR-linked BL31 + the TF-A DTB patch) is hardware-validated end-to-end: wolfBoot verifies and loads the signed FIT, hands off to BL31, and boots the kernel all the way to a PetaLinux login prompt on the ZCU102.
 
 ### Prerequisites
 
@@ -3729,6 +4188,14 @@ Key configuration options:
 - `SIGN=RSA4096` - RSA 4096-bit signatures
 - `HASH=SHA3` - SHA3-384 hashing
 - `ELF=1` - ELF loading support
+
+### Ethernet PHY init (optional)
+
+Opt-in (off by default), wolfBoot can replay a board's U-Boot Ethernet PHY register sequence over the GEM MDIO management plane so the PHY is ready before the OS runs. Enable with `CFLAGS_EXTRA+=-DWOLFBOOT_ZYNQMP_PHY_INIT`. The default targets the ZCU102 on-board PHY (TI DP83867 at MDIO `0x0C` on GEM3, `0xFF0E0000`) and just reads the PHY ID as a diagnostic (printed with `DEBUG_UART=1`). A board supplies its own sequence by keeping its values in a small header selected with one line, `CFLAGS_EXTRA+=-DZYNQMP_PHY_INIT_HEADER='"myboard_phy.h"'`, where that header `#define`s any of `ZYNQMP_GEM_BASE`, `ZYNQMP_PHY_ADDR`, `ZYNQMP_PHY_GPIO_ADDR`, `ZYNQMP_GEM_MDC_DIV`, and the `{op, arg0, arg1}` step array `ZYNQMP_PHY_INIT_STEPS`; scalars can also be set directly with `-D`, and anything omitted falls back to the ZCU102 defaults (see `hal/zynq.h` and the commented example in `config/examples/zynqmp.config`). Where the PHY is behind the PL, the boot image must include the FPGA bitstream (bootgen `[destination_device=pl] system.bit`) or the transactions are no-ops.
+
+### Non-cacheable DMA window
+
+The ZynqMP GEM is not coherent with the CPU caches, so a hook that drives it needs non-cacheable memory. `hal/zynq.ld` reserves a 2MB-aligned `.dma_buffers` region at `WOLFBOOT_DMA_BUFFER_ADDRESS` (default `0x8200000`) and `hal_dma_set_noncached()` re-attributes it at runtime; see [HAL.md](./HAL.md).
 
 ### Building with Xilinx tools (Vitis IDE)
 
@@ -3994,7 +4461,10 @@ images {
 that wolfBoot decompresses straight to the kernel load address at boot.
 See the [Versal "Booting Linux via FIT image"](#versal-gen-1-vmk180)
 section for a full walkthrough - the flow is identical apart from the
-load addresses and the `bl31`/`fsbl` versus `bl31`/`plm` boot chain. Set
+load addresses and the `bl31`/`fsbl` versus `bl31`/`plm` boot chain,
+including the bootargs handling (the FIT DTB's own `/chosen/bootargs`
+win unless `LINUX_BOOTARGS`/`LINUX_BOOTARGS_ROOT` is set; see
+"Linux kernel command line (bootargs)" in `docs/compile.md`). Set
 `GZIP=0` in
 `.config` if you want to keep using an uncompressed `Image` plus
 `compression = "none"`.
@@ -4130,6 +4600,8 @@ FIT: FPGA programmed
 
 ## Xilinx Zynq-7000 (ZC702)
 
+> **Filesystem boot:** this target can also read its signed image from a **file** on a read-only FAT32 or ext4 partition instead of from raw offset 0. Build with `DISK_FS=fat32|ext4|both` and set `BOOT_FILE_A` / `BOOT_FILE_B`. See [Disk boot from a read-only filesystem (FAT32 / ext4)](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
+
 AMD/Xilinx Zynq-7000 (XC7Z020) on the ZC702 Evaluation Kit - dual ARM Cortex-A9 (ARMv7-A 32-bit), 1 GB DDR3, 16 MB QSPI NOR (N25Q128A), SDIO, dual UART. Older sibling of the ZynqMP family - distinct silicon, different controllers (`XQspiPs` not `XQspiPsu`, Arasan SDHCI v2.0 not v3.0, no CSU/PMU/PUF, PL310 L2).
 
 wolfBoot replaces U-Boot in the Zynq-7000 boot flow -- there is no
@@ -4179,7 +4651,7 @@ Key options in `config/examples/zynq7000.config`:
 - `MMU=1 ELF=1` - lets the same image boot Linux or bare-metal. `do_boot` always emits the ARM Linux boot ABI (`r0=0`, `r1=~0`, `r2=DTB_phys`, `r3=0`) on this target, which bare-metal apps simply ignore. `MMU=1` enables `update_ram.c`'s DTB-load codepath and pulls in `src/fdt.o`; wolfBoot does not manage page tables (it inherits FSBL's flat 1:1 DDR mapping). `ELF=1` lets wolfBoot understand ELF inputs (e.g. `vmlinux`) and load only their LOAD segments. Cost over a strictly bare-metal-only build: ~5 KB extra wolfBoot binary (31 KB -> 36 KB).
 - `EXT_FLASH=1` - QSPI as external flash via `XQspiPs`
 - `WOLFBOOT_LOAD_ADDRESS=0x10000000` - DDR offset 256 MB, where the verified app is staged before `do_boot`. Must be **above** wolfBoot's own region (`0x04000000`-`0x040FFFFF`) because `src/update_ram.c` enforces `dst > _end`.
-- `WOLFBOOT_LOAD_DTS_ADDRESS=0x11000000` - DDR offset 272 MB, where a DTB read out of `PART_DTS_BOOT` would be relocated. Ignored for bare-metal payloads and for the appended-DTB Linux flow (where the DTB lives at the end of the signed kernel image).
+- `WOLFBOOT_LOAD_DTS_ADDRESS=0x11000000` - DDR offset 272 MB, where a DTB read out of `PART_DTS_BOOT` would be relocated. Ignored for bare-metal payloads and for the appended-DTB Linux flow (where the DTB lives at the end of the signed kernel image). A DTB loaded this way (raw `PART_DTS_BOOT` or `hal_get_dts_address()`, i.e. not inside a signed FIT) is authenticated against the boot image's `HDR_DEVICE_TREE_DIGEST` TLV before the kernel sees it: sign the kernel with `sign --dts <board.dtb>` (see `docs/Signing.md`). When the image carries the digest it is always verified and a mismatch panics. A raw DTB with no digest only warns and boots by default (backward compatible); build with `WOLFBOOT_REQUIRE_SIGNED_DTB=1` to make a missing digest a hard failure once every raw-DTB payload is signed with `--dts`.
 - `WOLFBOOT_PARTITION_BOOT_ADDRESS=0x00100000` - 16 MB QSPI layout below
 - `CROSS_COMPILE=arm-none-eabi-`
 
@@ -4437,6 +4909,8 @@ sudo ./tools/scripts/zynq7000/prepare_sdcard.sh /dev/sdX test-app/zImage_signed.
 
 ## Versal Gen 1 VMK180
 
+> **Filesystem boot:** this target can also read its signed image from a **file** on a read-only FAT32 or ext4 partition instead of from raw offset 0. Build with `DISK_FS=fat32|ext4|both` and set `BOOT_FILE_A` / `BOOT_FILE_B`. See [Disk boot from a read-only filesystem (FAT32 / ext4)](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
+
 AMD Versal Prime Series VMK180 Evaluation Kit - Versal Prime XCVM1802-2MSEVSVA2197 Adaptive SoC - Dual ARM Cortex-A72.
 
 wolfBoot replaces U-Boot in the Versal boot flow:
@@ -4462,6 +4936,7 @@ Note: If using QSPI there are bootgen issues with 2025.1+, so recommend 2024.1 o
 ### Common Notes
 
 - Debugging with OCRAM (OCM): set `WOLFBOOT_ORIGIN=0xFFFC0000` (OCM is 256KB at `0xFFFC0000 - 0xFFFFFFFF`).
+- **High DDR apertures**: designs whose DDR window lives above the default map (for example DDR at `0x400_0000_0000`) add `CFLAGS_EXTRA+=-DVERSAL_DDR_HIGH_BASE=...` and `-DVERSAL_DDR_HIGH_SIZE=...` (512 GB aligned, plain hex literals with no `UL` suffix) to map the window in the translation table, plus `-DVERSAL_NO_DDR_LOW` when nothing remains at `0x0`. Move `WOLFBOOT_ORIGIN`, `WOLFBOOT_LOAD_ADDRESS` and `WOLFBOOT_LOAD_DTS_ADDRESS` into the window (`hal/versal.ld` follows `WOLFBOOT_ORIGIN` from the config), update the bootgen BIF load/exec and the BL31 BL33 entry to match, and switch the FIT ITS to `#address-cells = <2>` with two-cell `load`/`entry` values since 32-bit cells cannot hold addresses above 4 GB. A commented recipe is in `config/examples/versal_vmk180.config`; the DDR aperture itself must be routed to the APU by the design's PDI.
 - Test application uses generic `boot_arm64_start.S` and `AARCH64.ld` and prints EL + version.
   - Entry point: `_start` (in `boot_arm64_start.S`) which sets up stack, clears BSS, and calls `main()`
 
@@ -4665,20 +5140,22 @@ sf erase 0x800000 +${filesize}
 sf write ${loadaddr} 0x800000 ${filesize}
 ```
 
-**DTB Fixup for Root Filesystem**
+##### Ramdisk (initramfs)
 
-wolfBoot automatically modifies the device tree to set the kernel command line (`bootargs`). The default configuration mounts the root filesystem from SD card partition 2:
+A stock PetaLinux `image.ub` carries a `ramdisk` sub-image that `bootm` passes to the kernel via `/chosen/linux,initrd-{start,end}`. wolfBoot does the same with `FIT_RAMDISK=1`, enabled by default in both Versal example configs. Add the node plus a `ramdisk = "ramdisk-1";` reference to your configuration node; `hal/versal.its` carries a commented example.
 
-```
-earlycon root=/dev/mmcblk0p2 rootwait
-```
+`WOLFBOOT_LOAD_RAMDISK_ADDRESS` defaults to 0, which uses the ramdisk in place inside the staged FIT. Set it to a DDR address clear of the kernel, DTB and staging area if the payload needs a fixed location.
 
-To customize the root device, add to your config:
+**Kernel Command Line (bootargs)**
+
+If the FIT's DTB carries `/chosen/bootargs`, wolfBoot keeps them by default - an image boots with the arguments its kernel was validated with. Setting `LINUX_BOOTARGS` or `LINUX_BOOTARGS_ROOT` in the config replaces the DTB's value (the replaced value is logged); `CFLAGS_EXTRA+=-DLINUX_BOOTARGS_OVERRIDE=0` demotes an explicit `LINUX_BOOTARGS` to a fallback used only when the DTB has none.
 
 ```makefile
-# Mount root from SD card partition 4
+# Replace the image's bootargs, mounting root from SD card partition 4
 CFLAGS_EXTRA+=-DLINUX_BOOTARGS_ROOT=\"/dev/mmcblk0p4\"
 ```
+
+On Versal the PS UART console is `ttyAMA0` (PL011); when supplying your own bootargs prefer an explicit `earlycon=pl011,mmio32,0xFF000000,115200n8 console=ttyAMA0,115200`.
 
 **Automated Testing**
 
@@ -4714,7 +5191,7 @@ Image kernel-1: 0x200000 (24617472 bytes)
 Loading Image fdt-1: 0x1177A3DC -> 0x1000 (39384 bytes)
 Image fdt-1: 0x1000 (39384 bytes)
 Loading DTS: 0x1000 -> 0x1000 (39384 bytes)
-FDT: Version 17, Size 39384
+FDT: Size 39384
 FDT: Setting bootargs: earlycon root=/dev/mmcblk0p2 rootwait
 FDT: Set chosen (28076), bootargs=earlycon root=/dev/mmcblk0p2 rootwait
 Booting at 0x200000
@@ -4726,6 +5203,39 @@ PetaLinux 2024.2 xilinx-vmk180 ttyAMA0
 
 xilinx-vmk180 login:
 ```
+
+**Example Linux Boot Output (`GZIP=1` + `FIT_RAMDISK=1`)**
+
+```
+Decompressing Image kernel-1 (gzip): 0x100000E4 -> 0x200000 (10623118 bytes)
+Decompressed kernel-1: 24617472 bytes (7363 ms)
+Loading DTS: 0x1000 -> 0x1000 (39384 bytes)
+Loaded ramdisk: 0x10A2B540 (5647828 bytes)
+FDT: Set chosen (28076), linux,initrd-start=279098688
+FDT: Set chosen (28076), linux,initrd-end=284746516
+Booting at 0x200000
+do_boot: EL2->EL1 via ERET
+[    0.856319] Freeing initrd memory: 5512K
+[    3.315791] Run /init as init process
+
+xilinx-vmk180-20242 login:
+```
+
+Inflating a 24 MB kernel takes about 7 s on the A72, spent entirely between the `Decompressing` and `Decompressed` lines with no intermediate output. Do not mistake that gap for a hang.
+
+**Diagnosing a boot that stops with no message**
+
+wolfBoot runs at EL2 on Versal, where any abort is fatal. With `DEBUG_UART=1` (the default in both Versal example configs) the handlers print the syndrome:
+
+```
+*** SYNCHRONOUS EXCEPTION ***
+ESR_EL2: 0x0000000096000006
+ELR_EL2: 0x0000000008005910
+FAR_EL2: 0x00000000F9200000
+*** SYSTEM HALTED ***
+```
+
+`ESR_EL2[31:26]` is the exception class, `[5:0]` the fault status, and `FAR_EL2` the faulting address. A stop with no such banner is not an exception - check the PLM's `PMC EAM` output on the same UART. Error IDs `0xA`/`0xB` are `DDRMB_CR`/`DDRMB_NCR`, DDR controller correctable and uncorrectable errors, which the PLM logs without acting on.
 
 **Boot Performance**
 
@@ -5074,11 +5584,11 @@ To build wolfBoot for the PIC32CZ:
    make
    ```
 
-2. Sign the application:
+2. Sign the application. The key tools must use the same 1024-byte image header configured for PIC32CZ:
 
    ```sh
-   ./tools/keytools/sign --ed25519 --sha256 ./test-app/image.bin wolfboot_signing_private_key.der 1
-   ./tools/keytools/sign --ed25519 --sha256 ./test-app/image.bin wolfboot_signing_private_key.der 2
+   IMAGE_HEADER_SIZE=1024 ./tools/keytools/sign --ed25519 --sha256 ./test-app/image.bin wolfboot_signing_private_key.der 1
+   IMAGE_HEADER_SIZE=1024 ./tools/keytools/sign --ed25519 --sha256 ./test-app/image.bin wolfboot_signing_private_key.der 2
    ```
 
 ### Programming and Testing
@@ -5127,6 +5637,21 @@ The test behavior depends on whether the `DUALBANK_SWAP` feature is enabled:
 
 - **If `DUALBANK_SWAP=1`:** The higher version of the application will be automatically selected, and LED1 will turn on.
 - **If `DUALBANK_SWAP=0`:** The application version 1 will boot first. The application will trigger the update and light LED0. On the next reset, wolfBoot will update the application, boot application version 2, and turn on LED1.
+
+### PIC32CZ with wolfHSM
+
+On Microchip PIC32CZ CA9x devices, wolfBoot can run on the Cortex-M7 host core as
+a [wolfHSM](https://www.wolfssl.com/products/wolfhsm/) client, offloading the
+image digest and signature verification to the wolfHSM server running on the
+Cortex-M0+ HSM core.
+
+Currently, wolfBoot as wolfHSM for PIC32CZ is distributed as part of the wolfHSM
+PIC32CZ platform release bundle, not as a standalone package. This bundle is
+under NDA and is not publicly available.
+
+For access to the PIC32CZ platform release or for more information on using
+wolfBoot and wolfHSM on PIC32CZ devices, contact
+[facts@wolfssl.com](mailto:facts@wolfssl.com).
 
 
 ## Microchip SAME51
@@ -5326,6 +5851,83 @@ b main
 c
 ```
 
+
+## NXP i.MX RT700
+
+The NXP i.MX RT700 (MIMXRT798S) is a crossover MCU built around a Cortex-M33
+(Armv8-M with TrustZone-M) application core. Unlike the Cortex-M7 i.MX RT10xx
+family above, wolfBoot runs on the RT700 as a TrustZone-aware first-stage loader
+and boots execute-in-place from the external octal SPI NOR (MX25UM51345G, 64 MB)
+on XSPI0. It is validated on the MIMXRT700-EVK.
+
+### Building wolfBoot
+
+The MCUXpresso SDK supplies the XSPI, clock, and reset drivers wolfBoot links
+against. Obtain it either from the [MCUXpresso SDK Builder](https://mcuxpresso.nxp.com/en/welcome)
+for `MIMXRT798S`, or from the west manifests using the `mimxrt700evk` board:
+
+* https://github.com/nxp-mcuxpresso/mcuxsdk-manifests
+* https://github.com/nxp-mcuxpresso/CMSIS_5
+
+Point the wolfBoot `MCUXPRESSO`, `MCUXPRESSO_DRIVERS`, and `MCUXPRESSO_CMSIS`
+variables at the extracted SDK (see `config/examples/imx-rt700.config`), then run
+`make`. Use `MCUXSDK=1` with the west layout, since the pack paths differ.
+
+Three example configurations are provided:
+
+* `config/examples/imx-rt700.config` — ECC256, TrustZone disabled. The plain
+  first-stage loader.
+* `config/examples/imx-rt700-tz.config` — TrustZone enabled with the secure
+  application handoff (see below).
+* `config/examples/imx-rt700-mldsa.config` — ML-DSA (Dilithium) level 5
+  signatures for a CNSA 2.0 / post-quantum boot chain.
+
+### Flash memory map
+
+XSPI0 external NOR is mapped at `0x28000000` (Non-secure) and aliased at
+`0x38000000` (Secure). The default layout:
+
+| Region | Address | Size |
+| --- | --- | --- |
+| Flash config block (FCB) | 0x28000000 | 16 KB |
+| wolfBoot | 0x28004000 | 240 KB |
+| Boot partition | 0x28040000 | 256 KB |
+| Update partition | 0x28180000 | 256 KB |
+| Swap | 0x281C0000 | 4 KB |
+
+The sector size is 4 KB. With `RAM_CODE=1` the flash routines run from RAM so the
+XSPI can be reconfigured for erase and program while execution continues from
+internal SRAM.
+
+### TrustZone secure application handoff
+
+`imx-rt700-tz.config` builds wolfBoot for Secure state (`TZEN=1`) and enables the
+generic secure application handoff (`WOLFBOOT_SECURE_APP=1`). wolfBoot
+authenticates and measures the boot image, writes a measured-boot record to
+`WOLFBOOT_SECURE_HANDOFF_ADDRESS` (`0x30180000`, in secure SRAM), then jumps to
+the image while staying in Secure state. A Secure runtime such as wolfTrust
+consumes the record. In this configuration the boot, update, and swap partitions
+are addressed through the Secure alias (`0x38040000`, `0x38180000`, `0x381C0000`).
+
+Before handoff wolfBoot programs and locks the XSPI Secure Flash Protection
+(FRAD/MDAD) descriptors so the wolfBoot region is read-only to the application,
+and refuses to continue if that protection cannot be verified.
+
+### Flashing the EVK
+
+Build wolfBoot and the signed application, wrap wolfBoot as a bootable image with
+the FCB using NXP's `nxpimage` tool, then program the external flash over SWD:
+
+```sh
+# Program the bootable wolfBoot image (FCB + MBI) at the base of XSPI0
+pyocd flash -t mimxrt798sgfob -a 0x28000000 -e sector wolfboot_bootable.bin
+
+# Program the signed application at the boot partition
+pyocd flash -t mimxrt798sgfob -a 0x28040000 signed_app.bin
+```
+
+Reset the board to boot. When built with `DEBUG_UART=1`, wolfBoot prints its
+banner and verification progress on LPUART0 (the MCU-Link virtual COM port).
 
 ## NXP Kinetis
 
@@ -5548,6 +6150,14 @@ A first stage loader is required to load the wolfBoot image into DDR for executi
 | fsl_qe_ucode_1021_10_A.bin   | 0x01F00000  |
 | swap block                   | 0x02200000  |
 
+The QE microcode programmed at `0x01F00000` is validated only for
+structural integrity (header magic, version, and size bounds) before it
+is activated; it is not cryptographically authenticated. This is out of
+scope for the example configuration: the microcode region sits inside
+the update partition, so replacing it requires the same flash write
+access that would let an attacker replace the update image itself,
+which wolfBoot's image authentication already protects against.
+
 ### Building wolfBoot for NXP P1021 PPC
 
 By default wolfBoot will use `powerpc-linux-gnu-` cross-compiler prefix. These tools can be installed with the Debian package `gcc-powerpc-linux-gnu` (`sudo apt install gcc-powerpc-linux-gnu`).
@@ -5699,6 +6309,13 @@ Flash is NOR on IFC CS0 (0x0_E800_0000) 128MB (Micron JS28F00AM29EWHA, 16-bit, A
 Note: On T1040, FMAN and QE firmware share the same 128KB NOR erase sector
 (0xEFF00000-0xEFF1FFFF). They must be programmed together in a single
 erase/write operation.
+
+The QE and FMan microcode in these NOR regions is validated only for
+structural integrity (header magic, version, and size bounds) before it
+is activated; it is not cryptographically authenticated. This is out of
+scope for the example configurations: programming these regions requires
+local write access to the board's flash, which also allows replacing the
+wolfBoot image itself - a threat the signed image flow already covers.
 
 ### Design
 
@@ -5898,6 +6515,23 @@ Flash factory_custom.bin to NOR base 0xEC00_0000
 
 Flash factory_custom.bin to NOR base 0xE800_0000
 
+### T1040 SD Card Boot (eSDHC)
+
+The T1040 can also load the signed application image from an SD card using the on-chip Freescale eSDHC controller (driver: `hal/nxp_esdhc.c`, built as its own object). Use `config/examples/nxp-t1040-sdcard.config`, which enables `DISK_SDCARD=1` so wolfBoot links the disk boot path (`src/update_disk.c`) instead of the RAM loader.
+
+The card is GPT (or MBR) partitioned. The signed image is written at offset 0 of the boot partitions; `BOOT_PART_A` and `BOOT_PART_B` are 0-based indexes into the partition table. wolfBoot reads the image header from both slots, picks the higher version, loads it to `WOLFBOOT_LOAD_ADDRESS`, verifies the signature and boots it.
+
+Example card layout with two 16 MB raw slots:
+
+```
+sgdisk -Z /dev/sdX
+sgdisk -n 1:0:+16M -t 1:8300 -n 2:0:+16M -t 2:8300 /dev/sdX
+dd if=test-app/image_v1_signed.bin of=/dev/sdX1
+dd if=test-app/image_v2_signed.bin of=/dev/sdX2
+```
+
+`WOLFBOOT_RAMBOOT_MAX_SIZE` bounds the image size read from disk before authentication. Define `DEBUG_ESDHC` (see the config) for controller bring-up trace on the DUART console.
+
 
 ## NXP QorIQ T2080 PPC
 
@@ -5918,6 +6552,10 @@ variants are supported:
 Example configuration: [/config/examples/nxp-t2080.config](/config/examples/nxp-t2080.config).
 See [Board Selection](#board-selection) below for per-board setup.
 
+> **FMan microcode (DPAA/wolfIP):** with DPAA/FMan enabled, wolfBoot uploads the FMan microcode from NOR at `FMAN_FW_ADDR` (`hal/nxp_t2080.c`), board-gated: the T2080 RDB and NAII 68PPC2 (128 MB NOR at `0xE8000000`) use `0xEFF00000` -- the U-Boot-standard slot (`CONFIG_SYS_FMAN_FW_ADDR` in `T208xRDB.h`) -- and CW VPX3-152 (256 MB NOR) uses `0xFFE60000`. The wolfBoot partitions sit below this reserved firmware region so a BOOT-partition erase/update never overwrites the ucode. The address is bounds-checked against the NOR window, so a wrong value fails gracefully instead of machine-checking. Flash the matching `fsl_fman_ucode_*` blob at that address.
+>
+> wolfIP-on-FMan is hardware-verified on the CW VPX3-152 (FM1@DTSEC1, SGMII), the NAII 68PPC2 (FM1@DTSEC3, RGMII, PHY @ addr 0 -- see the example config's wolfIP block), and the T1040D4RDB (e5500; FM1@DTSEC4, RGMII, RTL8211 @ addr 4). NAII NOR is dual-bank with only the top 128 KB boot sector common to both banks, so flash the ucode/app with the boot-bank select in its runtime state.
+
 ### Design NXP T2080 PPC
 
 The QorIQ requires a Reset Configuration Word (RCW) to define the boot parameters, which resides at the start of the flash (`0xE8000000` for 128 MB boards, `0xF0000000` for the 256 MB CW VPX3-152).
@@ -5930,202 +6568,29 @@ The flash boot entry point is the last 4 bytes of the NOR flash region (`0xEFFFF
 
 ```
 CPU Core -> L1 (32KB I + 32KB D) -> L2 (2 MB, shared by the single 4-core cluster)
-         → CoreNet Fabric → CPC (2MB, SRAM or L3 cache)
-         → DDR Controller → DDR SDRAM
-         → IFC Controller → NOR Flash
+         -> CoreNet Fabric -> CPC (2MB, SRAM or L3 cache)
+         -> DDR Controller -> DDR SDRAM
+         -> IFC Controller -> NOR Flash
 ```
 
 Each core begins execution at effective address `0x0_FFFF_FFFC` with a single
 4KB MMU page (RM 4.3.3). The assembly startup (`boot_ppc_start.S`) configures
 TLBs, caches, and stack before jumping to C code.
 
-**Cold Boot Stack (L1 Locked D-Cache)**
+The HAL handles several QorIQ boot constraints; the rationale is documented in `src/boot_ppc_start.S` and `hal/nxp_t2080.c`:
 
-CPC SRAM is unreliable for stores on cold power-on — L1 dirty-line evictions
-through CoreNet to CPC cause bus errors (silent CPU checkstop with `MSR[ME]=0`).
-The fix (matching U-Boot) uses L1 locked D-cache as the initial 16KB stack:
-`dcbz` allocates cache lines without bus reads, `dcbtls` locks them so they
-are never evicted. The locked lines at `L1_CACHE_ADDR` (`0xF8E00000`; `0xEE800000` on VPX3-152) are
-entirely core-local. After DDR init in `hal_init()`, the stack relocates to
-DDR and the CPC switches from SRAM to L3 cache mode.
+- **Cold-boot stack.** CPC SRAM is unreliable for stores on cold power-on, so the initial 16KB stack uses locked L1 D-cache and relocates to DDR after `hal_init()`.
+- **XIP flash access.** wolfBoot executes in place from NOR. Because program/erase puts the NOR into command mode bank-wide, all flash write/erase routines are `RAMFUNCTION` (copied to DDR) and must not call flash-resident code; the flash TLB switches cache attributes around program/erase.
+- **Multi-core (`ENABLE_MP`).** The e6500 L2 is shared by all four cores in the single cluster, so secondaries skip L2 re-init and share the boot core's L2.
+- **CW VPX3-152 (256 MB NOR) only.** The larger flash VA range forces CCSRBAR to relocate from `0xFE000000` to `0xEF000000` (CPC/L1 addresses move to `0xEE900000`/`0xEE800000`), and the boot-ROM TLB is invalidated to avoid an e6500 multi-hit machine check. The 128 MB RDB and NAII boards need neither adjustment.
 
-**Flash TLB and XIP**
+#### VxWorks 7 / 64-bit OS Boot Support (ENABLE_OS64BIT)
 
-The flash TLB uses `MAS2_W | MAS2_G` (Write-Through + Guarded) during XIP
-boot, allowing L1 I-cache to cache instruction fetches while preventing
-speculative prefetch to the IFC. C code switches to `MAS2_I | MAS2_G` during
-flash write/erase (command mode), then `MAS2_M` for full caching afterward.
+With `ENABLE_OS64BIT`, `do_boot()` performs the extra handoff needed to launch a 64-bit kernel -- a VxWorks 7 kernel (Curtiss-Wright `ossel=ostype2` mode) or a 64-bit Linux kernel via the ePAPR convention. This path is hardware-verified on the CW VPX3-152 booting VxWorks 7 and Green Hills INTEGRITY-178 tuMP.
 
-**CCSRBAR Relocation (CW VPX3-152 only)**
+wolfBoot hands off per ePAPR: FDT pointer in `r3`, `'EPAP'` in `r6`, IMA size in `r7`, remaining GPRs zero, with the OS switching itself to 64-bit mode. Before the jump wolfBoot builds the final 64-bit memory map (DDR identity-mapped at TLB1 slot 0, plus the board's peripheral and PCIe windows), fixes up the FDT (`cpu-release-addr`, `enable-method`, per-core `status`, and the `WOLFBOOT_BOOTARGS` bootargs), releases the secondary cores into the ePAPR spin-table, and jumps to the OS entry from a `RAMFUNCTION` trampoline running out of DDR. The board-specific peripheral map is supplied by the board HAL (for the VPX3-152, `hal_cw_vpx3152_os64_periph()`).
 
-The default CCSRBAR at `0xFE000000` (16 MB) falls within the VPX3-152's 256 MB
-flash VA range (`0xF0000000`-`0xFFFFFFFF`). The startup assembly relocates
-CCSRBAR to `0xEF000000` (just below flash). The CPC SRAM and L1 cache addresses
-are also relocated to `0xEE900000`/`0xEE800000` to avoid overlap.
-
-**Boot ROM TLB invalidation (CW VPX3-152 only)**
-
-For VPX3-152, TLB1 Entry 2 maps the full 256 MB flash at `0xF0000000-0xFFFFFFFF`
-with IPROT. This range overlaps with the boot ROM TLB (default 4 KB at
-`0xFFFFF000`, resized to 256 KB at `0xFFFC0000` by `shrink_default_tlb1`).
-Overlapping TLB1 entries cause an e6500 multi-hit machine check. After Entry 2
-is created, the boot ROM TLB is cleared via `tlbwe` with `V=0` and `IPROT=0`;
-Entry 2 then serves all instruction fetches for the flash region including the
-boot ROM range. For NAII 68PPC2 and T2080 RDB (128 MB flash at `0xE8000000`),
-there is no overlap and the boot ROM TLB remains valid alongside Entry 2.
-
-**RAMFUNCTION Constraints**
-
-The NOR flash (two S29GL01GS x8 in parallel, 16-bit bus) enters
-command mode bank-wide — instruction fetches during program/erase return status
-data instead of code. All flash write/erase functions are marked `RAMFUNCTION`,
-placed in `.ramcode`, copied to DDR, and remapped via TLB9. Key rules:
-
-- **No calls to flash-resident code.** The linker generates trampolines that
-  jump back to flash addresses. Any helper called from RAMFUNCTION code must
-  itself be RAMFUNCTION or fully inlined. Delay/clock helpers (for example,
-  `udelay` and associated clock accessors) are provided by `nxp_ppc.c` and
-  are marked `RAMFUNCTION` so they can be safely invoked without executing
-  from flash `.text`.
-- **Inline TLB/cache ops.** `hal_flash_cache_disable/enable` use
-  `set_tlb()` / `write_tlb()` (inline `mtspr` helpers) and direct
-  L1CSR0/L1CSR1 manipulation.
-- **WBP timing.** The write-buffer-program sequence (unlock → 0x25 → count →
-  data → 0x29) must execute without bus-stalling delays. UART output between
-  steps (~87us per character at 115200) triggers DQ1 abort.
-- **WBP abort recovery.** Plain `AMD_CMD_RESET` (0xF0) is ignored in
-  WBP-abort state; the full unlock + 0xF0 sequence is required.
-
-**Multi-Core (ENABLE_MP)**
-
-The e6500 L2 cache is per-cluster (shared by all 4 cores). Secondary cores
-must skip L2 flash-invalidate (L2FI) since the primary core already
-initialized the shared L2; they only set L1 stash ID via L1CSR2.
-
-**e6500 64-bit GPR**
-
-The e6500 has 64-bit GPRs even in 32-bit mode. `lis` sign-extends to 64 bits,
-producing incorrect values for addresses >= 0x80000000 (e.g., `lis r3, 0xEFFE`
-→ `0xFFFFFFFF_EFFE0000`), causing TLB misses on `blr`. The `LOAD_ADDR32`
-macro (`li reg, 0` + `oris` + `ori`) avoids this for all address loads.
-
-**MSR Configuration**
-
-After the stack is established: `MSR[CE|ME|DE|RI]` — critical interrupt,
-machine check (exceptions instead of checkstop), debug, and recoverable
-interrupt enable. Branch prediction (BUCSR) is deferred to `hal_init()` after
-DDR stack relocation.
-
-**e6500 Cluster L2 ECC bring-up**
-
-The e6500 cluster L2 (memory-mapped `L2CSR0`) must be enabled in a specific
-order or its ECC array is left uninitialized for ranges the OS later fetches,
-producing an uncorrectable multi-bit ECC machine check (`MCSR[IF]`,
-`L2ERRDET` MBECC). `boot_ppc_start.S` follows the CW U-Boot / SDK2.0 sequence:
-(1) `L2FI | L2LFC` (flash-invalidate + lock-flash-clear), polling until clear;
-(2) `L2PE` (ECC enable) in its own write, polling until it reads back set,
-BEFORE the cache is enabled; (3) `L2E | L2PE | L2REP_MODE` to enable the cache
-with ECC. Writing a bare `L2E` without first polling `L2PE` set is the
-misordering that machine-checks VxWorks.
-
-#### VxWorks 7 64-bit Boot Support (ENABLE_OS64BIT)
-
-When `ENABLE_OS64BIT` is set, `do_boot()` performs the additional handoff
-work needed to launch a VxWorks 7 64-bit kernel (Curtiss-Wright `ossel=ostype2`
-mode) or a 64-bit Linux kernel via the ePAPR convention.
-
-**ePAPR handoff:** wolfBoot passes the FDT pointer in `r3`, the IMA size in
-`r7`, and `0x45504150` (`'EPAP'`) in `r6`. Other GPRs are zero. MSR is
-`0x00002200` (`FP|DE`); the OS sets `MSR[CM]=1` itself within its first ~30
-instructions.
-
-**Final 64-bit memory map (FUM Table 2.5).** `hal_os64bit_map_transition()`
-in `src/boot_ppc.c` performs the board-agnostic DDR-to-slot-0 remap and
-delegates the board-specific peripheral LAW/ATMU programming to
-`hal_cw_vpx3152_os64_periph()`, which builds the 36-bit-aliased peripheral
-map VxWorks 7 expects on CW VPX3-152:
-
-| Effective Address | Physical Address | Region |
-|---|---|---|
-| `0xF000_0000` | `0xF_F000_0000` | Flash (256 MB) |
-| `0xEF00_0000` | `0xF_EF00_0000` | CCSR (16 MB) |
-| `0xEE40_0000` | `0xF_EE40_0000` | FPGA / NVRAM (4 MB span) |
-| `0xEE00_0000` | `0xF_EE00_0000` | DCSR (4 MB) |
-| `0xEC00_0000` | `0xF_EC00_0000` | QMan portals (32 MB) |
-| `0xEA00_0000` | `0xF_EA00_0000` | BMan portals (32 MB) |
-| `0xE000_0000` | `0xD_0000_0000` | PCIe1 (XMC) memory (2 GB) |
-| `0xC000_0000` | `0xC_0000_0000` | PCIe4 (Switch) memory (2 GB) |
-| `0x0000_0000` | `0x0_0000_0000` | DDR identity (2 GB, slot 0) |
-
-**DDR at TLB1 slot 0.** VxWorks 7's early entry stub iterates TLB1 from
-slot 1 upward invalidating each entry, then reads slot 0 expecting it to
-contain the DDR mapping. wolfBoot pins DDR at slot 12 by default; the
-OS-handoff transition invalidates slot 12 and writes DDR identity (2 GB,
-`MAS3_SX|SW|SR`, `MAS2_M`, IPROT) at slot 0.
-
-**Spin-table.** `hal_mp_init()` places the secondary-core spin-table at
-`bootpg - BOOT_ROM_SIZE`. For VxWorks 7 the bootpg is anchored just below
-the FUM `/memory` hole at `0x7E40_0000` so `cpu-release-addr` lands inside
-declared memory. `hal_mp_up()` releases all secondaries into the spin loop
-via `DCFG_BRR` regardless of `ENABLE_OS64BIT` (the earlier theory that CW
-U-Boot holds the secondaries in reset for `ossel=ostype2` was disproven --
-U-Boot also releases CPU0/2/4/6 into the spin loop first). The OS then
-brings up each released core via the standard ePAPR spin-table protocol
-(`cpu-release-addr` in the FDT).
-
-**FDT fixups.** `hal_dts_fixup()` populates `cpus/cpu@N/cpu-release-addr`
-and `enable-method = "spin-table"` for every core, and marks every core
-`status = "okay"` (marking the secondaries `"disabled"` made VxWorks skip
-them and stall on the first spin-table release). The
-DTB's existing `/memory.reg` is left untouched if already populated
-(matching production U-Boot's `fdt_fixup_memory` which only writes when
-the node is missing). The DTB's bootargs is replaced with the
-`WOLFBOOT_BOOTARGS` value from `.config` if defined.
-
-**RAMFUNCTION OS-jump trampoline.** wolfBoot is XIP from flash by default;
-`wolfBoot_os64bit_jump()` is a `RAMFUNCTION` (lives in `.ramcode` /
-DDR). Steps it performs in order:
-
-1. Copy the exception handler (`isr_empty`, ~208 bytes) from flash
-   `0xFFFE_0000` to DDR at `0x0080_0000` (4 KB-aligned), then re-point
-   `IVPR` to the DDR copy. Without this, the next step (switching
-   flash to cache-inhibit + guarded) would break the e6500 fetcher's
-   ability to service handler instructions, causing any subsequent
-   exception to silent-hang. Production U-Boot's `IVPR` likewise
-   targets its DDR-relocated code, not flash.
-2. Call `hal_flash_cache_disable_pre_os()` (also `RAMFUNCTION`) which
-   switches the flash TLB to `MAS2_I|MAS2_G`, asserts DUART1 MCR=3
-   (DTR+RTS, matching production U-Boot's pre-bootm value), and zeros
-   `TCR` to disable any leftover watchdog reset arming.
-3. `sync; isync` to drain the pipeline.
-4. Indirect-jump to the OS entry through `bctrl`. The bctrl is fetched
-   from DDR (the trampoline itself), matching the production U-Boot
-   pattern of running its final pre-OS instructions out of DDR.
-
-**Other VxWorks-driven adjustments:**
-
-- `CORES_PER_CLUSTER = 4` for T2080: the four e6500 cores share a single
-  cluster (2 MB L2), so the MP secondary path's linear core-ID is
-  `(PIR>>5)*4 + ((PIR>>3) & 0x3)`. The cluster term is 0 on this one-cluster
-  part; an earlier value of 2 (a mistaken "2 clusters of 2" reading) was
-  masked by that and only worked by accident.
-- T2080 rev-1 e6500 errata block at primary core reset and the
-  secondary boot path. Erratum A003999 (HDBCR1 |= 0x0100_0000) is
-  intentionally NOT applied because production CW U-Boot does not
-  apply it to T2080.
-- Secondary L2 init is gated on cluster ID > 0; T2080's four cores are all
-  in cluster 0, so every secondary skips it and shares the boot core's L2.
-- IFC chip-selects on CW VPX3-152: AMASK + `MSEL=GPCM` aligned with CW
-  U-Boot's CSPR programming. CSOR is left alone while wolfBoot is still
-  XIP from flash (writing CSOR would alter the GPCM timing of the very
-  flash we are fetching from).
-
-**Early-boot UART debug (`WOLFBOOT_EARLY_UART`).** Defining this
-preprocessor flag compiles in the e6500 early-boot (pre-C) UART debug
-helper macros in `src/boot_ppc_start.S` (DUART1 at `CCSR + 0x11C500`).
-They emit single-character breadcrumbs from the assembly startup when
-bringing up a new board or OS, before the C `wolfBoot_printf` path is
-available. Off by default.
+Set `WOLFBOOT_EARLY_UART` to compile in pre-C single-character UART breadcrumbs (DUART1) emitted from the assembly startup, useful when bringing up a new board or OS. Off by default.
 
 ### Building wolfBoot for NXP T2080 PPC
 
@@ -6196,8 +6661,8 @@ Flash Layout (T2080 RDB / NAII 68PPC2, 128 MB flash):
 | Description | File | Address |
 | ----------- | ---- | ------- |
 | Reset Configuration Word (RCW) | _(board-specific)_ | `0xE8000000` |
-| Frame Manager Microcode | `fsl_fman_ucode_t2080_r1.0.bin` | `0xE8020000` |
-| Signed Application | `test-app/image_v1_signed.bin` | `0xE8080000` |
+| Signed Application | `test-app/image_v1_signed.bin` | `0xEFE00000` |
+| Frame Manager Microcode | `fsl_fman_ucode_t2080_r1.0.bin` | `0xEFF00000` |
 | wolfBoot | `wolfboot.bin` | `0xEFFE0000` |
 | Boot Entry Point (offset jump to init code) |  | `0xEFFFFFFC` |
 
@@ -6206,8 +6671,8 @@ Flash Layout (CW VPX3-152, 256 MB flash):
 | Description | File | Address |
 | ----------- | ---- | ------- |
 | Reset Configuration Word (RCW) | _(board-specific)_ | `0xF0000000` |
-| Frame Manager Microcode | `fsl_fman_ucode_t2080_r1.0.bin` | `0xF0020000` |
-| Signed Application | `test-app/image_v1_signed.bin` | `0xF0080000` |
+| Frame Manager Microcode | `fsl_fman_ucode_t2080_r1.0.bin` | `0xFFE60000` |
+| Signed Application | `test-app/image_v1_signed.bin` | `0xFF000000` |
 | wolfBoot | `wolfboot.bin` | `0xFFFE0000` |
 | Boot Entry Point (offset jump to init code) |  | `0xFFFFFFFC` |
 
@@ -6850,7 +7315,7 @@ The following build options are available for the S32K1xx HAL:
 | `RAM_CODE` | **Required for S32K1xx.** Run flash operations from RAM (no read-while-write on same block). |
 | `WOLFBOOT_RESTORE_CLOCK` | Restore clock to SIRC (8 MHz) before booting application. Recommended for applications that configure their own clocks. |
 | `WOLFBOOT_DISABLE_WATCHDOG_ON_BOOT` | Keep watchdog disabled when jumping to application. By default, the watchdog is re-enabled before boot since it is enabled out of reset. |
-| `WATCHDOG` | Enable watchdog during wolfBoot operation. Recommended for production. |
+| `WATCHDOG` | Enable the watchdog during wolfBoot operation. wolfBoot calls `wolfBoot_watchdog_feed()` from its hash and copy/erase loops -- a weak no-op a port overrides to service its watchdog (e.g. external MAX6316-MAX6322, see `hal/renesas-rx.c`). |
 | `WATCHDOG_TIMEOUT_MS` | Watchdog timeout in milliseconds when `WATCHDOG` is enabled (default: 1000ms). |
 | `S32K1XX_CLOCK_HSRUN` | Enable HSRUN mode (112 MHz). Requires external crystal and SPLL (not fully implemented). |
 | `DEBUG_UART` | Enable LPUART1 debug output. |
@@ -7783,9 +8248,262 @@ Staging kernel at address D630100, size: 6658016
 
 You can `Ctrl-C` or login as `root` and power off qemu with `poweroff`
 
+To pass an authenticated Linux kernel command line, sign the kernel with `--cmdline "..."` (before the positional `image key version` arguments; see [Signing](Signing.md)). wolfBoot reads the `HDR_CMDLINE` TLV from the verified image and applies it to the kernel EFI stub via `LoadOptions`, so it is covered by the image signature.
 
+
+
+## NVIDIA Jetson Orin (aarch64_efi)
+
+The `aarch64_efi` target builds wolfBoot as an AArch64 UEFI application (`wolfboot.efi`), the direct counterpart of the [Qemu x86-64 UEFI](#qemu-x86-64-uefi) target. It uses only UEFI Boot Services (no SoC-specific registers), so the same binary runs on any AArch64 UEFI platform. It has been validated on the NVIDIA Jetson Orin Nano Developer Kit (Tegra234), where the on-module UEFI firmware (edk2-nvidia) launches it after the NVIDIA-signed early boot chain (BootROM -> MB1 -> MB2 -> UEFI). wolfBoot reads the next-stage image from the EFI Simple File System, authenticates it with wolfCrypt, and boots it via the UEFI `LoadImage`/`StartImage` services (an AArch64 Linux `Image` is itself a PE/COFF EFI-stub application).
+
+### Prerequisites
+
+ * An AArch64 GNU toolchain (`aarch64-linux-gnu-gcc`)
+ * gnu-efi built for AArch64 (the host distro package is usually x86-only, so build it with the helper script below)
+ * For emulation: `qemu-system-aarch64` plus the AArch64 UEFI firmware (AAVMF, package `qemu-efi-aarch64`)
+
+On a debian-like system:
+
+```
+apt install git make gcc-aarch64-linux-gnu dosfstools mtools
+apt install qemu-system-arm qemu-efi-aarch64   # emulation (optional)
+```
+
+Build the AArch64 gnu-efi runtime once (installs into `tools/gnu-efi-aarch64/`):
+
+```
+./tools/scripts/build-gnu-efi-aarch64.sh
+```
+
+### Configuration
+
+An example configuration is provided in [config/examples/aarch64_efi.config](config/examples/aarch64_efi.config). It selects `ARCH=AARCH64`, `TARGET=aarch64_efi`, and a signature/hash algorithm (ED25519/SHA256 by default). No partition addresses are required -- UEFI provides the storage and dynamic image placement.
+
+### Building
+
+```
+cp config/examples/aarch64_efi.config .config
+make
+```
+
+This produces `wolfboot.efi`, a PE32+ AArch64 EFI application (objcopy output format `pei-aarch64-little`).
+
+### Signing a payload
+
+Sign the image to boot (an AArch64 Linux `Image`, or any EFI application for testing) with the generated key, tagging it with a version. wolfBoot looks for `kernel.img` and `update.img` on the volume it was launched from and boots the higher valid version:
+
+```
+./tools/keytools/sign --ed25519 --sha256 Image wolfboot_signing_private_key.der 1
+cp Image_v1_signed.bin kernel.img
+```
+
+### Running in QEMU
+
+```
+./tools/scripts/aarch64-efi-qemu.sh        # add --gdb to debug with gdb-multiarch
+```
+
+The script exposes a scratch directory to the UEFI firmware as a FAT ESP, copies `wolfboot.efi` (and `kernel.img` from `aarch64_efi-stage/` if present), and auto-runs it.
+
+### Deploying on the Jetson Orin Nano
+
+The Jetson UEFI auto-boots removable media via `\EFI\BOOT\BOOTAA64.EFI`. Place wolfBoot and a signed payload on a FAT32 partition:
+
+```
+\EFI\BOOT\BOOTAA64.EFI   <- wolfboot.efi
+\kernel.img              <- signed payload (read from the volume root)
+```
+
+The Linux kernel command line is signed into `kernel.img` itself (see "Booting Linux" below), so no separate file is placed on the ESP.
+
+Insert the card and power on; UEFI auto-launches wolfBoot, which verifies and boots the payload. The debug console on the Orin Nano Developer Kit is the J14 button header (not the 40-pin), 115200 8N1. Example output:
+
+```
+Image base: 0x25E5D4000
+Opening file: kernel.img, size: 57969
+Checking integrity...done
+Verifying signature...done
+Successfully selected image in part: 0
+Firmware Valid
+Booting at 0x5E254100
+Staging kernel at address 5E254100, size: 57969
+```
+
+### Booting Linux
+
+An AArch64 Linux `Image` carries a PE/COFF EFI stub, so wolfBoot boots it with the same `LoadImage`/`StartImage` path used above -- no initrd or bare-metal handoff is needed when the kernel has built-in MMC/ext4 drivers (the NVIDIA L4T kernel does). This has been validated end to end on the Jetson Orin Nano: wolfBoot verifies the signed kernel and boots NVIDIA Jetson Linux (L4T R36.4.4, `5.15.148-tegra`) all the way to an Ubuntu 22.04 login prompt.
+
+Obtain a Tegra234-compatible kernel and root filesystem from the [NVIDIA Jetson Linux (L4T)](https://developer.nvidia.com/embedded/jetson-linux) BSP. The driver package (`Jetson_Linux_R36.x.x_aarch64.tbz2`) contains `Linux_for_Tegra/kernel/Image` and `Linux_for_Tegra/kernel/dtb/tegra234-*.dtb`; the matching `Tegra_Linux_Sample-Root-Filesystem_*.tbz2` provides the rootfs.
+
+Sign the kernel `Image` with the wolfBoot key, including the kernel command line as an authenticated TLV (`--cmdline`, before the positional arguments), and name it `kernel.img`:
+
+```
+./tools/keytools/sign --ed25519 --sha256 \
+    --cmdline "root=/dev/mmcblk0p2 rw rootwait console=ttyTCU0,115200" \
+    Linux_for_Tegra/kernel/Image wolfboot_signing_private_key.der 1
+cp Linux_for_Tegra/kernel/Image_v1_signed.bin kernel.img
+```
+
+The command line is stored in the signed manifest header (`HDR_CMDLINE` TLV) and is therefore covered by the image signature; wolfBoot reads it from the verified image and passes it to the kernel EFI stub via `LoadOptions`. For a long command line, set `IMAGE_HEADER_SIZE=512` when signing (the default 256-byte ED25519/SHA256 header holds roughly 70 command-line bytes).
+
+Lay out the microSD as a FAT ESP plus a rootfs partition and place:
+
+```
+FAT (p1):   \EFI\BOOT\BOOTAA64.EFI   <- wolfboot.efi (UEFI auto-boots this)
+            \kernel.img              <- signed L4T kernel (command line inside)
+ext4 (p2):  the L4T sample root filesystem
+```
+
+On power-up the Jetson UEFI auto-boots `\EFI\BOOT\BOOTAA64.EFI`; wolfBoot verifies `kernel.img` and hands off to the kernel, which receives the real Tegra234 device tree from the UEFI configuration table (`EFI stub: Using DTB from configuration table`), mounts `mmcblk0p2`, and brings up systemd and the login on the J14 debug console (`ttyTCU0`).
+
+Security note: because the command line lives in the signed manifest, kernel arguments (e.g. `root=`, `init=`, security flags) cannot be altered without breaking the image signature -- unlike an unauthenticated file on the ESP. If the image carries no `HDR_CMDLINE` TLV, wolfBoot boots with no command line and the kernel uses its built-in `CONFIG_CMDLINE`. As additional (independent) hardening you may also build Linux with `CONFIG_CMDLINE="..."` plus `CONFIG_CMDLINE_FORCE`, which makes the kernel ignore any externally supplied command line entirely. An initramfs-based flow (rather than a direct `root=` mount) would additionally need initrd support via the `LINUX_EFI_INITRD_MEDIA_GUID` LoadFile2 protocol, which this target does not currently implement.
+
+### Root of trust: enrolling wolfBoot into UEFI Secure Boot
+
+The steps above give wolfBoot verifying the kernel. To close the remaining gap -- the firmware verifying `wolfboot.efi` itself -- enroll wolfBoot into UEFI Secure Boot so the platform refuses to launch an unsigned or tampered `wolfboot.efi`. This makes the chain continuous: firmware -> `wolfboot.efi` -> kernel.
+
+`tools/scripts/sign-efi-secureboot.sh` generates a Platform Key (PK), Key Exchange Key (KEK) and signature-database (db) key/cert, signs `wolfboot.efi` with the db key, and emits the signed variable updates (`.auth`) for enrollment:
+
+```
+./tools/scripts/sign-efi-secureboot.sh wolfboot.efi
+```
+
+This produces `wolfboot.efi.signed` and, under `tools/efi-secureboot-keys/`, the `PK`/`KEK`/`db` key and cert plus the signed variable updates (`db.auth`, `KEK.auth`, `PK.auth`). (It requires `sbsigntool`, `efitools`, and `openssl`; `sbsign` may print benign "gaps between PE/COFF sections" warnings for gnu-efi images -- signing and `sbverify` still pass.)
+
+The Jetson edk2 UEFI Shell `setvar` cannot enroll authenticated variables (it has no file input and cannot set the time-based-authenticated attribute), so enroll from the UEFI **setup menu**, which reads the certificate files from the ESP. The menu's "Enroll ... Using File" expects DER-encoded certificates; convert the generated PEM certs once:
+
+```
+cd tools/efi-secureboot-keys
+for k in PK KEK db; do openssl x509 -in $k.crt -outform DER -out $k.cer; done
+```
+
+Copy `db.cer`, `KEK.cer`, `PK.cer` and `wolfboot.efi.signed` onto the ESP (deploy the signed image as `\EFI\BOOT\BOOTAA64.EFI`). Name the cert files with a **lowercase** `.cer` extension: the edk2 file explorer decides a file is a certificate by a case-sensitive suffix match against `.cer`/`.der`/`.crt`, so an uppercase `DB.CER` (as FAT stores a plain 8.3 name) is rejected with "Unsupported file type!". Copy them with lowercase names (e.g. `mcopy db.cer ::/db.cer`) so the VFAT lowercase flag is set. Then, on the board (over the serial console -- use `minicom` or `screen`, not a plain pass-through, so the full-screen menu renders):
+
+1. Reset and press `ESC` at the firmware banner (`ESC to enter Setup`) to enter Setup.
+2. `Device Manager` -> `Secure Boot Configuration`.
+3. Set `Secure Boot Mode` -> `Custom Mode` (reveals `Custom Secure Boot Options`).
+4. Under `Custom Secure Boot Options`, enroll in order -- `db`, then `KEK`, then `PK` (enrolling PK is what turns Secure Boot enforcing and exits Setup Mode):
+   - `DB Options` -> `Enroll Signature` -> `Enroll Signature Using File` -> select `db.cer` -> accept the default signature-owner GUID -> `Commit Changes and Exit`.
+   - `KEK Options` -> `Enroll KEK` -> `Enroll KEK Using File` -> `KEK.cer` -> `Commit Changes and Exit`.
+   - `PK Options` -> `Enroll PK` -> `Enroll PK Using File` -> `PK.cer` -> `Commit Changes and Exit`.
+5. Confirm `Current Secure Boot State: Enabled`, then reset.
+
+On reboot the firmware verifies `\EFI\BOOT\BOOTAA64.EFI` against `db`, so the signed wolfBoot launches (`Verifying signature...done`). To prove enforcement, replace `BOOTAA64.EFI` with an unsigned `wolfboot.efi`; the firmware refuses it with a Security Violation. Secure Boot is fully reversible: in the same menu set `Secure Boot Mode` -> `Standard Mode`, or delete the PK, to return the board to Setup Mode.
+
+Important -- sign the kernel for Secure Boot too. wolfBoot boots the kernel through the UEFI `LoadImage`/`StartImage` services, and with Secure Boot enforcing, `LoadImage` also verifies the kernel image against `db`. A kernel that is only wolfBoot-signed is rejected by `LoadImage` (wolfBoot prints `LoadImage failed: 0x<status>`), even though wolfBoot's own `Verifying signature...done` passed. Sign the raw `Image` with the db key (sbsign) first, then wolfBoot-sign the result, so the kernel is trusted by both UEFI (`db`, for `LoadImage`) and wolfBoot (wolfCrypt):
+
+```
+sbsign --key tools/efi-secureboot-keys/db.key --cert tools/efi-secureboot-keys/db.crt \
+    --output Image.sb Linux_for_Tegra/kernel/Image
+./tools/keytools/sign --ed25519 --sha256 Image.sb wolfboot_signing_private_key.der 1
+cp Image_v1_signed.bin kernel.img      # note: sign drops the .sb, output is Image_v1_signed.bin
+```
+
+The full enforced chain is then firmware -> (Secure Boot) -> wolfBoot -> (wolfCrypt + Secure Boot) -> kernel -> Linux.
+
+Test this without hardware first: the QEMU + AAVMF helper (`tools/scripts/aarch64-efi-qemu.sh`) uses OVMF/AAVMF variable storage that supports enrolling the same keys, so you can confirm the signed binary launches and a wrong-key binary is refused before touching the board.
+
+Note on the Jetson dev kit: the OP-TEE console prints "Test UEFI variable auth key is being used" / "UEFI variable protection is not fully enabled", i.e. the variable store is in a development state (`SetupMode=1`), which is why menu enrollment works without a prior platform key. A production device would additionally fuse-lock the variable store (see below).
+
+### Root of trust: NVIDIA fuse provisioning (production; not performed here)
+
+UEFI Secure Boot above is enforced by the edk2 firmware. On a production Jetson the firmware chain (BootROM -> MB1 -> MB2 -> cpu-bootloader/UEFI) is itself made tamper-resistant by burning the NVIDIA security fuses from the L4T BSP:
+
+- PKC (public-key crypto) fuses: burn the SHA of your signing public key so the BootROM only accepts an NVIDIA-signing-chain that you control.
+- SBK (secure boot key) fuses: optionally encrypt the boot binaries.
+
+These are burned with `odmfuse.sh`/`tegrasign` from `Linux_for_Tegra/` and are irreversible. They are the final production step and are intentionally NOT part of this port -- the development board stays in unfused/dev mode. Consult the NVIDIA Jetson Linux "Secure Boot" documentation for the current `odmfuse.sh` procedure for your module before burning anything. Once fused, the fused firmware enforces UEFI Secure Boot, which enforces `wolfboot.efi`, which enforces the kernel -- a complete hardware root of trust.
+
+### Measured boot (firmware TPM via EFI_TCG2)
+
+The Jetson firmware provides a TPM 2.0 (an OP-TEE fTPM) behind `EFI_TCG2_PROTOCOL` and already measures the early boot chain into PCRs. wolfBoot extends that chain to the OS: with `MEASURED_BOOT_TCG2=1` (default in `config/examples/aarch64_efi.config`), it measures the verified kernel image into PCR `MEASURED_PCR_A` (default 9) with `HashLogExtendEvent` just before handoff, appending a `wolfBoot kernel.img` record to the firmware event log. This is the same consumer pattern U-Boot uses -- the firmware / fTPM performs the hashing, PCR extend and log append, so wolfBoot needs no TPM transport driver of its own and pulls in no wolfTPM.
+
+It is best-effort and does not disturb boot: wolfBoot logs the TPM capability and, if the platform exposes no TCG2 protocol or reports no TPM present, skips the measurement and continues. On the Orin Nano the console shows:
+
+```
+TCG2: TPM present=1 activeBanks=0x6 banks=2
+TCG2: measured wolfBoot kernel.img (43091976 bytes) into PCR 9
+TCG2: measured wolfBoot cmdline (110 bytes) into PCR 9
+TCG2: measured wolfBoot dtb (997852 bytes) into PCR 9
+TCG2: PCR 9 (SHA256):
+  fef77532719dffa1e62567914d78e820
+  012406452ea644ff193cfc0475937732
+```
+
+`activeBanks=0x6` is the SHA-256 (0x2) + SHA-384 (0x4) PCR banks; the kernel, its command line and the platform device tree are extended into PCR 9 in both, and wolfBoot then reads the PCR back (`TPM2_PCR_Read`) and prints it. An attestation client can compare PCR 9 -- and the TCG2 event log -- against known-good values to confirm exactly which kernel, command line and device tree wolfBoot verified and booted. Choose `MEASURED_PCR_A` to fit the platform's PCR allocation (0-7 are firmware-owned; 8-15 are for OS/loader use). Note the edk2 firmware separately measures the loaded `wolfboot.efi` image itself into its own PCRs via `LoadImage`, so the firmware-verifies-wolfBoot and wolfBoot-measures-kernel events are distinct entries in the log.
+
+## NVIDIA Jetson Orin (NVIDIA Tegra234) BL33 firmware
+
+> **Filesystem boot:** this target can also read its signed image from a **file** on a read-only FAT32 or ext4 partition instead of from raw offset 0. Build with `DISK_FS=fat32|ext4|both` and set `BOOT_FILE_A` / `BOOT_FILE_B`. See [Disk boot from a read-only filesystem (FAT32 / ext4)](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
+
+wolfBoot can run on the NVIDIA Jetson Orin two ways: as an `aarch64_efi` UEFI application (documented separately), or - this `tegra234` target - as **bare-metal firmware** that replaces the **BL33** stage. BL33 is the normal-world bootloader that ARM Trusted Firmware (BL31) hands off to at EL2 non-secure with the MMU off; on Jetson it is the edk2 UEFI / cpu-bootloader (cpubl) slot. Running bare-metal instead of under UEFI puts wolfBoot much closer to the root of trust, with a far smaller trusted surface beneath it - wolfBoot owns its own console, clocks, and boot handoff.
+
+On an unfused developer board the BL33 slot is directly replaceable: MB2 and the earlier stages are inside NVIDIA's signed/fused root of trust and would require NVIDIA signing tooling, but BL33 is not signature-enforced. The bare-metal HAL (`hal/tegra234.c`) provides the Tegra Combined UART (TCU) console, the ARMv8 generic timer, a BPMP IPC driver (clocks/resets over the CPU-NS IVC channel), and a "handoff dump" (entry EL, SCTLR/MMU/cache bits, handoff `x0`) enabled with `TEGRA234_HANDOFF_DUMP=1`.
+
+Validated on hardware (Jetson Orin Nano dev kit, non-persistent RCM boot): wolfBoot runs as BL33 at EL2, verifies a signed payload with wolfCrypt (ECC384/SHA384), drops from EL2 to EL1, and hands off with a device tree in `x0` - the arm64 Linux boot contract - straight out of DRAM with no storage driver. The payload and DTB are bundled into the BL33 image (see `tools/scripts/tegra234-mkpoc.sh` and `config/examples/tegra234-linux.config`). Loading a full kernel from storage is still in progress, bounded by two limits: MB2 caps the BL33 image at 4 MB (so a full kernel cannot be bundled - it must be loaded from storage or a pre-staged DRAM location), and microSD (SDHCI, `DISK_SDCARD`) is blocked on the closed SDMMC1 controller bring-up. See `hal/tegra234.c` for the full boot-chain map and open questions.
+
+Build the bootloader binary (no hardware needed to compile):
+
+```
+cp config/examples/tegra234.config .config
+make wolfboot.bin test-app/image_v1_signed.bin CROSS_COMPILE=aarch64-linux-gnu-
+```
+
+Three example configs ship for this target:
+
+| Config | Boot path |
+|---|---|
+| `tegra234.config` | Verify the bundled payload and boot it at EL2 (no exception-level change). The simplest path. |
+| `tegra234-linux.config` | Verify, drop EL2 -> EL1, hand off with the DTB in `x0` (the arm64 Linux boot contract). Validated on hardware. |
+| `tegra234-sdcard.config` | microSD (SDHCI) boot. **Work in progress** - it compiles and probes but does not boot from card yet; see the SDMMC1 note above. |
+
+By default all three enable `TEGRA234_HANDOFF_DUMP`, which prints the entry state read-only. Only the microSD config additionally runs the BPMP/SDMMC1 bring-up probe, because enabling the SDMMC1 clock and releasing its reset is a lasting change to SoC state that the booted OS would inherit.
+
+### BL33 image layout
+
+There is no storage driver yet, so the signed payload and the device tree are bundled into the BL33 image itself at fixed offsets and read straight out of DRAM. MB2 loads the whole image at `0x272000000` and BL31 enters it there:
+
+```
+offset      0x000000  wolfBoot (must fit below 0x200000)
+offset      0x200000  signed payload    <- hal_get_primary_address()
+offset      0x300000  raw DTB           <- hal_get_dts_address()
+            0x400000  MB2 cpubl size cap - the image must stay under this
+```
+
+The offsets are `TEGRA234_BL33_BASE`, `TEGRA234_BUNDLE_OFFSET` and `TEGRA234_DTB_OFFSET` in `hal/tegra234.h`; the two bundling scripts below use the same values and must be kept in sync with it. wolfBoot checks for the FDT magic at the DTB offset and reports no device tree if nothing was bundled there, so a plain `make wolfboot.bin` does not hand the payload a stale pointer.
+
+Note on what is signed: wolfBoot verifies the **payload** against its own key. The bundled **device tree** is not covered by that signature - it is protected only by whatever signs the BL33 image as a whole (on an unfused developer board, nothing). Treat the DTB as part of the firmware image's trust boundary, not the payload's.
+
+### Bundling scripts
+
+Both scripts take the same arguments and do the same work - copy a config into place, build wolfBoot and the signed test-app together (one `make` invocation, so both are signed with the same freshly generated key), check the size budget, then concatenate the pieces at the offsets above and overwrite `wolfboot.bin` with the finished BL33 image. They differ only in which config they build.
+
+The DTB is a required input: pass a path as the first argument, or set `L4T` to your `Linux_for_Tegra` directory and the script picks up `kernel/dtb/tegra234-p3768-0000+p3767-0005-nv.dtb` (Orin Nano dev kit) from it. Both scripts run `make keysclean` and `make clean` first, so **each run generates a new signing key** - build the bootloader and the payload from the same run.
+
+`tools/scripts/tegra234-mkbl33.sh` - uses `config/examples/tegra234.config`. wolfBoot verifies the bundled payload and boots it **at EL2**, i.e. at the same exception level it was entered at. The DTB pointer is still passed to the payload in `x0` (the FDT code path is enabled for every AArch64 target); what this config does not do is the EL2 -> EL1 drop. Useful for bringing up a new board or checking the console and the handoff dump.
+
+```
+tools/scripts/tegra234-mkbl33.sh /path/to/tegra234-<board>.dtb
+```
+
+`tools/scripts/tegra234-mkpoc.sh` - uses `config/examples/tegra234-linux.config` (`EL2_HYPERVISOR=1`, `BOOT_EL1=1`). wolfBoot verifies the payload, **drops from EL2 to EL1, and enters it with the DTB pointer in `x0`** - the arm64 Linux boot contract. This is the one to use for the Linux boot path.
+
+```
+# Pass your board's kernel DTB, or set L4T=/path/to/Linux_for_Tegra:
+tools/scripts/tegra234-mkpoc.sh /path/to/tegra234-<board>.dtb
+```
+
+Both scripts abort if wolfBoot has grown past the payload offset, if the payload runs into the DTB offset, or if the finished bundle exceeds MB2's 4 MB cap - a size overrun is a build error rather than a silently corrupted image - and both print a size breakdown of each piece.
+
+Useful environment variables: `L4T` (as above) and `CROSS_COMPILE` (the scripts default to `aarch64-linux-gnu-`, which is what CI uses; a bare-metal `aarch64-none-elf-` toolchain also works). Set `TEGRA234_HANDOFF_DUMP=0` in the config for a quiet build once the handoff is characterized.
+
+wolfBoot is linked into the 2 MB below the payload offset, so an image that outgrows its slot fails at link time (`region DDR_MEM overflowed`) rather than being assembled into a broken bundle.
+
+The resulting `wolfboot.bin` is flashed into the BL33 (`A_cpu-bootloader`) partition, or - as used for the validation above - loaded non-persistently over USB with the L4T `flash.sh --rcm-boot` flow, which leaves the on-board firmware untouched.
 
 ## Intel x86_64 with Intel FSP support
+
+> **Filesystem boot:** this target can also read its signed image from a **file** on a read-only FAT32 or ext4 partition instead of from raw offset 0. Build with `DISK_FS=fat32|ext4|both` and set `BOOT_FILE_A` / `BOOT_FILE_B`. See [Disk boot from a read-only filesystem (FAT32 / ext4)](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
 
 This setup is more complex than the UEFI approach described earlier, but allows
 for complete control of the machine since the very first stage after poweron.
@@ -7822,6 +8540,52 @@ Refer to the Intel Integration Guide of the selected silicon for more informatio
 Note:
 
 - This feature requires `NASM` to be installed on the machine building wolfBoot.
+
+
+### Booting a Linux bzImage payload (with an optional initrd)
+
+Set `LINUX_PAYLOAD=1` to boot a signed Linux `bzImage` from the disk A/B slot
+instead of an ELF/Multiboot2 image. Both the 32-bit and the 64-bit (`64BIT=1`)
+boot protocols are supported; a 64-bit build requires a kernel with a 64-bit
+entry point (`xloadflags` bit 0).
+
+The kernel must be able to reach its root filesystem. A monolithic kernel with
+the storage and filesystem drivers built in needs nothing further. To boot a
+modular distribution kernel that relies on an initramfs, wrap the kernel and
+the initrd into a single signed image using the container header below, then
+sign that image as usual (all fields little-endian):
+
+```
+magic       u32  0x3150584C  ("LXP1")
+kernel_size u32  exact bzImage byte length
+initrd_size u32  exact initrd byte length
+reserved    u32  0
+<bzImage bytes>
+<initrd bytes>
+```
+
+wolfBoot detects the magic, loads the kernel, places the initrd below the
+kernel's `initrd_addr_max` (and below the top of usable RAM), and hands its
+address to the kernel. An image without the magic is treated as a bare bzImage
+with no initrd, so existing payloads are unaffected.
+
+### Measuring the OS image into a PCR
+
+With `MEASURED_BOOT=1`, set `MEASURED_PCR_OS=<n>` to extend the verified disk OS
+image digest into PCR `<n>`, in addition to the firmware measurement in
+`MEASURED_PCR_A`. PCR 4 follows the TCG PC Client convention for the boot
+payload the boot manager launches. The digest is re-hashed into the PCR bank
+algorithm when it is wider than the bank. A failed extend is fail-secure: the
+image is not booted.
+
+### Debugging the FSP UPD configuration
+
+`tools/x86_fsp/decode_fsp_upd.py` decodes an FSP UPD block into named fields,
+using the offset comments that ship in `FspmUpd.h` / `FspsUpd.h`. It accepts
+either the hex block a bootloader prints over the debug UART or a UPD region
+lifted from a flash image, and `--diff` reports only the fields that differ
+between two captures. This is useful when tuning the memory or silicon
+configuration for a new board.
 
 
 ### Running on 64-bit QEMU
@@ -8124,7 +8888,7 @@ make
 After running the above commands, you should find a file named `final_image.bin` in the root folder of the repository. The image can be flashed directly into the board.
 By default wolfBoot tries to read a wolfBoot image from the SATA drive.
 The drive should be partitioned with a GPT table, wolfBoot tries to load an image saved in the 5th or the 6th partition.
-You can find more details in `src/update_disk.c`. wolfBoot doesn't try to read from a filesystem and the images need to be written directly into the partition.
+You can find more details in `src/update_disk.c`. By default wolfBoot reads the image from the very start of the partition, so it has to be written there directly with `dd`. Building with `DISK_FS=fat32|ext4|both` instead probes each slot's partition for a read-only FAT32 or ext4 filesystem and, when one is present, loads the file named by `BOOT_FILE_A` / `BOOT_FILE_B`; a partition holding no supported filesystem is still read raw. See [compile.md](compile.md#disk-boot-from-a-read-only-filesystem-fat32--ext4).
 This is an example boot log:
 ```
 Press any key within 2 seconds to toogle BIOS flash chip
@@ -8200,12 +8964,25 @@ At this point, the kernel image in partition "A" is verified and staged and you 
 
 wolfBoot supports the Infineon AURIX TC3xx family and includes a demo application for the TC375 AURIX LiteKit-V2. It can be configured to run on either the TriCore application cores or the HSM core.
 
+Both cores build with `ARCH=AURIX`. `TARGET` selects the core: `aurix_tc3xx` for the TriCore application cores and `aurix_tc3xx_hsm` for the HSM core. Example configurations are in `config/examples/aurix-tc375-*.config`.
+
 On AURIX TC3xx devices, wolfBoot can also integrate with [wolfHSM](https://www.wolfssl.com/products/wolfhsm/) to offload cryptographic operations and key management to the HSM core.
 
 Currently, wolfBoot for TC3xx is distributed as part of the wolfHSM TC3xx platform release bundle, not as a standalone package. This bundle is under NDA and is not publicly available.
 
 For access to the TC3xx platform release or for more information on using wolfBoot and wolfHSM on AURIX devices, contact [facts@wolfssl.com](mailto:facts@wolfssl.com).
 
+## Infineon AURIX TC4xx
+
+wolfBoot supports the Infineon AURIX TC4xx family and includes a demo application for the TC4D7 AURIX LiteKit-V2.1. It can be configured to run on either the TriCore application cores or the CSRM core.
+
+Both cores build with `ARCH=AURIX`. `TARGET` selects the core: `aurix_tc4xx` for the TriCore application cores and `aurix_tc4xx_csrm` for the CSRM core. Example configurations are in `config/examples/aurix-tc4xx-*.config`.
+
+On AURIX TC4xx devices, wolfBoot can also integrate with [wolfHSM](https://www.wolfssl.com/products/wolfhsm/) to offload cryptographic operations and key management to the CSRM core.
+
+Currently, wolfBoot for TC4xx is distributed as part of the wolfHSM TC4xx platform release bundle, not as a standalone package. This bundle is under NDA and is not publicly available.
+
+For access to the TC4xx platform release or for more information on using wolfBoot and wolfHSM on AURIX devices, contact [facts@wolfssl.com](mailto:facts@wolfssl.com).
 
 ## Vorago VA416x0
 
@@ -8214,18 +8991,45 @@ Tested on VA41620 and VA41630 MCU's.
 MCU: Cortex-M4 with Triple-Mode Redundancy (TMR) RAD hardening at up to 100MHz.
 FLASH: The VA41630 has 256KB of internal SPI FRAM (for the VA41620 its external). FRAM is Infineon FM25V20A.
 
-Default flash layout:
+Default flash layout, which fills the 256KB FRAM exactly:
 
 | Partition   | Size  | Address | Description |
 |-------------|-------|---------|-------------|
-| Bootloader  | 38KB  | 0x0     | Bootloader partition |
-| Application | 108KB | 0x9800  | Boot partition |
-| Update      | 108KB | 0x24800 | Update partition |
+| Bootloader  | 46KB  | 0x0     | Bootloader partition |
+| Application | 104KB | 0xB800  | Boot partition |
+| Update      | 104KB | 0x25800 | Update partition |
 | Swap        | 2KB   | 0x3F800 | Swap area |
+
+The sector size is 2KB (`WOLFBOOT_SECTOR_SIZE=0x800`) and the manifest header is 1KB (`IMAGE_HEADER_SIZE=1024`), so the application image starts at 0xBC00 and has 0x19C00 bytes of usable space.
 
 SRAM: 64KB on-chip SRAM and 256KB on-chip instruction/program memory
 
+The 64KB of SRAM is two contiguous 32KB banks, SRAM_0 at 0x1FFF8000 and SRAM_1 at 0x20000000. The linker scripts pool them into a single region so that data and stack can span both; they remain separate EDAC scrub banks (`RAM0_SCRUB` and `RAM1_SCRUB`). The ML-DSA Level 5 configuration needs about 48KB of it and does not fit in one bank alone.
+
 Boot ROM loads at 20MHz from SPI bus to internal data SRAM.
+
+#### Interrupt vector tables
+
+The VA416xx implements 212 exceptions: the 16 Cortex-M4 system exceptions plus 196 external interrupts, IRQ 0 through `TXEV_IRQn`. Both vector tables are sized for all of them, wolfBoot's in `src/boot_arm.c` and the application's in `test-app/startup_arm.c`. wolfBoot enables the EDAC single-bit and multi-bit error interrupts (76 and 77) when it configures scrubbing, and those vector fetches land at offsets 0x170 and 0x174, so a shorter table sends them into `.text`.
+
+The application's vector table sits at `WOLFBOOT_PARTITION_BOOT_ADDRESS + IMAGE_HEADER_SIZE` and `do_boot()` writes that address into `SCB->VTOR`. ARMv7-M requires a table this size to be aligned to the next power of two at or above (number of exceptions x 4), which is 1024 bytes for 212 entries, and this part enforces it in a way that is easy to miss.
+
+`VTOR` itself accepts a finer value: writing `0xFFFFFFFF` reads back `0xFFFFFF80`, so the implemented field is `VTOR[31:7]`. The vector *fetch*, however, ORs the vector offset into `VTOR` rather than adding it, so any vector whose byte offset shares a set bit with the low bits of `VTOR` resolves to the wrong entry. Measured on a VA41630 with a relocated 212-entry table at a 512-aligned (not 1024-aligned) address:
+
+| IRQ | Vector offset | Result |
+|-----|---------------|--------|
+| 77 (`EDAC_SBE`) | 0x174 | dispatched |
+| 111 | 0x1FC | dispatched |
+| 112 | 0x200 | hard fault (fetches vector 0, the initial MSP) |
+| 128 (`PORTD2`) | 0x240 | wrong handler |
+
+The same table at a 1024-aligned address dispatches IRQ 128 correctly. So a 512-aligned table appears to work -- SysTick, the EDAC interrupts and anything below IRQ 112 are fine -- while every IRQ from 112 upward is silently broken. That covers the PORTA through PORTG pin interrupts, the DMA interrupts and the ADC/DAC interrupts.
+
+The default layout raises `IMAGE_HEADER_SIZE` to 1024 so that `0xB800 + 0x400 = 0xBC00` satisfies this. That costs 512 bytes of each partition. If you need those bytes back, the alternative is to keep a smaller header and move `WOLFBOOT_PARTITION_BOOT_ADDRESS` instead, so long as the sum stays 1024-aligned; `WOLFBOOT_SECTOR_SIZE` can be reduced to give finer placement, subject to `WOLFBOOT_SECTOR_SIZE >= IMAGE_HEADER_SIZE`. Either way keep `(WOLFBOOT_PARTITION_BOOT_ADDRESS + IMAGE_HEADER_SIZE) % 1024 == 0`. `hal/va416x0.c` checks this at build time, so a layout that breaks the rule fails to compile rather than shipping.
+
+This applies whichever startup file the application uses. Linking against the Vorago SDK's `startup_va416xx.s` rather than `test-app/startup_arm.c` does not change where wolfBoot places the image, and the SDK's `SystemInit()` sets `VTOR` to the same address wolfBoot already wrote.
+
+The demo application prints `VTOR`, whether it is 1024-aligned, and a SysTick liveness check at startup, so a truncated or misplaced table is visible on the console. Note that SysTick alone does not prove the table is placed correctly: it is exception 15 at offset 0x3C, below the bit that alignment affects. Testing dispatch properly means triggering an IRQ at or above 112, for example with `NVIC_SetPendingIRQ()`.
 
 By default the bootloader is built showing logs on UART0. To use UART1 set `DEBUG_UART_NUM=1`. To disable the bootloader UART change `DEBUG_UART=0` in the `.config`.
 
@@ -8297,6 +9101,10 @@ Example of wolfBoot binary sizes based on algorithms:
 | RSA4096 | SHA3-384 | 19,216 |
 | ML-DSA 87 | SHA256 | 25,168 |
 
+#### Post-quantum (ML-DSA) configuration
+
+The example config carries a commented-out ML-DSA Level 5 block: uncomment it, comment out the ECC384/SHA384 lines and the default layout, and use the larger sector and partition sizes it lists. The `sign` tool reads `ML_DSA_LEVEL` from the environment and otherwise falls back to level 2, which rejects a level 5 key with `error: unrecognized ml-dsa key size: 7488`. The top-level Makefile and `tools/scripts/va416x0/build_test.sh` both pass it for you; a hand-run `sign` needs it on the command line.
+
 ### Flashing Vorago VA416x0
 
 Flash using Segger JLink: `JLinkExe -CommanderScript tools/scripts/va416x0/flash_va416xx.jlink`
@@ -8321,14 +9129,16 @@ The `loader.elf` programs the external SPI FRAM with the IRAM image. It is creat
 
 See `tools/scripts/va416x0/build_test.sh clean` for flashing examples.
 
-Example boot ouput on UART 0 (MCU TX):
+Example boot output on UART 0 (MCU TX):
 
 ```
 wolfBoot HAL Init
-Boot partition: 0x9800 (sz 5060, ver 0x1, type 0x601)
-Partition 1 header magic 0x00000000 invalid at 0x24800
-Boot partition: 0x9800 (sz 5060, ver 0x1, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x1, type 0x601)
+Partition 1 header magic 0x00000000 invalid at 0x25800
+Boot partition: 0xB800 (sz 5600, ver 0x1, type 0x601)
 Booting version: 0x1
+Checking integrity...done
+Verifying signature...done
 ========================
 VA416x0 wolfBoot demo Application
 Copyright 2025 wolfSSL Inc
@@ -8354,7 +9164,18 @@ Number of public keys: 1
   9B BE B7 BB 11 75 01 81 45 14 19 7E B2 BD C0 A6
   11 0C FA F6 B5 F9 59 BA B9 A5 8E 34 4A CD C5 83
   7E 43 EF 61 6E C4 15 88 3C FE D6 76 47 D9 82 A4
+
+Vector table
+====================================
+VTOR            : 0x0000BC00 (expected 0x0000BC00) OK
+SysTick         : ticking (113 -> 1738 ms)
 ```
+
+`VTOR` is the address the core fetches exceptions from, and it must match
+`WOLFBOOT_PARTITION_BOOT_ADDRESS + IMAGE_HEADER_SIZE`. The SysTick line is a
+liveness check: `HAL_Init()` starts SysTick and `SysTick_Handler()` advances
+`HAL_time_ms`, so a counter that never moves means exceptions are not reaching
+the application's vector table.
 
 ### Debugging Vorago VA416x0
 
@@ -8368,7 +9189,7 @@ See `tools/scripts/va416x0/build_test.sh update`:
 
 ```sh
 # Sign a new test app with version 2
-IMAGE_HEADER_SIZE=512 ./tools/keytools/sign --ecc384 --sha384 test-app/image.bin wolfboot_signing_private_key.der 2
+IMAGE_HEADER_SIZE=1024 ./tools/keytools/sign --ecc384 --sha384 test-app/image.bin wolfboot_signing_private_key.der 2
 
 # Create a bin footer with wolfBoot trailer "BOOT" and "p" (ASCII for 0x70 == IMG_STATE_UPDATING)
 echo -n "pBOOT" > trigger_magic.bin
@@ -8400,17 +9221,17 @@ Example update output:
 
 ```
 wolfBoot HAL Init
-Boot partition: 0x9800 (sz 5060, ver 0x1, type 0x601)
-Update partition: 0x24800 (sz 5060, ver 0x2, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x1, type 0x601)
+Update partition: 0x25800 (sz 5600, ver 0x2, type 0x601)
 Starting Update (fallback allowed 0)
-Update partition: 0x24800 (sz 5060, ver 0x2, type 0x601)
-Boot partition: 0x9800 (sz 5060, ver 0x1, type 0x601)
+Update partition: 0x25800 (sz 5600, ver 0x2, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x1, type 0x601)
 Versions: Current 0x1, Update 0x2
 Copy sector 0 (part 1->2)
 Copy sector 0 (part 0->1)
 Copy sector 0 (part 2->0)
-Boot partition: 0x9800 (sz 5060, ver 0x2, type 0x601)
-Update partition: 0x24800 (sz 5060, ver 0x1, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x2, type 0x601)
+Update partition: 0x25800 (sz 5600, ver 0x1, type 0x601)
 Copy sector 1 (part 1->2)
 Copy sector 1 (part 0->1)
 Copy sector 1 (part 2->0)
@@ -8418,11 +9239,11 @@ Copy sector 2 (part 1->2)
 Copy sector 2 (part 0->1)
 Copy sector 2 (part 2->0)
 Erasing remainder of partition (50 sectors)...
-Boot partition: 0x9800 (sz 5060, ver 0x2, type 0x601)
-Update partition: 0x24800 (sz 5060, ver 0x1, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x2, type 0x601)
+Update partition: 0x25800 (sz 5600, ver 0x1, type 0x601)
 Copy sector 52 (part 0->2)
 Copied boot sector to swap
-Boot partition: 0x9800 (sz 5060, ver 0x2, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x2, type 0x601)
 Booting version: 0x1
 ========================
 VA416x0 wolfBoot demo Application
@@ -8459,9 +9280,9 @@ Boot logs after hard reset:
 
 ```
 wolfBoot HAL Init
-Boot partition: 0x9800 (sz 5060, ver 0x2, type 0x601)
-Update partition: 0x24800 (sz 5060, ver 0x1, type 0x601)
-Boot partition: 0x9800 (sz 5060, ver 0x2, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x2, type 0x601)
+Update partition: 0x25800 (sz 5600, ver 0x1, type 0x601)
+Boot partition: 0xB800 (sz 5600, ver 0x2, type 0x601)
 Booting version: 0x2
 ========================
 VA416x0 wolfBoot demo Application
@@ -8491,3 +9312,634 @@ Number of public keys: 1
   11 0C FA F6 B5 F9 59 BA B9 A5 8E 34 4A CD C5 83
   7E 43 EF 61 6E C4 15 88 3C FE D6 76 47 D9 82 A4
 ```
+
+## RealTek RTL8735B (AmebaPro2)
+
+Tested on the RealTek RTL8735B (AmebaPro2) EVB. The RTL8735B is an Arm Cortex-M33 AIoT SoC with a vendor secure-boot ROM, an external SPI NOR flash, and DDR/PSRAM.
+
+wolfBoot does not replace the RealTek secure-boot ROM; it runs as a second-stage verified bootloader and A/B firmware-update engine. The RealTek ROM authenticates `boot.bin`, `boot.bin` stages wolfBoot into SRAM via a RealTek `RAM_FUNCTION_START_TABLE`, and wolfBoot then verifies the application in external SPI NOR, applies any pending update, copies the verified image into DDR, and jumps to it. This is the non-TrustZone "Model A" integration.
+
+Because wolfBoot runs from SRAM and its partitions live in external SPI NOR, the target uses `EXT_FLASH=1` and `NO_XIP=1`; the application is loaded to `WOLFBOOT_LOAD_ADDRESS` in DDR by the `src/update_ram.c` RAMBOOT path.
+
+### Flash/UART/cache backend
+
+The HAL (`hal/rtl8735b.c`) has two backends, selected with `HAL_BACKEND`:
+
+* `HAL_BACKEND=sdk` (default) - flash and cache use the RealTek SDK drivers (`flash_api`, `hal_cache`); the `DEBUG_UART` console uses a small self-contained UART1 driver in the HAL (it does not depend on the OS-bound SDK `hal_uart_init`). wolfBoot links against the SDK SoC libraries and the ROM symbol table.
+* `HAL_BACKEND=bare` - scaffold for a smaller backend with no SDK dependency (direct register/ROM access). It links a standalone `wolfboot.elf`, but the `ext_flash_*` entry points are still stubs that return `-1`, so it is not yet functional. Work in progress.
+
+### Console (DEBUG_UART)
+
+`DEBUG_UART=1` routes wolfBoot's log to UART1 (the RealTek "LOGUART" at `0x40040400`, pins PORT_F pin 4 = TX / pin 3 = RX), which reaches the EVB USB serial console at 115200 8N1. wolfBoot brings UART1 up itself (pinmux + clock enable + 115200 8N1). The RealTek boot ROM and `boot.bin` also print on this same UART before wolfBoot, so the vendor boot messages appear first, followed immediately by the wolfBoot banner. A successful boot looks like:
+
+```
+wolfBoot HAL: RTL8735B (AmebaPro2) init
+wolfBoot HAL: flash init done
+Versions: Boot 1, Update 0
+Trying Boot partition at 0x520000
+Loading header 256 bytes from 0x520000 to 0x700FFF00
+Loading image 132 bytes from 0x520100 to 0x70100000...done
+Checking integrity...done
+Verifying signature...done
+Booting at 0x70100000
+```
+
+### Partition layout
+
+wolfBoot itself is packaged into the RealTek `PT_FW1` region (`0x60000`). The BOOT/UPDATE partitions are raw SPI NOR offsets (addressed only by `ext_flash_*`) carved out of the unused `PT_FW2` region so they do not collide with the RealTek partition table:
+
+| Partition   | Address    | Size      | Description |
+|-------------|------------|-----------|-------------|
+| Boot        | 0x520000   | 0x180000  | Running, verified application |
+| Update      | 0x6A0000   | 0x180000  | Staged incoming update |
+| Swap        | 0x820000   | 0x1000    | Reserved (see note) |
+
+These addresses are board-specific; confirm them against the board's `amebapro2_partitiontable.json`. The Swap partition is reserved by the configuration but unused in this RAMBOOT model, which selects between BOOT and UPDATE by version rather than copy-swapping through a swap sector.
+
+### Application load address
+
+The verified application is copied into DDR at `WOLFBOOT_LOAD_ADDRESS` (`0x70100000`) and launched there. The application's vector table must be linked to this same address: `do_boot()` reads word[0] as the initial MSP and word[1] as the entry point, and sets `VTOR` to the base. The DDR memory window starts at `0x70000000` (128 MB); the load address is kept 1 MB inside it because the RAMBOOT path places the image header at `WOLFBOOT_LOAD_ADDRESS - IMAGE_HEADER_SIZE`, which must also land in DDR.
+
+### Building RealTek RTL8735B
+
+All build settings come from the `.config` file. Use `TARGET=rtl8735b` and the RealTek ASDK toolchain (the system `arm-none-eabi-gcc` fails on newlib/lwip clashes). Point `AMEBA_SDK` at the RealTek `ameba-rtos-pro2` checkout and `ASDK_PATH` at the ASDK toolchain.
+
+```sh
+cp config/examples/rtl8735b.config .config
+# Compile wolfBoot and perform the SDK-resolved final link (see note below).
+tools/scripts/rtl8735b_build.sh
+# Wrap wolfBoot with the RealTek partition table/boot/certs into flash_ntz.bin.
+tools/scripts/amebapro2_package.sh wolfboot.elf
+```
+
+For the default `sdk` backend, `make TARGET=rtl8735b` compiles every wolfBoot object (including the RealTek SDK driver chain folded into `hal/rtl8735b.o`), but the final `wolfboot.elf` link must resolve the SDK SoC libraries (`liboutsrc.a`, `libsoc_ntz.a`) and the ROM symbol table (`romsym_is.so`), which live in the SDK build tree. `tools/scripts/rtl8735b_build.sh` runs that compile-then-SDK-resolved-link (it honors `AMEBA_SDK` and `ASDK_PATH`), and `tools/scripts/amebapro2_package.sh` then packages wolfBoot (in `PT_FW1`) with the RealTek partition table, boot, and certs via `elf2bin` into `flash_ntz.bin` (it needs only `AMEBA_SDK`, plus optional `OUTDIR`; no toolchain). See `hal/rtl8735b/README`.
+
+The `bare` backend links a standalone `wolfboot.elf` with no SDK dependency (flash stubbed, not yet functional):
+
+```sh
+make TARGET=rtl8735b HAL_BACKEND=bare
+```
+
+### Building and staging an application
+
+A minimal bare-metal example application is provided in `hal/rtl8735b/test-app/` (a vector table plus a UART banner, linked at the DDR load address). Build it with the ASDK toolchain, sign it with the wolfBoot key, and write it to the BOOT partition offset:
+
+```sh
+export PATH="$ASDK_PATH:$PATH"
+arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=softfp \
+    -Os -ffreestanding -nostdlib -nostartfiles \
+    -T hal/rtl8735b/test-app/test_app.ld hal/rtl8735b/test-app/test_app.c -o test_app.elf
+arm-none-eabi-objcopy -O binary test_app.elf test_app.bin
+
+# Sign with ECDSA P-256 + SHA-256 as version 1
+tools/keytools/sign --ecc256 --sha256 test_app.bin wolfboot_signing_private_key.der 1
+
+# Write the signed image to the BOOT partition offset (no whole-image rebuild).
+# uartfwburn's -s flag writes at an arbitrary flash offset.
+uartfwburn.linux -p /dev/ttyUSBx -f test_app_v1_signed.bin -s 0x520000 -b 3000000 -U
+```
+
+To stage an update, sign a newer build with a higher version number and write it to the UPDATE offset (`0x6A0000`) the same way.
+
+### A/B update and rollback
+
+wolfBoot uses version-based A/B selection in this RAMBOOT model (there is no swap copy): it boots whichever of BOOT/UPDATE holds the higher version with a valid signature.
+
+* **Update:** stage a higher-version signed image in UPDATE; on the next boot wolfBoot reports `Versions: Boot x, Update y`, selects the higher version, and boots it.
+* **Integrity / authenticity:** a tampered image fails the SHA-256 integrity or ECDSA signature check and is rejected (`Checking integrity...FAILED`).
+* **Anti-downgrade (secure default, `ALLOW_DOWNGRADE=0`):** if the newer image is rejected and the only remaining candidate is an older version, wolfBoot does not downgrade -- it stops (`Rollback to lower version not allowed`, then panic) rather than run older firmware.
+* **Fault tolerance:** if a valid image of the same (or newer) version exists in the other partition, wolfBoot falls back to it and boots it.
+
+### Watchdog
+
+The RealTek boot ROM arms the SoC's vendor watchdog before handing off to wolfBoot, and it resets the SoC if the watchdog is not serviced. Following the usual wolfBoot convention (the bootloader hands a running watchdog to the application), wolfBoot leaves it running, so the **application is responsible for servicing or reconfiguring it** -- an app that never services the watchdog reboots after the timeout.
+
+The example app in `hal/rtl8735b/test-app/` shows the minimal "pet": a read-modify-write that sets bit 24 (`WDT_CLEAR`) of the secure vendor watchdog register at `0x50002C00`, which reloads the timer while preserving the ROM-configured enable/mode/divisor bits. A real application would service it from a periodic task or reconfigure the timeout to suit its needs.
+
+With `DEBUG_UART=1`, wolfBoot prints the last reset cause at startup, decoded from the AON boot-reason register (`0x40009104`) -- handy for spotting an unfed watchdog:
+
+```
+Reset reason: 0x1 VNDR-WDT     <- vendor watchdog reset (app did not service it)
+Reset reason: 0x10 BOD         <- brown-out / power-on reset
+```
+
+### Status and roadmap
+
+Verified on the AmebaPro2 EVB today: signed boot (ECDSA P-256 / SHA-256), version-based A/B update, rollback/anti-downgrade, the `DEBUG_UART` console, the reset-reason readout, and the watchdog handoff. This is the non-TrustZone "Model A" integration with the `sdk` backend.
+
+Outstanding work (TODO):
+
+- **Device-bound encrypted updates (HUK):** a non-MMU encrypted-RAMBOOT enabler (`wolfBoot_ramboot_decrypt`) and an `rtl8735b-encrypt.config` exist on a separate development branch; they build but are not yet hardware-verified. Binding the partition key to the RTL8735B Hardware Unique Key uses the wolfCrypt RealTek HUK crypto-callback port (wolfSSL PR #10677) and is still to be wired and tested.
+- **TrustZone-M ("Model B"):** secure wolfBoot + non-secure application. Feasibility on the AmebaPro2 (does the ROM hand off in Secure state with the SAU free?) needs a spike before a full design; the generic wolfBoot TZ infrastructure (`hal/armv8m_tz.h`, the `blxns` path in `src/boot_arm.c`, `-mcmse`/`--cmse-implib`) would be reused.
+- **`bare` backend:** currently a scaffold (`ext_flash_*` return `-1`). A no-SDK flash path must reimplement `spic_init()` (controller training) on the ROM `hal_spic_stubs`, since the bootloader hands off no SPIC adaptor.
+- **Measured boot / DICE:** software DICE (HUK-derived UDS + TRNG) is a later follow-on; there is no on-chip TPM.
+
+## Analog Devices MAX32666
+
+The Analog Devices MAX32665/MAX32666 family features a dual Cortex-M4 at 96 MHz
+with 1MB internal flash (2 x 512KB banks), 560KB SRAM, and BLE 5.
+
+wolfBoot has been tested on the MAX32666FTHR board with a MAX32625PICO debug adapter,
+as well as the MAX32666FTHR2 board with the onboard debugger.
+
+**Key Features:**
+- ARM Cortex-M4 core at 96 MHz (HIRC96M oscillator)
+- 1MB Flash: 8KB page erase, 128-bit (16-byte) write unit, dual-bank (FLC0/FLC1)
+- 560KB SRAM
+- Bare-metal implementation (no MSDK required for boot)
+- UART debug output (115200 8N1):
+  - FTHR board: UART1 MAP_B, P1.13 TX, P1.12 RX (via external MAX32625PICO)
+  - FTHR2 board: UART0 MAP_A, P0.9 TX, P0.10 RX (via onboard debugger)
+
+### MAX32666: Memory Layout
+
+Internal-flash-only layout (default):
+
+| Region | Address Range | Size |
+|--------|---------------|------|
+| Bootloader | 0x10000000 - 0x10007FFF | 32 KB |
+| Boot Partition | 0x10008000 - 0x10047FFF | 256 KB |
+| Update Partition | 0x10048000 - 0x10087FFF | 256 KB |
+| Swap Sector | 0x10088000 - 0x10089FFF | 8 KB |
+
+### MAX32666: Building
+
+```sh
+cp config/examples/max32666.config .config
+make clean
+make keysclean
+make
+```
+
+Expected wolfBoot size: ~25KB (ECC256 + SHA256 with Cortex-M4 ASM).
+
+### MAX32666: Flashing
+
+The MAX32666FTHR board uses an external MAX32625PICO debug adapter (CMSIS-DAP).
+An OpenOCD target config is provided at `tools/openocd/max32665.cfg`.
+
+**Important:** If multiple CMSIS-DAP probes are connected, specify the PICO's
+serial number with `cmsis_dap_serial`. Find it with:
+`ls /dev/serial/by-id/ | grep DAPLink`
+
+```sh
+# Flash the factory image (wolfBoot + signed test-app)
+openocd -f interface/cmsis-dap.cfg \
+    -c "cmsis_dap_serial <your-pico-serial>" \
+    -f tools/openocd/max32665.cfg \
+    -c "adapter speed 1000" \
+    -c "program factory.bin 0x10000000 verify reset exit"
+```
+
+### MAX32666: UART Console
+
+The FTHR board routes UART1 (P1.12 RX, P1.13 TX) through the PICO adapter's
+CDC serial interface. The serial port appears as the DAPLink's `-if01` interface:
+
+```sh
+# Find the serial port
+ls /dev/serial/by-id/ | grep DAPLink
+
+# Connect (typically /dev/ttyACMx)
+minicom -D /dev/ttyACM2 -b 115200
+# or
+screen /dev/serial/by-id/usb-ARM_DAPLink_CMSIS-DAP_*-if01 115200
+```
+
+Expected output on first boot:
+
+```
+wolfBoot Version: X.Y.Z (date time)
+```
+
+Followed by the test application:
+
+```
+MAX32666 Test App v1
+Boot success marked. Version: 1
+```
+
+### MAX32666: Configuration Options
+
+| Option | Description |
+|--------|-------------|
+| `NVM_FLASH_WRITEONCE` | **Required.** Flash can only be written once between erases. |
+| `RAM_CODE` | **Required.** Run flash erase/write from RAM (executing from same flash). |
+| `DEBUG_UART` | Enable UART0 debug output (115200 baud, 8N1). |
+| `EXT_FLASH` | Enable external flash support (for QSPI NAND configuration). |
+| `FLAGS_HOME` | Keep boot flags in internal flash (required when `EXT_FLASH=1`). |
+| `MAX3266X_TPU` | Enable TPU hardware SHA256 acceleration (requires `MSDK_DIR`). |
+| `MAX3266X_OLD` | Build TPU acceleration against the older, deprecated Maxim SDK tree instead of the modern MSDK. |
+
+
+## NXP i.MX 8QuadMax
+
+wolfBoot runs on the NXP i.MX 8QuadMax (MIMX8QM: 2x Cortex-A72 + 4x Cortex-A53) as the bare-metal **BL33** firmware stage, replacing U-Boot inside the NXP boot container. Developed against the i.MX 8QuadMax Multisensory Enablement Kit (MCIMX8QM-CPU, "MEK").
+
+The boot ROM runs on the Cortex-M4 System Controller Unit (SCU), and the SCU firmware trains DDR before any application core executes, so there is no SPL stage and no DDR training blob on the A-cores. By the time wolfBoot is entered, DRAM is up and ATF has configured EL3:
+
+```
+Boot ROM (on the SCU Cortex-M4)
+  -> SCFW  (scfw_tcm.bin)     DDR init, power/clock/pad ownership
+  -> SECO firmware            AHAB container authentication
+  -> ATF BL31 (bl31.bin)      EL3, PSCI, SMP
+  -> BL33 = wolfBoot          EL2 non-secure, entered at 0x80020000
+       -> verify -> Linux FIT (EL2->EL1, DTB in x0) or bare-metal payload
+```
+
+`imx-mkimage` combines SCFW, the SECO container, ATF BL31 and BL33 into a single `flash.bin`. wolfBoot links at `0x80020000`, where `u-boot.bin` links on this SoC (`imx8qm_mek_defconfig`, `CONFIG_TEXT_BASE`), so it drops into the BL33 slot with no change to the stock recipe. wolfBoot runs MMU-off and 1:1 physical, which is what the arm64 Linux boot protocol expects at handoff.
+
+Two signature layers are in play. **AHAB** authenticates the boot container - SCFW, ATF and wolfBoot itself - against a Super Root Key hash in SoC fuses, before any A-core runs. **wolfBoot** authenticates the OS or application image it goes on to boot. In the bundled configurations the payload sits inside the BL33 image and is covered by both; a DTB bundled at `IMX8QM_DTB_OFFSET` is covered by AHAB only, not by wolfBoot's payload signature.
+
+### Example configurations
+
+Two configs, because there are two memory maps. Everything else is a build option:
+
+| Config | Memory map |
+|---|---|
+| [/config/examples/imx8qm-mek.config](/config/examples/imx8qm-mek.config) | The template. `WOLFBOOT_NO_PARTITIONS`, payload staged in DRAM. Covers the bundled bring-up build and every disk variant below. |
+| [/config/examples/imx8qm-mek-qspi.config](/config/examples/imx8qm-mek-qspi.config) | Boot/update/swap partitions in the on-board MT35XU512ABA serial NOR on FlexSPI0, with the partition-based A/B update flow. |
+
+Variants are selected on the make command line, so CI and a local build agree:
+
+| Build | Boot path |
+|---|---|
+| `make` | Verify a payload bundled into the BL33 image in DRAM and boot it at EL2. No storage driver. |
+| `make DISK_SDCARD=1` | Read the signed image from the SD card socket (uSDHC2). |
+| `make DISK_EMMC=1` | Read the signed image from the soldered 8-bit eMMC (uSDHC1). |
+| `make DISK_SDCARD=1 IMX8QM_MMU=1 EL2_HYPERVISOR=1 BOOT_EL1=1` | The Linux FIT path: drop EL2 -> EL1 and hand off with the DTB in `x0`. |
+| `... DISK_FS=fat32\|ext4\|both` | Read the image from a file on a read-only FAT32 or ext4 filesystem rather than a raw partition offset. See [compile.md](compile.md). |
+| `... IMX8QM_SCU=0` | Chainload: assume an earlier stage already powered, clocked and pad-muxed the console and the boot device. |
+| `... IMX8QM_SD_NO_UHS=1` | Pin the SD node to 3.3V high-speed (`no-1-8-v` plus `max-frequency`) and drop wolfBoot's own ceiling to 25 MHz. Off by default; the board runs the card at DDR50, 1.8V, 50 MHz. Set it to keep Linux out of UHS, which is what makes a warm reboot work - see "Known limitations". |
+| `... IMX8QM_USDHC_MAX_CLK_KHZ=<n>` | Override the uSDHC clock ceiling. `arch.mk` defaults it per medium: 50000 for the SD socket (25000 with `IMX8QM_SD_NO_UHS=1`) and 52000 for the eMMC. |
+| `... IMX8QM_SDHCI_PIO=1` | Force the PIO path instead of SDMA, for debugging. |
+| `... BOOT_BENCHMARK=1` | Time the payload read, the hash and the signature check. |
+| `... NO_ARM_ASM=1` | Turn the wolfcrypt ARMv8 assembly back off. It is on by default when `IMX8QM_MMU=1`. |
+
+`IMX8QM_MMU=1` is required for a Linux-sized payload. MMU-off DRAM is uncached, and hashing a 32 MB FIT that way takes over fifteen minutes against about thirty seconds with the MMU on. The Linux variant sets it, and `arch.mk` then defaults `NO_ARM_ASM=0`, because the NEON hazard behind the shared AArch64 default only applies while memory is Device-typed.
+
+Do not pass `CFLAGS_EXTRA=` on the make command line. `options.mk` does `CFLAGS+=$(CFLAGS_EXTRA)` with no `override`, so a command-line value replaces every `CFLAGS_EXTRA+=` in the config and in `arch.mk`. The uSDHC board flags (`SDHCI_FORCE_CARD_DETECT`, `IMX8QM_USDHC_MAX_CLK_KHZ`, `DISK_BLOCK_SIZE`) live in `arch.mk` for that reason.
+
+The disk builds expect two boot partitions labelled `boot_a` and `boot_b`, each holding a signed image at raw offset 0. They are selected by label, not by index, so the layout survives repartitioning; `BOOT_PART_A`/`BOOT_PART_B` are available (commented out) for media with no labels.
+
+### Building
+
+No hardware is needed to compile.
+
+```
+cp config/examples/imx8qm-mek.config .config
+make distclean
+make keytools
+make
+```
+
+Append variant options to the final `make`, for example `make DISK_SDCARD=1 IMX8QM_MMU=1 EL2_HYPERVISOR=1 BOOT_EL1=1`.
+
+This produces `wolfboot.bin` (the BL33 bootloader) and `test-app/image_v1_signed.bin` (the signed payload). There is no contiguous `factory.bin`: wolfBoot is loaded into DRAM by ATF, so there is no flash image to assemble.
+
+### Image layout
+
+In the no-storage-driver configurations the packaging script bundles the payload and, for a Linux boot, the device tree into the BL33 image at fixed offsets (`hal/imx8qm.h`):
+
+```
+0x80020000  +--------------------------+
+            | wolfBoot (BL33)          |   linker cap: 2 MB
+0x80220000  +--------------------------+   IMX8QM_BUNDLE_OFFSET
+            | signed payload           |
+0x80320000  +--------------------------+   IMX8QM_DTB_OFFSET
+            | device tree (optional)   |
+0x80420000  +--------------------------+   IMX8QM_BL33_MAX_SIZE
+```
+
+`hal/imx8qm.ld` sets the memory region length to the payload offset, so wolfBoot growing into the payload slot is a link error rather than a silently mis-assembled image.
+
+BL33 lands at `0x80020000` because `imx-mkimage`'s recipe concatenates the A-core stages: `bl31.bin` at offset 0, padding to 128 KB, then BL33, with the container loaded at `0x80000000`. BL31 must fit the 128 KB slot.
+
+### Building the boot container
+
+`tools/scripts/imx8qm/imx8qm-mkflashbin.sh` builds wolfBoot and the signed payload against one freshly generated key, bundles them, and hands the result to `imx-mkimage` as the BL33 input:
+
+```
+IMX_MKIMAGE=/path/to/imx-mkimage \
+IMX_FIRMWARE=/path/to/firmware \
+  tools/scripts/imx8qm/imx8qm-mkflashbin.sh [device-tree.dtb]
+```
+
+`IMX_FIRMWARE` must hold three binaries from the NXP BSP, none of which are redistributable. Without `IMX_MKIMAGE`/`IMX_FIRMWARE` the script stops after producing the BL33 bundle in `wolfboot.bin`, which can be passed to `imx-mkimage` by hand in place of `u-boot.bin`.
+
+| File | Source (LF v6.1.22-2.0.0) |
+|---|---|
+| `scfw_tcm.bin` | `imx-sc-firmware-1.15.0.bin`, member `mx8qm-mek-scfw-tcm.bin` |
+| `mx8qmb0-ahab-container.img` | `imx-seco-5.9.0.bin`, under `firmware/seco/` |
+| `bl31.bin` | built from `nxp-imx/imx-atf`, tag `lf-6.1.22-2.0.0` |
+
+The two archives are self-extracting scripts behind an NXP EULA prompt:
+
+```
+wget https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/imx-sc-firmware-1.15.0.bin
+wget https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/imx-seco-5.9.0.bin
+sh imx-sc-firmware-1.15.0.bin --auto-accept
+sh imx-seco-5.9.0.bin --auto-accept
+```
+
+sha256, from the recipes: `imx-sc-firmware-1.15.0.bin` = `1272ac5c31a88017ef548721f3acf930a7eda6ac73aa9f41b5f0cade9d5c0e5f`, `imx-seco-5.9.0.bin` = `c3bd761f457e939035b01a0ab36e79064a2a1bc6c3cdb3cd847f7f38df0964df`. The SECO container is not in `firmware-imx`, which carries only DDR, HDMI, VPU and SDMA firmware; it comes from the separate `imx-seco` recipe.
+
+BL31 builds locally:
+
+```
+git clone https://github.com/nxp-imx/imx-atf.git
+git -C imx-atf checkout lf-6.1.22-2.0.0
+make -C imx-atf PLAT=imx8qm bl31 CROSS_COMPILE=aarch64-none-elf-
+# -> imx-atf/build/imx8qm/release/bl31.bin, ~41 KB
+```
+
+**Use the Linux BSP's `bl31.bin`.** The BSPs ship two ATF builds of the same size for this SoC, and a container built with the Android one produces no console output at all: BL31 runs before BL33, so wolfBoot never starts. A size check does not catch it. Identify the build first, and let the packaging script copy `bl31.bin` from `$IMX_FIRMWARE` rather than relying on whatever is staged in `imx-mkimage/iMX8QM/`:
+
+```
+strings bl31.bin | grep '^v2\.'
+v2.8(release):                                              <- use this
+v2.8(release):android-13.0.0_2.0.0-rc1-1-g99195a23d          <- will not boot
+```
+
+### Hardware setup (MEK)
+
+Boot mode is set on **SW2**. Positions are ON where listed, OFF everywhere else:
+
+| Boot device | POS-1 | POS-2 | POS-3 | POS-4 | POS-5 | POS-6 |
+|---|---|---|---|---|---|---|
+| Boot from fuse | OFF | OFF | OFF | OFF | OFF | OFF |
+| Serial download (SDP) | OFF | OFF | **ON** | OFF | OFF | OFF |
+| eMMC0 (uSDHC1) | OFF | OFF | OFF | **ON** | OFF | OFF |
+| SD1 (uSDHC2) | OFF | OFF | **ON** | **ON** | OFF | OFF |
+| Octal SPI (FlexSPI0) | OFF | OFF | OFF | **ON** | **ON** | OFF |
+
+From Table 3 of the i.MX 8QuadMax MEK Quick Start Guide, restated per switch position because the guide prints that table POS-6 first. Serial download and eMMC0 are mirror images of each other, so go by position number rather than by a bit pattern.
+
+The micro-B debug port (J18) drives an FT4232H, which enumerates four serial ports, one per FTDI channel. The Cortex-A console (LPUART0) is one of them; which tty it lands on depends on enumeration order, so identify it by watching per-port byte counts across a boot. Console settings are 115200 8N1.
+
+Power is 12 V into the 4-pin DIN connector J16. The board starts booting as soon as power is applied; SW1 need not be pressed. SW3 is reset.
+
+### Programming
+
+SDP loads the container straight into RAM over USB and writes nothing to the board, so a power cycle returns to the previous image. Set SW2 to serial download (POS-3) and connect J17:
+
+```
+tools/scripts/imx8qm/imx8qm-flash.sh sdp flash.bin
+```
+
+To boot from a microSD card, write the container at the 32 KB offset the boot ROM reads from and set SW2 to SD1 (POS-3 and POS-4):
+
+```
+tools/scripts/imx8qm/imx8qm-flash.sh sd /dev/sdX flash.bin
+```
+
+The script refuses any target that is not a removable device and asks for confirmation, because the container is written to raw sectors with no filesystem in the way. It does not write the on-board eMMC or the FlexSPI NOR; do those from a system already running on the board, with SDP as the recovery path.
+
+### Booting from eMMC
+
+Set SW2 to eMMC0 (POS-4) and build with `DISK_EMMC=1`.
+
+**The ROM boots the eMMC from its boot partition, not the user area.** A fresh MEK ships with `EXT_CSD[179] PARTITION_CONFIG` set to `BOOT_PARTITION_ENABLE: 0x1`, meaning `mmcblk0boot0`, which holds the factory NXP U-Boot. A container written to the user area at 32 KiB, where SD boot expects it, is never read, and the board comes up in the stock U-Boot with nothing to say wolfBoot was skipped.
+
+Point the ROM at the user area instead:
+
+```
+=> mmc partconf 0 0 7 0     # BOOT_PARTITION_ENABLE=7, user area
+=> mmc partconf 0           # read it back
+=> mmc partconf 0 0 1 0     # revert to boot partition 1
+```
+
+`mmc partconf` is a U-Boot command, so once wolfBoot has replaced U-Boot the setting can only be changed from an OS shipping `mmc-utils`, which the stock NXP image does not. The alternative is to write the container into `mmcblk0boot0` itself, at offset 0 rather than 32 KiB, after clearing `/sys/block/mmcblk0boot0/force_ro`; that overwrites the factory bootloader.
+
+To confirm which copy the ROM used, look for the container tag from Linux. `00 a0 01 87` is a valid container header:
+
+```
+dd if=/dev/mmcblk0boot0 bs=1 skip=1024 count=4 | od -An -tx1   # boot partition
+dd if=/dev/mmcblk0      bs=1 skip=33792 count=4 | od -An -tx1   # user area
+```
+
+With the user area selected, the ROM fetches the container from eMMC, and wolfBoot reads the eMMC GPT and boots a signed FIT from `boot_a`.
+
+### System Controller (SCU)
+
+The SCU owns power, clocks and pad mux; nothing else can turn a peripheral on. Powering and clocking a block is not sufficient - its pads must be routed with `sc_pad_set` and its LPCG cell opened, or the peripheral accepts register writes and drives nothing. This applies to the console as much as to storage, which is why `arch.mk` sets `IMX8QM_SCU ?= 1`.
+
+wolfBoot opens the MU1_A mailbox and brings up the resources it uses (`sc_pm_set_resource_power_mode`, `sc_pm_set_clock_rate`, `sc_pm_clock_enable`, `sc_pad_set`, plus the LPCG cell). MU1_A is the channel free for BL33: the upstream device tree binds `fsl,imx-scu` to `lsio_mu1`, while TF-A's `plat/imx/imx8qm` uses MU0. RPC framing, resource IDs and payload layouts follow U-Boot's `drivers/misc/imx8/scu_api.c` and `dt-bindings/firmware/imx/rsrc.h`.
+
+`IMX8QM_SCU=0` assumes an earlier stage left the console and boot device powered and clocked, and touches none of it. Valid when chainloading from U-Boot. Compiled in CI by the `imx8qm_no_scu_test` job.
+
+BL33 also owns SMMU bring-up, in two parts. Power `SC_R_SMMU` and set `sCR0.CLIENTPD`, as U-Boot does in `arch/arm/mach-imx/imx8/cpu.c`, or the OS aborts reading `SMMU_IDR0` off an unpowered block. Then publish each bus master's stream ID with `sc_rm_set_master_sid()`: the ID a master emits is owned by the SCU's resource manager, not by the SMMU or the device tree, so without it the OS programs the SMMU for the `iommus` ID, the master emits something else, and its DMA faults. Both uSDHC controllers are published, not only the one a given build boots from, because the OS brings up every controller the device tree enables.
+
+`hal_dts_fixup()` supplies what U-Boot would have: `/chosen/bootargs`, the real two-bank `/memory` map (2 GB at `0x80000000`, 4 GB at `0x880000000`), and optionally `no-1-8-v` plus `max-frequency` on the SD node. Without it the OS comes up with 1 GB and an empty command line. RAM staging sits at `0xa0000000` and `0xa8000000`, in the gap between the stock DTB's carveouts (roughly `0x90000000` to `0x9c000000`) and the CMA pool at `0xc0000000`. An overlap raises no error: the OS reserves the device tree it was handed, so the colliding carveout's reservation fails and whichever driver owned that region faults later.
+
+The MMU teardown before handoff must not be written in C. A set/way cache walk in C keeps its loop counters in stack slots and re-dirties lines behind itself; clearing `SCTLR_EL2.C` then strands them while later stack reads go to DRAM. `hal_prepare_boot()` calls the stack-free assembly `el2_flush_and_disable_mmu()` in `src/boot_aarch64_start.S`.
+
+### SD / eMMC driver
+
+i.MX uSDHC is the little-endian descendant of the QorIQ eSDHC and is close to, but not the same as, standard SDHCI. Rather than duplicating the card-initialization state machines, this target reuses the generic driver in `src/sdhci.c` and translates the register map in `hal/imx8qm.c` (`sdhci_reg_read`/`sdhci_reg_write`), as `hal/cm4.c` and `hal/tegra234.c` do for their controllers. Four differences are handled there:
+
+1. The command register's transfer-mode half lives in `MIX_CTRL` (0x48), not in the low half of 0x0C. The command half at 0x0C is bit-identical to standard SDHCI.
+2. `PROT_CTRL` encodes bus width as a 2-bit field and has no bus-power or bus-voltage fields.
+3. `SYS_CTRL` uses a DVS/SDCLKFS divider pair rather than the standard 10-bit divisor. The reset and data-timeout fields do line up and pass through untranslated.
+4. There is no error-interrupt summary bit, and the DMA error moves from bit 25 to bit 28. The summary is synthesized on read, and must account for the uSDHC-only tuning error `TNE`, which has no standard bit to map onto: left out of the summary a latched tuning error is invisible to the generic driver and unclearable by it, so the driver waits on a transfer that never completes.
+
+SDMA is on, and the shim points the driver's SDMA address register at uSDHC's `DS_ADDR` rather than the ADMA2 descriptor pointer. `arch.mk` reads the payload in 64 KB blocks, because `DISK_BLOCK_SIZE` otherwise defaults below `SDHCI_DMA_THRESHOLD` and every transfer silently takes the PIO path regardless of bus clock. DMA lands in DRAM behind the cache, so the HAL implements `sdhci_platform_dma_prepare()`/`sdhci_platform_dma_complete()` as range-based clean and invalidate.
+
+### FlexSPI serial NOR
+
+The MEK fits an MT35XU512ABA (64 MB octal NOR) on FlexSPI0. Reads come from the memory-mapped AHB window at `0x08000000`; erase and page program go through the LUT-driven IP command path. This is the same IP as the Layerscape LS1028A "XSPI" block, and the driver follows `hal/nxp_ls1028a.c`.
+
+All LUT sequences use single-pad (1-1-1) SPI with 4-byte addressing: the part powers up in extended SPI mode, and 64 MB is past the 16 MB limit of 3-byte addressing. Octal mode would need a mode-register write first.
+
+Reads through the AHB window are served from prefetch buffers that an IP-path command does not invalidate, so without an explicit flush the window keeps returning the previous contents while the device itself is correct. `ext_flash_write()` and `ext_flash_erase()` therefore end with a controller software reset, which flushes the buffers and leaves the configuration registers and the LUT in place.
+
+The QSPI config leaves the first 1 MB of the NOR free for the boot container the ROM reads from offset 0, and places the boot, update and swap partitions above it.
+
+### AHAB secure boot
+
+AHAB is the SoC's own secure boot, the layer below wolfBoot's signature checking. A container built by `imx8qm-mkflashbin.sh` is unsigned and boots on a board whose SRK fuses are blank ("open" lifecycle). To sign one:
+
+```
+CST_PATH=/path/to/cst-<ver> \
+SRK_TABLE=/path/to/SRK_1_2_3_4_table.bin \
+SRK_KEY=/path/to/SRK1_..._ca_crt.pem \
+CERT_KEY=/path/to/SGK1_..._usr_crt.pem \
+  tools/scripts/imx8qm/imx8qm-ahab-sign.sh flash.bin [mkimage.log]
+```
+
+The SRK table and keys come from the Code Signing Tool's own PKI scripts; this script does not generate them, because the key material outlives any one build. Passing the saved `imx-mkimage` output as the second argument lets the script use the container and signature-block offsets it printed instead of the stock ones.
+
+Use `keys/ahab_pki_tree.sh`, not `hab4_pki_tree.sh`: the latter is the older HAB4 flow for i.MX6/7 and produces keys AHAB will not accept. It reads its password from `keys/key_pass.txt` (the password repeated on two lines) and prompts for the rest; for this part the answers are a new CA, elliptic curve, `p384`, `sha384`, a duration, and SRK certificates with the CA flag set. `srktool` then needs `--ahab_ver`:
+
+```
+srktool --ahab_ver --table SRK_1_2_3_4_table.bin --efuses SRK_1_2_3_4_fuse.bin \
+        --sign_digest sha512 --fuse_format 1 \
+        --certs SRK1_...,SRK2_...,SRK3_...,SRK4_...
+```
+
+The signing certificates that script emits are named `SGK<n>_1_...`, with the extra index, which is what `CERT_KEY` wants.
+
+`CERT_KEY` is mandatory. `ahab_pki_tree.sh` sets the CA flag on the SRKs, and a CA-flagged SRK may only sign another key, never data, so the CSF installs an SGK certificate and signs the container with that. The script emits the `[Install Certificate]` form for this reason, and CST requires a `Permissions` bitmask alongside the certificate; it defaults to `0x1` and `CERT_PERMISSIONS` overrides it. Installing the certificate costs about 220 bytes of signature block, which stays clear of the first payload at `0x13000`.
+
+Signing changes nothing on an open part; it becomes required once the SRK hash is fused and the part is closed. An open part does not verify the signature, so booting a signed container there shows only that the container is still well formed. The useful check at that stage is that the container and signature-block headers stay self-consistent and no payload is overlapped. `SRK_1_2_3_4_fuse.bin` holds the hash that would be fused; nothing in this flow writes it.
+
+> **Fusing is irreversible.** Burning the SRK hash and closing the part are one-way operations that permanently reject any container not signed by the matching key. A wrong hash, a lost private key, or a container never verified to boot while the part was open leaves the board with no recovery path, SDP included. Confirm the signed container boots on the open part, back up the key material, then fuse. wolfBoot ships no script that burns fuses; use NXP's own tooling.
+
+### Peripheral map
+
+Register bases used by the HAL, from the upstream device tree (`imx8-ss-{lsio,conn,dma}.dtsi`, `imx8qm-mek.dts`):
+
+| Block | Address | Note |
+|---|---|---|
+| LPUART0 | `0x5A060000` | console (`stdout-path`) |
+| uSDHC1 | `0x5B010000` | eMMC, 8-bit, non-removable |
+| uSDHC2 | `0x5B020000` | SD card, 4-bit |
+| FlexSPI0 registers | `0x5D120000` | MT35XU512ABA, 64 MB octal NOR |
+| FlexSPI0 AHB window | `0x08000000` | memory-mapped reads |
+| MU1_A | `0x5D1C0000` | mailbox to the System Controller |
+| DRAM | `0x80000000` | trained by SCFW before BL33 runs |
+
+### Known limitations
+
+- **A warm reboot cannot recover an SD card left in UHS mode, and no software fix is possible on this board.** Once Linux has taken the card to 1.8V signalling (`timing spec: sd uhs SDR104`, `signal voltage: 1.80 V` in `/sys/kernel/debug/mmc1/ios`), a `reboot` performs no VDD cycle, so the card is still in its UHS state when wolfBoot starts and does not answer `CMD8`. A card that has negotiated UHS-I returns to the initial 3.3V state only when VDD is removed; `CMD0` does not do it. On the MEK the card supply is a fixed rail, and the uSDHC shim's bus-power and bus-voltage bits are shadowed rather than driven (`hal/imx8qm.c`), so `sdhci_set_power()` cannot produce a VDD cycle. Hardware-checked: switching the host to 1.8V to meet the card does not make it answer `CMD8` either, and initialization then fails at `CMD55`.
+  What wolfBoot does now is fail cleanly instead of hanging. `src/sdhci.c` used to wait for Command Inhibit with an unbounded loop, so the first failed command never returned and the boot stopped with no further output; the wait is bounded and resets the command line, so the failure is reported and reaches `wolfBoot_panic()`. Recovery is a **power cycle**, which always works, or `IMX8QM_SD_NO_UHS=1`, which avoids the situation by keeping Linux out of UHS. `src/sdhci.c` also carries an opt-in `SDHCI_UHS_RECOVER_ON_INIT`, which switches the host to 1.8V and retries `CMD8` once; it is off by default and does **not** help on this board, but is kept for hosts that can drive bus power. The eMMC has the same exposure at 1.8V for HS200/HS400.
+- **Failover cannot cross a version boundary downwards.** This is the anti-rollback policy rather than a gap: the retry is refused by the `ALLOW_DOWNGRADE` guard (`Rollback to lower version not allowed`) whenever the fallback slot carries a lower version, so equal-version slots are what make failover complete.
+- **AHAB has not been exercised against a closed part.** Signing is exercised and the signed container boots on an open part, but no board here has fused SRKs, so enforcement is unproven. Fusing is irreversible.
+- **The QSPI config's swap partition is reserved but unused.** The shared AArch64 block in `arch.mk` selects `src/update_ram.o` for every non-disk aarch64 target, which version-selects and RAM-boots rather than running the sector-swap update and rollback flow.
+- The FIT's kernel load address is not 2 MB aligned, so the kernel relocates itself and warns. That belongs in the FIT, not in wolfBoot.
+
+### Debugging
+
+`-DDEBUG_SDHCI -DDEBUG_DISK -DDEBUG_GPT` add command-level tracing to the storage paths, and `-DDEBUG_FS` traces the filesystem layer when `DISK_FS` is enabled.
+
+## NXP i.MX95 Cortex-M7
+
+The i.MX95 pairs an A55 cluster running Linux with a real-time Cortex-M7 and a Cortex-M33 System Manager. The M7 has no dedicated flash: it is loaded into TCM by the Linux `remoteproc` driver on the A55 side, so wolfBoot is the ELF that `remoteproc` loads, and the images it verifies live in the DDR region the device tree reserves for the M7.
+
+Validated on a Toradex SMARC i.MX95 module with `TARGET=imx95_m7`.
+
+### i.MX95: Chain of trust
+
+The M7 has no flash of its own - wolfBoot and the images it verifies are placed in TCM and DDR by the A55 cluster - so trust in what runs on the M7 is anchored on the A55 side. Three mechanisms provide it:
+
+- **AHAB**, anchored in the SRK fuses, authenticates the boot containers the ROM and SPL load.
+- **wolfBoot on the A55**, replacing U-Boot, verifying and staging the M7 image under its own partition id before Linux starts. Planned; this is the piece we intend to support.
+- **TRDC**, configured by the System Manager on the M33, restricting the M7 TCM and DDR carveout to the M7 domain.
+
+Until those are in place the M7 image is selected by Linux, so verification here protects against corruption and mis-staged updates rather than against a compromised A55.
+
+### i.MX95: Memory layout
+
+wolfBoot is linked for the *core* view of TCM. `remoteproc` loads through the *system* view and `imx_rproc` translates between the two; linking for the system view produces an image that loads cleanly and faults on the first instruction fetch.
+
+| Region | Core view | System view | Size |
+|--------|-----------|-------------|------|
+| ITCM (wolfBoot text) | `0x00000000` | `0x203C0000` | 256 KiB |
+| DTCM (wolfBoot data, app data/heap/stack) | `0x20000000` | `0x20400000` | 256 KiB |
+| Reserved DDR (`memory@80000000`) | `0x80000000` | - | 16 MiB |
+
+The TCM split assumes `M7_CFG[TCM_SIZE] = 000b` (256 KiB + 256 KiB), the reset default. That field lives in `BLK_CTRL_Secure_AON` and is owned by the System Manager running on the M33, not by wolfBoot.
+
+The "flash" wolfBoot writes is ordinary DDR: writes are copies and erases are fills. Linux stages an update by writing the UPDATE partition before restarting the core.
+
+| Block | Address | Size |
+|-------|---------|------|
+| BOOT partition | `0x80100000` | 4 MiB |
+| UPDATE partition | `0x80500000` | 4 MiB |
+| SWAP | `0x80900000` | 16 KiB sector |
+| Console header + ring | `0x80F00000` | 64 KiB |
+| wolfBoot status block | `0x80F10000` | 4 words |
+| Test-app status block | `0x80F10010` | 2 words |
+
+The RPMsg carveouts at `0x88000000` (vrings) and `0x88020000` (vdevbuffer) belong to the RPMsg transport and are deliberately not used for the console or status blocks. wolfBoot still carries the `remoteproc` resource table declaring them, because Linux looks for `.resource_table` in the ELF *it* loads - without it the kernel logs `No resource table in elf` and never creates the virtio device.
+
+### i.MX95: Building
+
+```sh
+cp config/examples/imx95-m7.config .config
+make
+```
+
+This produces `wolfboot.elf` (the image `remoteproc` loads) and `test-app/image_v1_signed.bin` (the payload Linux writes to `0x80100000`). There is no `factory.bin`: wolfBoot runs from ITCM and the payload lives in DDR, so there is no contiguous flash image to assemble.
+
+To build the test app with the wolfCrypt test suite and benchmark:
+
+```sh
+make WOLFCRYPT_TEST=1 WOLFCRYPT_BENCHMARK=1
+```
+
+Benchmark timing comes from the Cortex-M7 DWT cycle counter, scaled by `IMX95_M7_HZ` (800 MHz by default, matching this board's `clk_summary` entry `m7 800000000`). The M7 cannot read its own clock rate without an SCMI round trip to the System Manager, so if that rate is configured differently the constant must be overridden or every reported figure scales by the ratio:
+
+```sh
+make WOLFCRYPT_BENCHMARK=1 CFLAGS_EXTRA=-DIMX95_M7_HZ=1000000000ULL
+```
+
+### i.MX95: Console and status
+
+The M7's LPUART is not routed to a host-accessible header on this carrier, and Linux owns all four LPUART instances, so the console is a ring buffer in the M7's own DDR window rather than a peripheral driver. Its header is:
+
+| Offset | Field | Meaning |
+|--------|-------|---------|
+| `0x00` | `magic` | `0x4E4F4357` - the stored bytes read `WCON` in a hexdump |
+| `0x04` | `wr` | Total bytes ever written, monotonic within a run |
+| `0x08` | `size` | Ring size in bytes; read it rather than assuming |
+| `0x0C` | `rsvd` | Reserved |
+
+A reader tracks its own position `pos` and copies `wr - pos` bytes starting at `data[pos % size]`. Overrun is possible for very chatty output and is detected when `wr - pos > size`, so the reader reports the gap instead of printing corrupt text.
+
+Progress is also published as plain 32-bit words that Linux can poll with `devmem` without parsing console text:
+
+```sh
+devmem 0x80F10000    # 0x57424F54 "WBOT" - wolfBoot status block valid
+devmem 0x80F10004    # progress code: 1 = hal_init, 2 = hal_prepare_boot
+devmem 0x80F10008    # DWT cycle count at hal_init
+devmem 0x80F1000C    # DWT cycle count at hal_prepare_boot
+devmem 0x80F10010    # 0x41505031 "APP1" - the payload is running
+devmem 0x80F10014    # heartbeat, incrementing
+```
+
+The difference between the two timestamps is the cost of everything wolfBoot does in between, which is dominated by signature verification. Note that these magics are spelled to read correctly as `devmem` 32-bit words, the opposite convention from the console magic, which is read from a hexdump of the ring.
+
+Both caches are enabled by `hal_init()`, which matters because verifying an image means hashing megabytes resident in DDR. The ARMv7-M default memory map marks `0x80000000-0x9FFFFFFF` as Normal write-through, so no MPU region is needed and M7 stores to the shared window still reach DDR; the HAL nevertheless cleans the affected lines explicitly so that behaviour is not left depending on an inherited attribute.
+
+## TI C2000 C28x (LAUNCHXL-F28P55X)
+
+wolfBoot runs on the Texas Instruments C2000 C28x DSP (TMS320F28P550SJ, 150 MHz) as a secure execute-in-place (XIP) bootloader. The C28x is word-addressed with `CHAR_BIT == 16` (no 8-bit type -- each octet occupies one 16-bit cell), built with the TI `cl2000` toolchain against wolfSSL's wide-byte (`CHAR_BIT != 8`) support.
+
+### Flash layout
+
+wolfBoot owns flash bank0 (`0x80000`); the signed application lives in the BOOT partition at bank1 (`0xA0000`). Because an octet-per-cell header and a native-word executable cannot share one representation, the BOOT partition uses a split layout: the 256-cell image header is stored one octet per 16-bit cell (so wolfBoot's generic octet parser and hash work byte-identically to the host), and the firmware follows at `0xA0100` as native 16-bit words that execute in place.
+
+| Region | Address | Contents |
+|--------|---------|----------|
+| wolfBoot (bank0) | `0x80000` | bootloader code + keystore |
+| BOOT header | `0xA0000` | 256-cell signed header (one octet per cell) |
+| BOOT firmware | `0xA0100` | native XIP application |
+
+### Build
+
+```
+cp config/examples/f28p55x.config .config
+make CGT_ROOT=/path/to/ti-cgt-c2000 C2000WARE=/path/to/C2000Ware
+```
+
+This produces `wolfboot.elf` (the cl2000 `.out`); DSLite loads it directly, since C28x flash is word-addressed there is no objcopy / flat `.bin` step.
+
+### Sign and flash the application
+
+The test application (`test-app/app_f28p55x.c`) is linked to execute in place at `0xA0100`. `test-app/f28p55x_sign.sh` documents the flow: compile the XIP app, extract its firmware as the host octet stream, sign it (ECC P-256 + SHA-256), and emit the octet-per-cell header blob for `0xA0000`. Flash `wolfboot.elf` and the application image with DSLite over the onboard XDS110.
+
+### Boot mode
+
+The C28x boot ROM selects its boot source before any application code runs, so the device must be told to boot from flash. Under a debug session CCS/DSLite (via the device GEL) writes a volatile flash-boot override -- `EMU_BOOTPIN_KEY (0xD00) = 0x5AFFFFFF`, `EMU_BOOTPIN_CONFIG (0xD04) = 0x0003` (boot mode 3, flash entry `0x080000`) -- so wolfBoot boots from `0x80000` whenever a debugger has connected. That override is volatile and is not present on a bare power-on-reset. For **standalone** flash boot the device's persistent boot mode must be provisioned to flash (boot mode `0x03`) via the DCSM boot OTP, or set with the board's boot-mode straps where available; until then a bare power-up waits in the boot ROM. The SCIA console (GPIO28/29, 115200 8N1) is on the XDS110 virtual COM port; a live debug session garbles that backchannel, so read it with the probe detached.
+
+### Configuration options
+
+| Option | Description |
+|--------|-------------|
+| `SIGN=ECC256` / `HASH=SHA256` | Signature and hash for the secure-boot MVP. |
+| `RAM_CODE` | **Required.** Flash program/erase (TI Fapi) runs from RAM. |
+| `NVM_FLASH_WRITEONCE` | Flash is written once between erases. |
+| `DEBUG` | Enables verbose boot progress and a JTAG-readable survive-log mirror (`g_log`) for bring-up. |
+
+A/B update / rollback is a follow-on: the partitions are declared, but the update path (flash erase/write, swap, trailer) is not yet wide-byte-hardened.

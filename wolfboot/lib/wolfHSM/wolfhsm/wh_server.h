@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -35,6 +35,9 @@ typedef struct whServerContext_t whServerContext;
 #ifdef WOLFHSM_CFG_ENABLE_AUTHENTICATION
 #include "wolfhsm/wh_auth.h"
 #endif /* WOLFHSM_CFG_ENABLE_AUTHENTICATION */
+#ifdef WOLFHSM_CFG_HWKEYSTORE
+#include "wolfhsm/wh_hwkeystore.h"
+#endif /* WOLFHSM_CFG_HWKEYSTORE */
 #include "wolfhsm/wh_message_customcb.h"
 #include "wolfhsm/wh_log.h"
 #ifdef WOLFHSM_CFG_DMA
@@ -136,11 +139,15 @@ typedef struct whServerConfig_t {
 #ifdef WOLFHSM_CFG_ENABLE_AUTHENTICATION
     whAuthContext* auth;
 #endif /* WOLFHSM_CFG_ENABLE_AUTHENTICATION */
+#ifdef WOLFHSM_CFG_HWKEYSTORE
+    whHwKeystoreContext* hwKeystore; /* optional; NULL = no HW keystore */
+#endif                               /* WOLFHSM_CFG_HWKEYSTORE */
 
 #ifndef WOLFHSM_CFG_NO_CRYPTO
     whServerCryptoContext* crypto;
 #ifdef WOLFHSM_CFG_SHE_EXTENSION
     whServerSheContext* she;
+    whServerSheConfig*  sheConfig; /* optional; NULL = in-context UID storage */
 #endif /* WOLFHSM_CFG_SHE_EXTENSION */
 #if defined WOLF_CRYPTO_CB
     int devId;
@@ -164,6 +171,9 @@ struct whServerContext_t {
 #ifdef WOLFHSM_CFG_ENABLE_AUTHENTICATION
     whAuthContext* auth;
 #endif /* WOLFHSM_CFG_ENABLE_AUTHENTICATION */
+#ifdef WOLFHSM_CFG_HWKEYSTORE
+    whHwKeystoreContext* hwKeystore;
+#endif /* WOLFHSM_CFG_HWKEYSTORE */
     whCommServer  comm[1];
 #ifndef WOLFHSM_CFG_NO_CRYPTO
     whServerCryptoContext* crypto;

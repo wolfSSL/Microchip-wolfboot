@@ -1,8 +1,8 @@
 /* external_import.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -193,6 +193,7 @@ int TPM2_ExternalImport_Example(void* userCtx, int argc, char *argv[])
         rc = readKeyBlob(keyblobFile, rsaKey3);
         if (rc != TPM_RC_SUCCESS) {
             printf("Error reading keyblob.bin: %d\n", rc);
+            goto exit;
         }
     }
     else { /* create key and save as keyblob.bin */

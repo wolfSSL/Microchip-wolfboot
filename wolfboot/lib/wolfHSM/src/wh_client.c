@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -50,23 +50,48 @@
 #include "wolfhsm/wh_message_counter.h"
 #include "wolfhsm/wh_client.h"
 
-#ifndef WOLFHSM_CFG_NO_CRYPTO
-const int WH_DEV_IDS_ARRAY[WH_NUM_DEVIDS] = {
-        WH_DEV_ID,
-#ifdef WOLFHSM_CFG_DMA
-        WH_DEV_ID_DMA,
-#endif /* WOLFHSM_CFG_DMA */
-};
-#endif /* WOLFHSM_CFG_NO_CRYPTO */
-
 int wh_Client_Init(whClientContext* c, const whClientConfig* config)
 {
     int rc = 0;
-    if((c == NULL) || (config == NULL)) {
+#ifndef WOLFHSM_CFG_NO_CRYPTO
+    /* Which cryptoCb registrations this Init made, so the failure path can
+     * undo just those and leave other clients' entries alone. */
+    int clientCbRegistered = 0;
+    int globalCbRegistered = 0;
+#ifdef WOLFHSM_CFG_DMA
+    int dmaCbRegistered = 0;
+#endif /* WOLFHSM_CFG_DMA */
+#endif /* !WOLFHSM_CFG_NO_CRYPTO */
+
+    /* Client id must be 1..WH_CLIENT_ID_MAX (the server checks it at connect).
+     */
+    if ((c == NULL) || (config == NULL) || (config->comm == NULL) ||
+        (config->comm->client_id == 0) ||
+        (config->comm->client_id > WH_CLIENT_ID_MAX)) {
         return WH_ERROR_BADARGS;
     }
 
+#ifndef WOLFHSM_CFG_NO_CRYPTO
+    /* devId 0 means "use the default WH_DEV_ID"; any other value must be
+     * positive. */
+    if (config->devId < 0) {
+        return WH_ERROR_BADARGS;
+    }
+#ifdef WOLFHSM_CFG_DMA
+    /* WH_DEV_ID_DMA is reserved for the DMA-only callback, so reject it. */
+    if (config->devId == WH_DEV_ID_DMA) {
+        return WH_ERROR_BADARGS;
+    }
+#endif /* WOLFHSM_CFG_DMA */
+#endif /* !WOLFHSM_CFG_NO_CRYPTO */
+
     memset(c, 0, sizeof(*c));
+
+#ifndef WOLFHSM_CFG_NO_CRYPTO
+    /* Store the devId for this context. A nonzero devId also means "init
+     * succeeded"; the failure path below sets it back to 0 so Cleanup knows. */
+    c->devId = (config->devId == 0) ? WH_DEV_ID : config->devId;
+#endif /* !WOLFHSM_CFG_NO_CRYPTO */
 
     rc = wh_CommClient_Init(c->comm, config->comm);
 
@@ -76,35 +101,90 @@ int wh_Client_Init(whClientContext* c, const whClientConfig* config)
         if (rc != 0) {
             rc = WH_ERROR_ABORTED;
         }
+        else {
+            /* Mark that we called wolfCrypt_Init() so Cleanup calls
+             * wolfCrypt_Cleanup() once to match. Set now so a later failure
+             * still undoes it. */
+            c->cryptoInitialized = 1;
+        }
 
-        if (rc == 0) {
-            rc = wc_CryptoCb_RegisterDevice(WH_DEV_ID,
-                    wh_Client_CryptoCb, c);
+        /* Register this client's own devId. Done first so that if it fails
+         * (e.g. the callback table is full) we stop before touching the
+         * globals below. Skipped when devId == WH_DEV_ID, since the global
+         * registration below covers that. */
+        if ((rc == 0) && (c->devId != WH_DEV_ID)) {
+            rc = wc_CryptoCb_RegisterDevice(c->devId, wh_Client_CryptoCb, c);
             if (rc != 0) {
                 rc = WH_ERROR_ABORTED;
             }
+            else {
+                clientCbRegistered = 1;
+            }
+        }
+
+        /* Point the global WH_DEV_ID at this context. Calls on WH_DEV_ID
+         * always go to the most recently initialized client, so passing it to
+         * wolfCrypt only works when there is one client; with more, each must
+         * use its own devId. Unregister first in case wolfCrypt won't
+         * re-register the same devId. */
+        if (rc == 0) {
+            wc_CryptoCb_UnRegisterDevice(WH_DEV_ID);
+            rc = wc_CryptoCb_RegisterDevice(WH_DEV_ID, wh_Client_CryptoCb, c);
+            if (rc != 0) {
+                rc = WH_ERROR_ABORTED;
+            }
+            else {
+                globalCbRegistered = 1;
+            }
+        }
 
 #ifdef WOLFHSM_CFG_DMA
-            if (rc == 0) {
-                /* Initialize DMA configuration and callbacks, if provided */
-                if (NULL != config->dmaConfig) {
-                    c->dma.dmaAddrAllowList =
-                        config->dmaConfig->dmaAddrAllowList;
-                    c->dma.cb = config->dmaConfig->cb;
-                }
-
-                rc = wc_CryptoCb_RegisterDevice(WH_DEV_ID_DMA,
-                                                wh_Client_CryptoCbDma, c);
-                if (rc != 0) {
-                    rc = WH_ERROR_ABORTED;
-                }
+        /* Initialize DMA configuration and callbacks, if provided. */
+        if (rc == 0) {
+            if (NULL != config->dmaConfig) {
+                c->dma.dmaAddrAllowList = config->dmaConfig->dmaAddrAllowList;
+                c->dma.cb               = config->dmaConfig->cb;
+                c->dma.preferDma        = config->dmaConfig->preferDma;
             }
-#endif /* WOLFHSM_CFG_DMA */
         }
+
+        /* Point the global WH_DEV_ID_DMA at this context (DMA path only).
+         * Single-client only, like WH_DEV_ID above. */
+        if (rc == 0) {
+            wc_CryptoCb_UnRegisterDevice(WH_DEV_ID_DMA);
+            rc = wc_CryptoCb_RegisterDevice(WH_DEV_ID_DMA,
+                                            wh_Client_CryptoCbDma, c);
+            if (rc != 0) {
+                rc = WH_ERROR_ABORTED;
+            }
+            else {
+                dmaCbRegistered = 1;
+            }
+        }
+#endif /* WOLFHSM_CFG_DMA */
     }
 #endif  /* !WOLFHSM_CFG_NO_CRYPTO */
 
     if (rc != 0) {
+#ifndef WOLFHSM_CFG_NO_CRYPTO
+        /* Undo only the registrations we made above, then set devId to 0 so
+         * the Cleanup below leaves all cryptoCb entries alone (it can't tell
+         * which were ours otherwise). In a multi-client process this can leave
+         * the global devIds unregistered, but those are single-client only
+         * anyway. */
+        if (clientCbRegistered != 0) {
+            wc_CryptoCb_UnRegisterDevice(c->devId);
+        }
+        if (globalCbRegistered != 0) {
+            wc_CryptoCb_UnRegisterDevice(WH_DEV_ID);
+        }
+#ifdef WOLFHSM_CFG_DMA
+        if (dmaCbRegistered != 0) {
+            wc_CryptoCb_UnRegisterDevice(WH_DEV_ID_DMA);
+        }
+#endif /* WOLFHSM_CFG_DMA */
+        c->devId = 0;
+#endif /* !WOLFHSM_CFG_NO_CRYPTO */
         wh_Client_Cleanup(c);
     }
     return rc;
@@ -117,7 +197,25 @@ int wh_Client_Cleanup(whClientContext* c)
     }
 
 #ifndef WOLFHSM_CFG_NO_CRYPTO
-    (void)wolfCrypt_Cleanup();
+    /* Remove this context's cryptoCb entries first. wolfCrypt only clears its
+     * callback table on the last wolfCrypt_Cleanup() in the process, so if we
+     * left them another live client would keep calling into this freed
+     * context. devId is nonzero only after a successful init, so we only
+     * remove entries when this context actually owns them. */
+    if (c->devId != 0) {
+        (void)wc_CryptoCb_UnRegisterDevice(c->devId);
+        (void)wc_CryptoCb_UnRegisterDevice(WH_DEV_ID);
+#ifdef WOLFHSM_CFG_DMA
+        (void)wc_CryptoCb_UnRegisterDevice(WH_DEV_ID_DMA);
+#endif /* WOLFHSM_CFG_DMA */
+    }
+    /* Only call wolfCrypt_Cleanup() if this context called wolfCrypt_Init().
+     * Init can reach its failure path before calling wolfCrypt_Init() (e.g.
+     * comm init failed); cleaning up anyway would tell wolfCrypt it has one
+     * fewer user than it does and could shut it down on other live clients. */
+    if (c->cryptoInitialized != 0) {
+        (void)wolfCrypt_Cleanup();
+    }
 #endif  /* !WOLFHSM_CFG_NO_CRYPTO */
 
     (void)wh_CommClient_Cleanup(c->comm);
@@ -146,14 +244,13 @@ int wh_Client_SendRequest(whClientContext* c,
     return rc;
 }
 
-int wh_Client_RecvResponse(whClientContext *c,
-        uint16_t *out_group, uint16_t *out_action,
-        uint16_t *out_size, void* data)
+int wh_Client_RecvResponse(whClientContext* c, uint16_t* out_group,
+                           uint16_t* out_action, uint16_t* out_size,
+                           uint16_t data_size, void* data)
 {
     int      rc        = 0;
     uint16_t resp_kind = 0;
     uint16_t resp_id   = 0;
-    uint16_t resp_size = 0;
 
     if (c == NULL) {
         return WH_ERROR_BADARGS;
@@ -161,7 +258,7 @@ int wh_Client_RecvResponse(whClientContext *c,
 
     /* Comm layer performs magic and sequence validation */
     rc = wh_CommClient_RecvResponse(c->comm, NULL, &resp_kind, &resp_id,
-                                    &resp_size, data);
+                                    out_size, data_size, data);
     if (rc == 0) {
         if ((resp_kind != c->last_req_kind) || (resp_id != c->last_req_id)) {
             /* Response kind/id doesn't match outstanding request. */
@@ -173,9 +270,6 @@ int wh_Client_RecvResponse(whClientContext *c,
             }
             if (out_action != NULL) {
                 *out_action = WH_MESSAGE_ACTION(resp_kind);
-            }
-            if (out_size != NULL) {
-                *out_size = resp_size;
             }
         }
     }
@@ -220,9 +314,8 @@ int wh_Client_CommInitResponse(whClientContext* c,
         return WH_ERROR_BADARGS;
     }
 
-    rc = wh_Client_RecvResponse(c,
-            &resp_group, &resp_action,
-            &resp_size, &msg);
+    rc = wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size,
+                                sizeof(msg), &msg);
     if (rc == 0) {
         /* Validate response */
         if (    (resp_group != WH_MESSAGE_GROUP_COMM) ||
@@ -300,9 +393,8 @@ int wh_Client_CommInfoResponse(whClientContext* c,
         return WH_ERROR_BADARGS;
     }
 
-    rc = wh_Client_RecvResponse(c,
-            &resp_group, &resp_action,
-            &resp_size, &msg);
+    rc = wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size,
+                                sizeof(msg), &msg);
     if (rc == 0) {
         /* Validate response */
         if (    (resp_group != WH_MESSAGE_GROUP_COMM) ||
@@ -405,6 +497,7 @@ int wh_Client_CommInfo(whClientContext* c,
     return rc;
 }
 
+#if defined(WOLFHSM_CFG_CRYPTO_AFFINITY)
 int wh_Client_SetCryptoAffinity(whClientContext* c, uint32_t affinity)
 {
     if (c == NULL) {
@@ -424,6 +517,33 @@ int wh_Client_GetCryptoAffinity(whClientContext* c, uint32_t* out_affinity)
         return WH_ERROR_BADARGS;
     }
     *out_affinity = c->cryptoAffinity;
+    return WH_ERROR_OK;
+}
+#endif /* WOLFHSM_CFG_CRYPTO_AFFINITY */
+
+int wh_Client_SetDmaMode(whClientContext* c, int useDma)
+{
+    if (c == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+#ifdef WOLFHSM_CFG_DMA
+    c->dma.preferDma = (uint32_t)(useDma ? 1 : 0);
+#else
+    (void)useDma;
+#endif /* WOLFHSM_CFG_DMA */
+    return WH_ERROR_OK;
+}
+
+int wh_Client_GetDmaMode(whClientContext* c, int* out_useDma)
+{
+    if (c == NULL || out_useDma == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+#ifdef WOLFHSM_CFG_DMA
+    *out_useDma = (c->dma.preferDma != 0) ? 1 : 0;
+#else
+    *out_useDma = 0;
+#endif /* WOLFHSM_CFG_DMA */
     return WH_ERROR_OK;
 }
 
@@ -450,13 +570,13 @@ int wh_Client_CommCloseResponse(whClientContext* c)
         return WH_ERROR_BADARGS;
     }
 
-    rc = wh_Client_RecvResponse(c,
-            &resp_group, &resp_action,
-            &resp_size, NULL);
+    rc = wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size, 0,
+                                NULL);
     if (rc == 0) {
         /* Validate response */
         if (    (resp_group != WH_MESSAGE_GROUP_COMM) ||
-                (resp_action != WH_MESSAGE_COMM_ACTION_CLOSE) ){
+                (resp_action != WH_MESSAGE_COMM_ACTION_CLOSE) ||
+                (resp_size != 0) ){
             /* Invalid message */
             rc = WH_ERROR_ABORTED;
         } else {
@@ -523,9 +643,8 @@ int wh_Client_EchoResponse(whClientContext* c, uint16_t *out_size, void* data)
         return WH_ERROR_BADARGS;
     }
 
-    rc = wh_Client_RecvResponse(c,
-         &resp_group, &resp_action,
-         &resp_size, msg);
+    rc = wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size,
+                                WOLFHSM_CFG_COMM_DATA_LEN, msg);
     if (rc == 0) {
         /* Validate response */
         if (    (resp_group != WH_MESSAGE_GROUP_COMM) ||
@@ -586,8 +705,8 @@ int wh_Client_CustomCbResponse(whClientContext*          c,
         return WH_ERROR_BADARGS;
     }
 
-    rc =
-        wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size, &resp);
+    rc = wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size,
+                                sizeof(resp), &resp);
     if (rc != WH_ERROR_OK) {
         return rc;
     }
@@ -737,9 +856,15 @@ int wh_Client_KeyCacheResponse(whClientContext* c, uint16_t* keyId)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
         else {
@@ -767,6 +892,104 @@ int wh_Client_KeyCache(whClientContext* c, uint32_t flags, uint8_t* label,
 
     WH_DEBUG_CLIENT_VERBOSE("label:%.*s key_id:%x ret:%d \n", labelSz,
            label, *keyId, ret);
+    return ret;
+}
+
+int wh_Client_KeyCacheRandomRequest(whClientContext* c, uint32_t flags,
+                                    uint8_t* label, uint16_t labelSz,
+                                    uint16_t keySz, uint16_t keyId)
+{
+    whMessageKeystore_CacheRandomRequest* req = NULL;
+    uint16_t                              capSz;
+
+    if (c == NULL || keySz == 0) {
+        return WH_ERROR_BADARGS;
+    }
+
+    req = (whMessageKeystore_CacheRandomRequest*)wh_CommClient_GetDataPtr(
+        c->comm);
+    if (req == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+    memset(req, 0, sizeof(*req));
+    req->id    = keyId;
+    req->flags = flags;
+    req->sz    = keySz;
+
+    if (label == NULL) {
+        req->labelSz = 0;
+    }
+    else {
+        /* write label */
+        capSz = (labelSz > WH_NVM_LABEL_LEN) ? WH_NVM_LABEL_LEN : labelSz;
+        req->labelSz = capSz;
+        memcpy(req->label, label, capSz);
+    }
+
+    /* write request (no key material is sent) */
+    return wh_Client_SendRequest(c, WH_MESSAGE_GROUP_KEY, WH_KEY_CACHE_RANDOM,
+                                 sizeof(*req), (uint8_t*)req);
+}
+
+int wh_Client_KeyCacheRandomResponse(whClientContext* c, uint16_t* outKeyId)
+{
+    uint16_t                              group;
+    uint16_t                              action;
+    uint16_t                              size;
+    int                                   ret;
+    whMessageKeystore_CacheRandomResponse *resp = NULL;
+
+    if (c == NULL || outKeyId == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+
+    resp = (whMessageKeystore_CacheRandomResponse*)wh_CommClient_GetDataPtr(
+        c->comm);
+    if (resp == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
+            ret = resp->rc;
+        }
+        else {
+            *outKeyId = resp->id;
+        }
+    }
+
+    return ret;
+}
+
+int wh_Client_KeyCacheRandom(whClientContext* c, uint32_t flags,
+                                 uint8_t* label, uint16_t labelSz,
+                                 uint16_t keySz, uint16_t* inOutKeyId)
+{
+    int ret = WH_ERROR_OK;
+
+    if (inOutKeyId == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+
+    ret = wh_Client_KeyCacheRandomRequest(c, flags, label, labelSz, keySz,
+                                          *inOutKeyId);
+
+    if (ret == 0) {
+        do {
+            ret = wh_Client_KeyCacheRandomResponse(c, inOutKeyId);
+        } while (ret == WH_ERROR_NOTREADY);
+    }
+
+    WH_DEBUG_CLIENT_VERBOSE("label:%.*s key_id:%x ret:%d \n",
+           (label != NULL) ? (int)labelSz : 0,
+           (label != NULL) ? (const char*)label : "", *inOutKeyId, ret);
     return ret;
 }
 
@@ -800,10 +1023,16 @@ int wh_Client_KeyEvictResponse(whClientContext* c)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)&resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size, sizeof(resp),
+                                 (uint8_t*)&resp);
 
     if (ret == 0) {
-        if (resp.rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp.rc != 0) {
             ret = resp.rc;
         }
     }
@@ -863,10 +1092,19 @@ int wh_Client_KeyExportResponse(whClientContext* c, uint8_t* label,
     }
     packOut = (uint8_t*)(resp + 1);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bounds: the fixed fields, then the key material, must fit
+         * within the actual received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
+        }
+        else if (resp->len > (size - sizeof(*resp))) {
+            ret = WH_ERROR_ABORTED;
         }
         else {
             if (out == NULL) {
@@ -948,10 +1186,19 @@ int wh_Client_KeyExportPublicResponse(whClientContext* c, uint8_t* label,
     }
     packOut = (uint8_t*)(resp + 1);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bounds: the fixed fields, then the key material, must fit
+         * within the actual received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
+        }
+        else if (resp->len > (size - sizeof(*resp))) {
+            ret = WH_ERROR_ABORTED;
         }
         else {
             if (out == NULL) {
@@ -1025,9 +1272,15 @@ int wh_Client_KeyCommitResponse(whClientContext* c)
         return WH_ERROR_BADARGS;
     }
 
-    ret  = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
     }
@@ -1081,9 +1334,15 @@ int wh_Client_KeyEraseResponse(whClientContext* c)
         return WH_ERROR_BADARGS;
     }
 
-    ret  = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == 0) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
     }
@@ -1137,9 +1396,15 @@ int wh_Client_KeyRevokeResponse(whClientContext* c)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == 0) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
     }
@@ -1195,9 +1460,15 @@ int wh_Client_CounterInitResponse(whClientContext* c, uint32_t* counter)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
         else if (counter != NULL) {
@@ -1273,9 +1544,15 @@ int wh_Client_CounterIncrementResponse(whClientContext* c, uint32_t* counter)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
         else if (counter != NULL) {
@@ -1333,9 +1610,15 @@ int wh_Client_CounterReadResponse(whClientContext* c, uint32_t* counter)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
         else {
@@ -1393,9 +1676,15 @@ int wh_Client_CounterDestroyResponse(whClientContext* c)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == WH_ERROR_OK) {
-        if (resp->rc != 0) {
+        /* Defensive bound: the response fields must fit within the actual
+         * received frame */
+        if (size < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != 0) {
             ret = resp->rc;
         }
     }
@@ -1488,7 +1777,8 @@ int wh_Client_KeyCacheDmaResponse(whClientContext* c, uint16_t* keyId)
         return WH_ERROR_BADARGS;
     }
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &size, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &size,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     /* NOTREADY: response not in yet - return without POST so the pending
      * request keeps its mapping; POST runs once the response arrives. */
     if (ret == WH_ERROR_NOTREADY) {
@@ -1599,7 +1889,7 @@ int wh_Client_KeyExportDmaResponse(whClientContext* c, uint8_t* label,
     }
 
     rc = wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size,
-                                (uint8_t*)resp);
+                                WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     /* NOTREADY: response not in yet - return without POST so the pending
      * request keeps its mapping; POST runs once the response arrives. */
     if (rc == WH_ERROR_NOTREADY) {
@@ -1724,7 +2014,7 @@ int wh_Client_KeyExportPublicDmaResponse(whClientContext* c, uint8_t* label,
     }
 
     rc = wh_Client_RecvResponse(c, &resp_group, &resp_action, &resp_size,
-                                (uint8_t*)resp);
+                                WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     /* NOTREADY: response not in yet - return without POST so the pending
      * request keeps its mapping; POST runs once the response arrives. */
     if (rc == WH_ERROR_NOTREADY) {

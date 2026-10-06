@@ -1,8 +1,8 @@
 /* spdm_tcg.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -126,6 +126,8 @@ WOLFTPM_API int wolfSPDM_ParseVendorDefined(
 
 /* ----- Shared TCG SPDM Functions ----- */
 
+/* Cleartext key discovery. The result is never installed as trusted state.
+ * If a responder key is pinned, the discovered public point must match it. */
 WOLFTPM_API int wolfSPDM_TCG_GetPubKey(WOLFSPDM_CTX* ctx,
     byte* pubKey, word32* pubKeySz);
 

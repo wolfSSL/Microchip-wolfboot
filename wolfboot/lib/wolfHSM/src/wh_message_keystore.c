@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -41,6 +41,38 @@ int wh_MessageKeystore_TranslateCacheRequest(
 int wh_MessageKeystore_TranslateCacheResponse(
     uint16_t magic, const whMessageKeystore_CacheResponse* src,
     whMessageKeystore_CacheResponse* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T32(magic, dest, src, rc);
+    WH_T16(magic, dest, src, id);
+    return 0;
+}
+
+/* Key Cache Random Request translation */
+int wh_MessageKeystore_TranslateCacheRandomRequest(
+    uint16_t magic, const whMessageKeystore_CacheRandomRequest* src,
+    whMessageKeystore_CacheRandomRequest* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T32(magic, dest, src, flags);
+    WH_T32(magic, dest, src, labelSz);
+    WH_T16(magic, dest, src, sz);
+    WH_T16(magic, dest, src, id);
+    /* Label is just a byte array, no translation needed */
+    if (src != dest) {
+        memcpy(dest->label, src->label, WH_NVM_LABEL_LEN);
+    }
+    return 0;
+}
+
+/* Key Cache Random Response translation */
+int wh_MessageKeystore_TranslateCacheRandomResponse(
+    uint16_t magic, const whMessageKeystore_CacheRandomResponse* src,
+    whMessageKeystore_CacheRandomResponse* dest)
 {
     if ((src == NULL) || (dest == NULL)) {
         return WH_ERROR_BADARGS;
@@ -335,6 +367,35 @@ int wh_MessageKeystore_TranslateKeyWrapRequest(
 int wh_MessageKeystore_TranslateKeyWrapResponse(
     uint16_t magic, const whMessageKeystore_KeyWrapResponse* src,
     whMessageKeystore_KeyWrapResponse* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T32(magic, dest, src, rc);
+    WH_T16(magic, dest, src, wrappedKeySz);
+    WH_T16(magic, dest, src, cipherType);
+    return 0;
+}
+
+/* Wrap-and-export (by id) Request translation */
+int wh_MessageKeystore_TranslateKeyWrapExportRequest(
+    uint16_t magic, const whMessageKeystore_KeyWrapExportRequest* src,
+    whMessageKeystore_KeyWrapExportRequest* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T16(magic, dest, src, keyId);
+    WH_T16(magic, dest, src, keyType);
+    WH_T16(magic, dest, src, serverKeyId);
+    WH_T16(magic, dest, src, cipherType);
+    return 0;
+}
+
+/* Wrap-and-export (by id) Response translation */
+int wh_MessageKeystore_TranslateKeyWrapExportResponse(
+    uint16_t magic, const whMessageKeystore_KeyWrapExportResponse* src,
+    whMessageKeystore_KeyWrapExportResponse* dest)
 {
     if ((src == NULL) || (dest == NULL)) {
         return WH_ERROR_BADARGS;

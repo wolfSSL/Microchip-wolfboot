@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -23,7 +23,14 @@
 #include "wolfssl/wolfcrypt/types.h"
 #include "wolfssl/wolfcrypt/kdf.h"
 #include "wolfssl/wolfcrypt/ed25519.h"
+#if defined(WOLFSSL_HAVE_LMS)
+#include "wolfssl/wolfcrypt/wc_lms.h"
+#endif
+#if defined(WOLFSSL_HAVE_XMSS)
+#include "wolfssl/wolfcrypt/wc_xmss.h"
+#endif
 #include "wolfssl/wolfcrypt/wc_mlkem.h"
+#include "wolfssl/wolfcrypt/asn_public.h"
 
 #include "wolfhsm/wh_error.h"
 
@@ -484,7 +491,7 @@ static int whTest_CryptoRsa(whClientContext* ctx, int devId, WC_RNG* rng)
         /* Using client export key */
         memset(cipherText, 0, sizeof(cipherText));
         memset(finalText, 0, sizeof(finalText));
-        ret = wc_InitRsaKey_ex(rsa, NULL, WH_DEV_ID);
+        ret = wc_InitRsaKey_ex(rsa, NULL, WH_CLIENT_DEVID(ctx));
         if (ret!= 0) {
             WH_ERROR_PRINT("Failed to wc_InitRsaKey_ex %d\n", ret);
         } else {
@@ -526,7 +533,7 @@ static int whTest_CryptoRsa(whClientContext* ctx, int devId, WC_RNG* rng)
         if (ret != 0) {
             WH_ERROR_PRINT("Failed to make cached key %d\n", ret);
         } else {
-            ret = wc_InitRsaKey_ex(rsa, NULL, WH_DEV_ID);
+            ret = wc_InitRsaKey_ex(rsa, NULL, WH_CLIENT_DEVID(ctx));
             if (ret != 0) {
                 WH_ERROR_PRINT("Failed to wc_InitRsaKey_ex %d\n", ret);
             } else {
@@ -635,7 +642,8 @@ static int whTest_CryptoRsa(whClientContext* ctx, int devId, WC_RNG* rng)
                         ret = encLen;
                     }
                     else {
-                        ret = wc_InitRsaKey_ex(rsaFull, NULL, WH_DEV_ID);
+                        ret = wc_InitRsaKey_ex(rsaFull, NULL,
+                                               WH_CLIENT_DEVID(ctx));
                         if (ret == 0) {
                             ret = wh_Client_RsaSetKeyId(rsaFull, pubOnlyId);
                         }
@@ -702,6 +710,100 @@ static int whTest_CryptoRsa(whClientContext* ctx, int devId, WC_RNG* rng)
 
         if (ret == 0) {
             WH_TEST_PRINT("RSA EXPORT-PUBLIC SUCCESS\n");
+        }
+    }
+
+    /* Cache-and-export-public: a single keygen call returns the public key */
+    if (ret == 0) {
+        RsaKey   genPub[1];
+        RsaKey   refPub[1];
+        whKeyId  cacheId  = WH_KEYID_ERASED;
+        byte     genDer[2048];
+        byte     refDer[2048];
+        int      genDerSz = 0;
+        int      refDerSz = 0;
+        int      genInit  = 0;
+        int      refInit  = 0;
+
+        memset(cipherText, 0, sizeof(cipherText));
+        memset(finalText, 0, sizeof(finalText));
+
+        ret = wc_InitRsaKey_ex(genPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            genInit = 1;
+            ret     = wh_Client_RsaMakeCacheKeyAndExportPublic(
+                ctx, RSA_KEY_BITS, RSA_EXPONENT, &cacheId,
+                WH_NVM_FLAGS_USAGE_ENCRYPT | WH_NVM_FLAGS_USAGE_DECRYPT, 0,
+                NULL, genPub);
+            if (ret != 0) {
+                WH_ERROR_PRINT("RsaMakeCacheKeyAndExportPublic failed %d\n",
+                               ret);
+            }
+        }
+
+        /* Cross-check the keygen-returned public key against a separate
+         * ExportPublicKey call on the same cached keyId. */
+        if (ret == 0) {
+            ret = wc_InitRsaKey_ex(refPub, NULL, INVALID_DEVID);
+            if (ret == 0) {
+                refInit = 1;
+                ret     = wh_Client_RsaExportPublicKey(ctx, cacheId, refPub, 0,
+                                                       NULL);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("RsaExportPublicKey failed %d\n", ret);
+                }
+            }
+        }
+        if (ret == 0) {
+            genDerSz = wc_RsaKeyToPublicDer(genPub, genDer, sizeof(genDer));
+            refDerSz = wc_RsaKeyToPublicDer(refPub, refDer, sizeof(refDer));
+            if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+                (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+                WH_ERROR_PRINT("keygen pubkey mismatch vs ExportPublicKey\n");
+                ret = -1;
+            }
+        }
+
+        /* Prove the returned public key is usable: encrypt locally with the
+         * exported public key (refPub) the client holds, then decrypt on the
+         * HSM using genPub directly as the private-key handle (no separate key
+         * object). */
+        if (ret == 0) {
+            int encLen = wc_RsaPublicEncrypt(
+                (byte*)plainText, sizeof(plainText), (byte*)cipherText,
+                sizeof(cipherText), refPub, rng);
+            if (encLen < 0) {
+                WH_ERROR_PRINT("PublicEncrypt with keygen pub failed %d\n",
+                               encLen);
+                ret = encLen;
+            }
+            else {
+                int decLen = wc_RsaPrivateDecrypt(
+                    (byte*)cipherText, encLen, (byte*)finalText,
+                    sizeof(finalText), genPub);
+                if (decLen < 0) {
+                    WH_ERROR_PRINT("HSM PrivateDecrypt failed %d\n", decLen);
+                    ret = decLen;
+                }
+                else if (memcmp(plainText, finalText, sizeof(plainText)) != 0) {
+                    WH_ERROR_PRINT("keygen-pub round-trip mismatch\n");
+                    ret = -1;
+                }
+            }
+        }
+
+        if (genInit != 0) {
+            (void)wc_FreeRsaKey(genPub);
+        }
+        if (refInit != 0) {
+            (void)wc_FreeRsaKey(refPub);
+        }
+        if (!WH_KEYID_ISERASED(cacheId)) {
+            (void)wh_Client_KeyEvict(ctx, cacheId);
+        }
+
+        if (ret == 0) {
+            WH_TEST_PRINT("RSA CACHE-AND-EXPORT-PUBLIC SUCCESS\n");
         }
     }
 
@@ -978,7 +1080,7 @@ static int whTest_CryptoRsaAsync(whClientContext* ctx, WC_RNG* rng)
     /* 9) RsaMakeExportKey async: server generates ephemeral key, returns DER.
      */
     if (ret == WH_ERROR_OK) {
-        ret = wc_InitRsaKey_ex(rsa, NULL, WH_DEV_ID);
+        ret = wc_InitRsaKey_ex(rsa, NULL, WH_CLIENT_DEVID(ctx));
         if (ret != 0) {
             WH_ERROR_PRINT("wc_InitRsaKey_ex failed: %d\n", ret);
         }
@@ -1147,12 +1249,12 @@ static int whTest_CryptoEcc(whClientContext* ctx, int devId, WC_RNG* rng)
         memset(shared_ba, 0, sizeof(shared_ba));
         memset(sig, 0, sizeof(sig));
 
-        ret = wc_ecc_init_ex(bobKey, NULL, WH_DEV_ID);
+        ret = wc_ecc_init_ex(bobKey, NULL, WH_CLIENT_DEVID(ctx));
         if (ret != 0) {
             WH_ERROR_PRINT("Failed to wc_ecc_init_ex for export key %d\n", ret);
         }
         else {
-            ret = wc_ecc_init_ex(aliceKey, NULL, WH_DEV_ID);
+            ret = wc_ecc_init_ex(aliceKey, NULL, WH_CLIENT_DEVID(ctx));
             if (ret != 0) {
                 WH_ERROR_PRINT("Failed to wc_ecc_init_ex for export key %d\n",
                                ret);
@@ -1254,7 +1356,7 @@ static int whTest_CryptoEcc(whClientContext* ctx, int devId, WC_RNG* rng)
         }
         if (ret == 0) {
             /* Init the cached key struct and associate with server key ID */
-            ret = wc_ecc_init_ex(bobKey, NULL, WH_DEV_ID);
+            ret = wc_ecc_init_ex(bobKey, NULL, WH_CLIENT_DEVID(ctx));
             if (ret != 0) {
                 WH_ERROR_PRINT("Failed to wc_ecc_init_ex for cache key %d\n",
                                ret);
@@ -1289,7 +1391,7 @@ static int whTest_CryptoEcc(whClientContext* ctx, int devId, WC_RNG* rng)
                 }
                 /* Create ephemeral peer key for ECDH test */
                 if (ret == 0) {
-                    ret = wc_ecc_init_ex(aliceKey, NULL, WH_DEV_ID);
+                    ret = wc_ecc_init_ex(aliceKey, NULL, WH_CLIENT_DEVID(ctx));
                     if (ret != 0) {
                         WH_ERROR_PRINT(
                             "Failed to wc_ecc_init_ex for peer key %d\n", ret);
@@ -1466,11 +1568,631 @@ static int whTest_CryptoEcc(whClientContext* ctx, int devId, WC_RNG* rng)
         }
     }
 
+    /* Cache-and-export-public: a single keygen call returns the public key */
+    if (ret == 0) {
+        whKeyId  cacheId  = WH_KEYID_ERASED;
+        ecc_key  genPub[1];
+        ecc_key  refPub[1];
+        byte     genDer[256];
+        byte     refDer[256];
+        int      genDerSz = 0;
+        int      refDerSz = 0;
+        int      genInit  = 0;
+        int      refInit  = 0;
+        uint8_t  sig[ECC_MAX_SIG_SIZE];
+        word32   sigLen   = sizeof(sig);
+        int      verify   = 0;
+        uint8_t  label[]  = "ecc-cache-export";
+        uint8_t  readLabel[WH_NVM_LABEL_LEN] = {0};
+
+        ret = wc_ecc_init_ex(genPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            genInit = 1;
+            /* Exercise label forwarding on the cache-and-export path. */
+            ret     = wh_Client_EccMakeCacheKeyAndExportPublic(
+                ctx, TEST_ECC_KEYSIZE, TEST_ECC_CURVE_ID, &cacheId,
+                WH_NVM_FLAGS_USAGE_SIGN | WH_NVM_FLAGS_USAGE_VERIFY,
+                sizeof(label), label, genPub);
+            if (ret != 0) {
+                WH_ERROR_PRINT("EccMakeCacheKeyAndExportPublic failed %d\n",
+                               ret);
+            }
+        }
+
+        /* Cross-check the keygen-returned public key against ExportPublicKey,
+         * and confirm the label was stored with the cached key. */
+        if (ret == 0) {
+            ret = wc_ecc_init_ex(refPub, NULL, INVALID_DEVID);
+            if (ret == 0) {
+                refInit = 1;
+                ret     = wh_Client_EccExportPublicKey(
+                    ctx, cacheId, refPub, sizeof(readLabel), readLabel);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("wh_Client_EccExportPublicKey failed %d\n",
+                                   ret);
+                }
+                else if (memcmp(readLabel, label, sizeof(label)) != 0) {
+                    WH_ERROR_PRINT("keygen label not stored with cached key\n");
+                    ret = -1;
+                }
+            }
+        }
+        if (ret == 0) {
+            genDerSz = wc_EccPublicKeyToDer(genPub, genDer, sizeof(genDer), 1);
+            refDerSz = wc_EccPublicKeyToDer(refPub, refDer, sizeof(refDer), 1);
+            if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+                (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+                WH_ERROR_PRINT("keygen pubkey mismatch vs ExportPublicKey\n");
+                ret = -1;
+            }
+        }
+
+        /* Prove usability: sign on the HSM using genPub directly as the
+         * private-key handle (no separate key object), then verify locally with
+         * the exported public key (refPub) the client holds. */
+        if (ret == 0) {
+            ret = wc_ecc_sign_hash(hash, sizeof(hash), sig, &sigLen, rng,
+                                   genPub);
+            if (ret != 0) {
+                WH_ERROR_PRINT("HSM ECC sign failed %d\n", ret);
+            }
+        }
+        if (ret == 0) {
+            ret = wc_ecc_verify_hash(sig, sigLen, hash, sizeof(hash), &verify,
+                                     refPub);
+            if ((ret != 0) || (verify != 1)) {
+                WH_ERROR_PRINT(
+                    "verify with keygen pub failed ret=%d verify=%d\n", ret,
+                    verify);
+                if (ret == 0) {
+                    ret = -1;
+                }
+            }
+        }
+
+        if (genInit != 0) {
+            wc_ecc_free(genPub);
+        }
+        if (refInit != 0) {
+            wc_ecc_free(refPub);
+        }
+        if (!WH_KEYID_ISERASED(cacheId)) {
+            (void)wh_Client_KeyEvict(ctx, cacheId);
+        }
+
+        if (ret == 0) {
+            WH_TEST_PRINT("ECC CACHE-AND-EXPORT-PUBLIC SUCCESS\n");
+        }
+    }
+
     if (ret == 0) {
         WH_TEST_PRINT("ECC SUCCESS\n");
     }
     return ret;
 }
+
+#if !defined(WOLF_CRYPTO_CB_ONLY_ECC)
+
+/* Build a private-key-only ECC key bound to devId, along with a locally
+ * generated reference keypair holding the public point it must derive to.
+ * This is the shape that cannot be resolved client-side: the caller holds a
+ * private scalar and no public point. */
+static int whTest_MakePrivOnlyEccKey(int devId, WC_RNG* rng, ecc_key* refKey,
+                                     ecc_key* privOnlyKey)
+{
+    int     ret;
+    uint8_t d[ECC_MAXSIZE];
+    word32  dLen = sizeof(d);
+
+    ret = wc_ecc_init_ex(refKey, NULL, INVALID_DEVID);
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed to init reference ECC key %d\n", ret);
+        return ret;
+    }
+
+    ret = wc_ecc_make_key_ex(rng, TEST_ECC_KEYSIZE, refKey, TEST_ECC_CURVE_ID);
+    if (ret == 0) {
+        ret = wc_ecc_export_private_only(refKey, d, &dLen);
+    }
+    if (ret == 0) {
+        ret = wc_ecc_init_ex(privOnlyKey, NULL, devId);
+        if (ret == 0) {
+            ret = wc_ecc_import_private_key_ex(d, dLen, NULL, 0, privOnlyKey,
+                                               TEST_ECC_CURVE_ID);
+            if (ret != 0) {
+                wc_ecc_free(privOnlyKey);
+            }
+        }
+    }
+    if (ret != 0) {
+        wc_ecc_free(refKey);
+        WH_ERROR_PRINT("Failed to build private-only ECC key %d\n", ret);
+    }
+    return ret;
+}
+
+/* Compare an ecc_point against the public point of key */
+static int whTest_EccPointMatchesKey(ecc_point* point, ecc_key* key)
+{
+    if (wc_ecc_cmp_point(point, &key->pubkey) != MP_EQ) {
+        WH_ERROR_PRINT("Derived ECC public point does not match\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Exercise WC_PK_TYPE_EC_MAKE_PUB, both for a key the client holds and for one
+ * resident on the server.  Also covers exporting the public half of a resident
+ * private-only key, which requires the server to derive it. */
+static int whTest_CryptoEccMakePub(whClientContext* ctx, int devId, WC_RNG* rng)
+{
+    int        ret;
+    ecc_key    refKey[1];
+    ecc_key    privOnlyKey[1];
+    ecc_point* pub        = NULL;
+    whKeyId    keyId      = WH_KEYID_ERASED;
+    uint8_t    keyLabel[] = "EccMakePub";
+
+    ret = whTest_MakePrivOnlyEccKey(devId, rng, refKey, privOnlyKey);
+    if (ret != 0) {
+        return ret;
+    }
+
+    pub = wc_ecc_new_point();
+    if (pub == NULL) {
+        ret = MEMORY_E;
+    }
+
+    /* Client-held private-only key: the cryptoCb imports it, derives on the
+     * server, and evicts it again. */
+    if (ret == 0) {
+        ret = wc_ecc_make_pub(privOnlyKey, pub);
+        if (ret != 0) {
+            WH_ERROR_PRINT("wc_ecc_make_pub on client key failed %d\n", ret);
+        }
+        else {
+            ret = whTest_EccPointMatchesKey(pub, refKey);
+        }
+    }
+
+    /* Direct API with an undersized output buffer must report the required
+     * X9.63 size (0x04 || X || Y) in *inout_pubOutSz and return
+     * WH_ERROR_BUFFER_SIZE, after which a re-call with the reported size
+     * succeeds. */
+    if (ret == 0) {
+        uint8_t  smallPub[4]                      = {0};
+        uint8_t  pubOut[1 + 2 * TEST_ECC_KEYSIZE] = {0};
+        uint16_t pubOutSz                         = sizeof(smallPub);
+        int      rc;
+
+        rc = wh_Client_EccMakePub(ctx, privOnlyKey, smallPub, &pubOutSz);
+        if (rc != WH_ERROR_BUFFER_SIZE) {
+            WH_ERROR_PRINT("Undersized EccMakePub returned %d "
+                           "(want WH_ERROR_BUFFER_SIZE)\n",
+                           rc);
+            ret = -1;
+        }
+        else if (pubOutSz != (1 + 2 * TEST_ECC_KEYSIZE)) {
+            WH_ERROR_PRINT("Undersized EccMakePub required size %u "
+                           "(want %u)\n",
+                           (unsigned)pubOutSz,
+                           (unsigned)(1 + 2 * TEST_ECC_KEYSIZE));
+            ret = -1;
+        }
+        if (ret == 0) {
+            rc = wh_Client_EccMakePub(ctx, privOnlyKey, pubOut, &pubOutSz);
+            if (rc != 0) {
+                WH_ERROR_PRINT(
+                    "EccMakePub re-call with reported size failed %d\n", rc);
+                ret = rc;
+            }
+            else if (pubOutSz != (1 + 2 * TEST_ECC_KEYSIZE) ||
+                     pubOut[0] != 0x04) {
+                WH_ERROR_PRINT("EccMakePub re-call produced bad point "
+                               "(size=%u first=0x%02x)\n",
+                               (unsigned)pubOutSz, pubOut[0]);
+                ret = -1;
+            }
+        }
+    }
+
+    /* Same derivation against a key that lives on the server */
+    if (ret == 0) {
+        ret = wh_Client_EccImportKey(ctx, privOnlyKey, &keyId,
+                                     WH_NVM_FLAGS_USAGE_ANY, sizeof(keyLabel),
+                                     keyLabel);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed to cache private-only ECC key %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ecc_key    hsmKey[1];
+        ecc_point* cachedPub = wc_ecc_new_point();
+
+        if (cachedPub == NULL) {
+            ret = MEMORY_E;
+        }
+        else {
+            ret = wc_ecc_init_ex(hsmKey, NULL, devId);
+            if (ret == 0) {
+                ret = wh_Client_EccSetKeyId(hsmKey, keyId);
+                if (ret == 0) {
+                    /* Curve parameters aren't carried by a cached key handle */
+                    ret = wc_ecc_set_curve(hsmKey, TEST_ECC_KEYSIZE,
+                                           TEST_ECC_CURVE_ID);
+                }
+                if (ret == 0) {
+                    ret = wc_ecc_make_pub(hsmKey, cachedPub);
+                    if (ret != 0) {
+                        WH_ERROR_PRINT(
+                            "wc_ecc_make_pub on cached key failed %d\n", ret);
+                    }
+                    else {
+                        ret = whTest_EccPointMatchesKey(cachedPub, refKey);
+                    }
+                }
+                wc_ecc_free(hsmKey);
+            }
+            wc_ecc_del_point(cachedPub);
+        }
+    }
+
+    /* Exporting the public half of a resident private-only key requires the
+     * server to derive it first. */
+    if (ret == 0) {
+        ecc_key pubKey[1];
+        ret = wc_ecc_init_ex(pubKey, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wh_Client_EccExportPublicKey(ctx, keyId, pubKey, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT(
+                    "Public export of private-only ECC key failed %d\n", ret);
+            }
+            else if (wc_ecc_cmp_point(&pubKey->pubkey, &refKey->pubkey) !=
+                     MP_EQ) {
+                WH_ERROR_PRINT("Exported ECC public key does not match\n");
+                ret = -1;
+            }
+            wc_ecc_free(pubKey);
+        }
+    }
+
+    /* A cached keypair whose stored public point does not belong to its private
+     * scalar must still derive the true point, not hand back the stored one. */
+    if (ret == 0) {
+        whKeyId poisonedId      = WH_KEYID_ERASED;
+        uint8_t poisonedLabel[] = "EccMakePubPoison";
+        uint8_t d[ECC_MAXSIZE];
+        word32  dLen = sizeof(d);
+        uint8_t qx[ECC_MAXSIZE];
+        word32  qxLen = sizeof(qx);
+        uint8_t qy[ECC_MAXSIZE];
+        word32  qyLen = sizeof(qy);
+
+        ret = wc_ecc_export_private_only(refKey, d, &dLen);
+        if (ret == 0) {
+            ecc_key otherKey[1];
+            ret = wc_ecc_init_ex(otherKey, NULL, INVALID_DEVID);
+            if (ret == 0) {
+                ret = wc_ecc_make_key_ex(rng, TEST_ECC_KEYSIZE, otherKey,
+                                         TEST_ECC_CURVE_ID);
+                if (ret == 0) {
+                    ret = wc_ecc_export_public_raw(otherKey, qx, &qxLen, qy,
+                                                   &qyLen);
+                }
+                wc_ecc_free(otherKey);
+            }
+        }
+        if (ret == 0) {
+            ecc_key poisoned[1];
+            ret = wc_ecc_init_ex(poisoned, NULL, INVALID_DEVID);
+            if (ret == 0) {
+                /* refKey's private scalar paired with a foreign public point */
+                ret = wc_ecc_import_unsigned(poisoned, qx, qy, d,
+                                             TEST_ECC_CURVE_ID);
+                if (ret == 0) {
+                    ret = wh_Client_EccImportKey(
+                        ctx, poisoned, &poisonedId, WH_NVM_FLAGS_USAGE_ANY,
+                        sizeof(poisonedLabel), poisonedLabel);
+                }
+                wc_ecc_free(poisoned);
+            }
+        }
+        if (ret == 0) {
+            ecc_key    hsmKey[1];
+            ecc_point* derived = wc_ecc_new_point();
+
+            if (derived == NULL) {
+                ret = MEMORY_E;
+            }
+            else {
+                ret = wc_ecc_init_ex(hsmKey, NULL, devId);
+                if (ret == 0) {
+                    ret = wh_Client_EccSetKeyId(hsmKey, poisonedId);
+                    if (ret == 0) {
+                        ret = wc_ecc_set_curve(hsmKey, TEST_ECC_KEYSIZE,
+                                               TEST_ECC_CURVE_ID);
+                    }
+                    if (ret == 0) {
+                        ret = wc_ecc_make_pub(hsmKey, derived);
+                        if (ret != 0) {
+                            WH_ERROR_PRINT(
+                                "wc_ecc_make_pub on poisoned key failed %d\n",
+                                ret);
+                        }
+                        else {
+                            ret = whTest_EccPointMatchesKey(derived, refKey);
+                        }
+                    }
+                    wc_ecc_free(hsmKey);
+                }
+                wc_ecc_del_point(derived);
+            }
+        }
+        if (!WH_KEYID_ISERASED(poisonedId)) {
+            (void)wh_Client_KeyEvict(ctx, poisonedId);
+        }
+    }
+
+    /* Make-pub against a cached PUBLIC-only key must fail: there is no
+     * private scalar to derive from, matching software wc_ecc_make_pub(). */
+    if (ret == 0) {
+        whKeyId pubOnlyId      = WH_KEYID_ERASED;
+        uint8_t pubOnlyLabel[] = "EccMakePubPubOnly";
+        uint8_t qx[ECC_MAXSIZE];
+        word32  qxLen = sizeof(qx);
+        uint8_t qy[ECC_MAXSIZE];
+        word32  qyLen = sizeof(qy);
+
+        ret = wc_ecc_export_public_raw(refKey, qx, &qxLen, qy, &qyLen);
+        if (ret == 0) {
+            ecc_key pubOnly[1];
+            ret = wc_ecc_init_ex(pubOnly, NULL, INVALID_DEVID);
+            if (ret == 0) {
+                ret = wc_ecc_import_unsigned(pubOnly, qx, qy, NULL,
+                                             TEST_ECC_CURVE_ID);
+                if (ret == 0) {
+                    ret = wh_Client_EccImportKey(
+                        ctx, pubOnly, &pubOnlyId, WH_NVM_FLAGS_USAGE_ANY,
+                        sizeof(pubOnlyLabel), pubOnlyLabel);
+                    if (ret != 0) {
+                        WH_ERROR_PRINT(
+                            "Failed to cache public-only ECC key %d\n", ret);
+                    }
+                }
+                wc_ecc_free(pubOnly);
+            }
+        }
+        if (ret == 0) {
+            ecc_key    hsmKey[1];
+            ecc_point* derived = wc_ecc_new_point();
+
+            if (derived == NULL) {
+                ret = MEMORY_E;
+            }
+            else {
+                ret = wc_ecc_init_ex(hsmKey, NULL, devId);
+                if (ret == 0) {
+                    ret = wh_Client_EccSetKeyId(hsmKey, pubOnlyId);
+                    if (ret == 0) {
+                        ret = wc_ecc_set_curve(hsmKey, TEST_ECC_KEYSIZE,
+                                               TEST_ECC_CURVE_ID);
+                    }
+                    if (ret == 0) {
+                        int rc = wc_ecc_make_pub(hsmKey, derived);
+                        if (rc == 0) {
+                            WH_ERROR_PRINT("wc_ecc_make_pub on public-only "
+                                           "key was not rejected\n");
+                            ret = -1;
+                        }
+                    }
+                    wc_ecc_free(hsmKey);
+                }
+                wc_ecc_del_point(derived);
+            }
+        }
+        if (!WH_KEYID_ISERASED(pubOnlyId)) {
+            (void)wh_Client_KeyEvict(ctx, pubOnlyId);
+        }
+    }
+
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+    if (pub != NULL) {
+        wc_ecc_del_point(pub);
+    }
+    wc_ecc_free(privOnlyKey);
+    wc_ecc_free(refKey);
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ECC MAKE-PUB SUCCESS\n");
+    }
+    return ret;
+}
+
+#ifdef HAVE_ECC_CHECK_KEY
+/* Exercise WC_PK_TYPE_EC_CHECK_PUB_KEY: a private-only key, a full keypair, and
+ * a keypair whose public point does not belong to its private scalar. */
+static int whTest_CryptoEccCheckPubKey(whClientContext* ctx, int devId,
+                                       WC_RNG* rng)
+{
+    int     ret;
+    ecc_key refKey[1];
+    ecc_key privOnlyKey[1];
+    whKeyId keyId      = WH_KEYID_ERASED;
+    uint8_t keyLabel[] = "EccCheckPub";
+    uint8_t d[ECC_MAXSIZE];
+    word32  dLen = sizeof(d);
+    uint8_t qx[ECC_MAXSIZE];
+    word32  qxLen = sizeof(qx);
+    uint8_t qy[ECC_MAXSIZE];
+    word32  qyLen = sizeof(qy);
+
+    ret = whTest_MakePrivOnlyEccKey(devId, rng, refKey, privOnlyKey);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* A private-only key carries no public point, so only the server can
+     * validate it. */
+    ret = wc_ecc_check_key(privOnlyKey);
+    if (ret != 0) {
+        WH_ERROR_PRINT("Check of private-only ECC key failed %d\n", ret);
+    }
+
+    /* A full keypair validates, and its public point survives the server-side
+     * cross-check against the private scalar. */
+    if (ret == 0) {
+        ret = wc_ecc_export_private_only(refKey, d, &dLen);
+    }
+    if (ret == 0) {
+        ret = wc_ecc_export_public_raw(refKey, qx, &qxLen, qy, &qyLen);
+    }
+    if (ret == 0) {
+        ecc_key fullKey[1];
+        byte    pub963[1 + 2 * TEST_ECC_KEYSIZE];
+        word32  pub963Len = sizeof(pub963);
+        ret = wc_ecc_init_ex(fullKey, NULL, devId);
+        if (ret == 0) {
+            ret = wc_ecc_import_unsigned(fullKey, qx, qy, d, TEST_ECC_CURVE_ID);
+            if (ret == 0) {
+                ret = wc_ecc_check_key(fullKey);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("Check of full ECC keypair failed %d\n",
+                                   ret);
+                }
+            }
+            /* The partial-validation shape (check_order == 0) produced by
+             * wolfCrypt's import paths must offload and validate end-to-end:
+             * a callback-only client (WOLF_CRYPTO_CB_ONLY_ECC) has no
+             * software fallback for it. */
+            if (ret == 0) {
+                ret = wc_ecc_export_x963(fullKey, pub963, &pub963Len);
+            }
+            if (ret == 0) {
+                ret = wh_Client_EccCheckPubKey(ctx, fullKey, pub963,
+                                               (uint16_t)pub963Len, 0, 1);
+                if (ret != 0) {
+                    WH_ERROR_PRINT(
+                        "Partial-shape ECC check (check_order=0) failed %d\n",
+                        ret);
+                }
+            }
+            wc_ecc_free(fullKey);
+        }
+    }
+
+    /* A public point that is valid in its own right, but belongs to a
+     * different private scalar than the one the server holds, must be
+     * rejected. */
+    if (ret == 0) {
+        ret = wh_Client_EccImportKey(ctx, privOnlyKey, &keyId,
+                                     WH_NVM_FLAGS_USAGE_ANY, sizeof(keyLabel),
+                                     keyLabel);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed to cache private-only ECC key %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ecc_key otherKey[1];
+        ret = wc_ecc_init_ex(otherKey, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wc_ecc_make_key_ex(rng, TEST_ECC_KEYSIZE, otherKey,
+                                     TEST_ECC_CURVE_ID);
+            if (ret == 0) {
+                qxLen = sizeof(qx);
+                qyLen = sizeof(qy);
+                ret =
+                    wc_ecc_export_public_raw(otherKey, qx, &qxLen, qy, &qyLen);
+            }
+            wc_ecc_free(otherKey);
+        }
+    }
+    if (ret == 0) {
+        ecc_key mismatched[1];
+        ret = wc_ecc_init_ex(mismatched, NULL, devId);
+        if (ret == 0) {
+            /* Correct private scalar, wrong public point */
+            ret = wc_ecc_import_unsigned(mismatched, qx, qy, d,
+                                         TEST_ECC_CURVE_ID);
+            if (ret == 0) {
+                ret = wh_Client_EccSetKeyId(mismatched, keyId);
+            }
+            if (ret == 0) {
+                /* Must match software wc_ecc_check_key(), which returns
+                 * ECC_PRIV_KEY_E when the public point does not belong to
+                 * the private scalar. */
+                int checkRet = wc_ecc_check_key(mismatched);
+                if (checkRet != ECC_PRIV_KEY_E) {
+                    WH_ERROR_PRINT("Mismatched ECC public point check "
+                                   "returned %d (want ECC_PRIV_KEY_E)\n",
+                                   checkRet);
+                    ret = -1;
+                }
+                else {
+                    ret = 0;
+                }
+            }
+            wc_ecc_free(mismatched);
+        }
+    }
+
+    /* A structurally invalid point - one that is not on the curve at all -
+     * must be rejected by the server's own point validation. Flipping a low
+     * bit of Y provably leaves the curve: for a given X only the two +/-Y
+     * solutions satisfy the curve equation. */
+    if (ret == 0) {
+        qxLen = sizeof(qx);
+        qyLen = sizeof(qy);
+        ret   = wc_ecc_export_public_raw(refKey, qx, &qxLen, qy, &qyLen);
+    }
+    if (ret == 0) {
+        ecc_key offCurve[1];
+        ret = wc_ecc_init_ex(offCurve, NULL, devId);
+        if (ret == 0) {
+            /* Correct private scalar, off-curve public point */
+            qy[qyLen - 1] ^= 0x01;
+            ret = wc_ecc_import_unsigned(offCurve, qx, qy, d,
+                                         TEST_ECC_CURVE_ID);
+            if (ret == 0) {
+                int checkRet = wc_ecc_check_key(offCurve);
+                if (checkRet == 0) {
+                    WH_ERROR_PRINT(
+                        "Off-curve ECC public point was not rejected\n");
+                    ret = -1;
+                }
+            }
+            wc_ecc_free(offCurve);
+        }
+    }
+
+    /* A non-NULL pub_key length paired with a NULL pointer is a client-side
+     * argument error, rejected before any transport activity. */
+    if (ret == 0) {
+        int badret = wh_Client_EccCheckPubKey(ctx, refKey, NULL, 1, 0, 0);
+        if (badret != WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("EccCheckPubKey with NULL pub_key and nonzero "
+                           "pub_key_len returned %d (want BADARGS)\n",
+                           badret);
+            ret = -1;
+        }
+    }
+
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+    wc_ecc_free(privOnlyKey);
+    wc_ecc_free(refKey);
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ECC CHECK-PUBKEY SUCCESS\n");
+    }
+    return ret;
+}
+#endif /* HAVE_ECC_CHECK_KEY */
+
+#endif /* !WOLF_CRYPTO_CB_ONLY_ECC */
 
 #ifdef WOLFHSM_CFG_DMA
 /* Generic-transport DMA smoke test: cache an ECC keypair, export the
@@ -1494,7 +2216,6 @@ static int whTest_CryptoEccExportPublicDma(whClientContext* ctx, int devId,
     byte    derBuf[ECC_BUFSIZE];
     uint16_t derSz            = sizeof(derBuf);
     word32   i;
-    (void)devId;
 
     for (i = 0; i < sizeof(hash); i++) {
         hash[i] = (uint8_t)(i + 1);
@@ -1515,7 +2236,7 @@ static int whTest_CryptoEccExportPublicDma(whClientContext* ctx, int devId,
     /* Sign on HSM with the cached private key (non-DMA cryptoCb). */
     if (ret == 0) {
         ecc_key hsmKey[1];
-        ret = wc_ecc_init_ex(hsmKey, NULL, WH_DEV_ID);
+        ret = wc_ecc_init_ex(hsmKey, NULL, WH_CLIENT_DEVID(ctx));
         if (ret == 0) {
             ret = wh_Client_EccSetKeyId(hsmKey, keyId);
         }
@@ -1561,6 +2282,65 @@ static int whTest_CryptoEccExportPublicDma(whClientContext* ctx, int devId,
         }
         wc_ecc_free(pubKey);
     }
+
+#if !defined(WOLF_CRYPTO_CB_ONLY_ECC)
+    /* A resident PRIVATE-only key carries no public half, so the DMA public
+     * export must derive it on the server first. Mirrors the non-DMA
+     * private-only export covered by whTest_CryptoEccMakePub. Skipped in
+     * CB_ONLY builds along with the software reference-key helper. */
+    if (ret == 0) {
+        ecc_key refKey[1];
+        ecc_key privOnlyKey[1];
+        whKeyId privKeyId   = WH_KEYID_ERASED;
+        uint8_t privLabel[] = "EccExportPubDmaPriv";
+
+        ret = whTest_MakePrivOnlyEccKey(devId, rng, refKey, privOnlyKey);
+        if (ret == 0) {
+            ret = wh_Client_EccImportKey(ctx, privOnlyKey, &privKeyId,
+                                         WH_NVM_FLAGS_USAGE_ANY,
+                                         sizeof(privLabel), privLabel);
+            if (ret != 0) {
+                WH_ERROR_PRINT(
+                    "Failed to cache private-only ECC key (DMA) %d\n", ret);
+            }
+            if (ret == 0) {
+                derSz = sizeof(derBuf);
+                ret   = wh_Client_KeyExportPublicDma(ctx, privKeyId,
+                                                     WH_KEY_ALGO_ECC, derBuf,
+                                                     derSz, NULL, 0, &derSz);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("wh_Client_KeyExportPublicDma(ECC "
+                                   "private-only) failed %d\n",
+                                   ret);
+                }
+            }
+            if (ret == 0) {
+                ecc_key derivedPub[1];
+                ret = wc_ecc_init_ex(derivedPub, NULL, INVALID_DEVID);
+                if (ret == 0) {
+                    ret = wh_Crypto_EccDeserializeKeyDer(derBuf, derSz,
+                                                         derivedPub);
+                    if (ret == 0 &&
+                        wc_ecc_cmp_point(&derivedPub->pubkey,
+                                         &refKey->pubkey) != MP_EQ) {
+                        WH_ERROR_PRINT(
+                            "Derived ECC public key (DMA) does not match\n");
+                        ret = -1;
+                    }
+                    wc_ecc_free(derivedPub);
+                }
+            }
+            if (!WH_KEYID_ISERASED(privKeyId)) {
+                (void)wh_Client_KeyEvict(ctx, privKeyId);
+            }
+            wc_ecc_free(privOnlyKey);
+            wc_ecc_free(refKey);
+        }
+    }
+#else
+    /* devId is only consumed by the private-only sub-test above */
+    (void)devId;
+#endif /* !WOLF_CRYPTO_CB_ONLY_ECC */
 
     if (!WH_KEYID_ISERASED(keyId)) {
         (void)wh_Client_KeyEvict(ctx, keyId);
@@ -1666,7 +2446,7 @@ static int whTest_CryptoEccCrossVerify_OneCurve(whClientContext* ctx,
     pubYLen = keySize;
 
     /* Test 1: HSM sign + Software verify */
-    ret = wc_ecc_init_ex(hsmKey, NULL, WH_DEV_ID);
+    ret = wc_ecc_init_ex(hsmKey, NULL, WH_CLIENT_DEVID(ctx));
     if (ret != 0) {
         WH_ERROR_PRINT("%s: Failed to init HSM key: %d\n", name, ret);
     }
@@ -1783,7 +2563,7 @@ static int whTest_CryptoEccCrossVerify_OneCurve(whClientContext* ctx,
     }
     if (ret == 0) {
         /* Import public key into HSM key for verification */
-        ret = wc_ecc_init_ex(hsmKey, NULL, WH_DEV_ID);
+        ret = wc_ecc_init_ex(hsmKey, NULL, WH_CLIENT_DEVID(ctx));
         if (ret != 0) {
             WH_ERROR_PRINT("%s: Failed to init HSM key: %d\n", name, ret);
         }
@@ -1915,7 +2695,7 @@ static int whTest_CryptoEccSignVerifyAsync_OneCurve(whClientContext* ctx,
     pubXLen = keySize;
     pubYLen = keySize;
 
-    ret = wc_ecc_init_ex(hsmKey, NULL, WH_DEV_ID);
+    ret = wc_ecc_init_ex(hsmKey, NULL, WH_CLIENT_DEVID(ctx));
     if (ret == 0) {
         hsmKeyInit = 1;
         ret        = wc_ecc_make_key(rng, keySize, hsmKey);
@@ -2195,7 +2975,7 @@ static int whTest_CryptoEccSharedSecretAsync_OneCurve(whClientContext* ctx,
 
     /* Generate two local ECC keys, then import each to the server cache so
      * that both private keys have valid keyIds usable by the async API. */
-    ret = wc_ecc_init_ex(keyA, NULL, WH_DEV_ID);
+    ret = wc_ecc_init_ex(keyA, NULL, WH_CLIENT_DEVID(ctx));
     if (ret == 0) {
         keyAInit = 1;
         ret      = wc_ecc_make_key(rng, keySize, keyA);
@@ -2208,7 +2988,7 @@ static int whTest_CryptoEccSharedSecretAsync_OneCurve(whClientContext* ctx,
                                                       sizeof(privLabelA), privLabelA);
     }
     if (ret == 0) {
-        ret = wc_ecc_init_ex(keyB, NULL, WH_DEV_ID);
+        ret = wc_ecc_init_ex(keyB, NULL, WH_CLIENT_DEVID(ctx));
     }
     if (ret == 0) {
         keyBInit = 1;
@@ -2499,7 +3279,7 @@ static int whTest_CryptoEccSharedSecretCacheKey_OneCurve(whClientContext* ctx,
     pubBxLen = pubByLen = keySize;
 
     /* Generate two keys A and B, then import both private and public halves */
-    ret = wc_ecc_init_ex(keyA, NULL, WH_DEV_ID);
+    ret = wc_ecc_init_ex(keyA, NULL, WH_CLIENT_DEVID(ctx));
     if (ret == 0) {
         keyAInit = 1;
         ret      = wc_ecc_make_key(rng, keySize, keyA);
@@ -2511,7 +3291,7 @@ static int whTest_CryptoEccSharedSecretCacheKey_OneCurve(whClientContext* ctx,
             ctx, keyA, &privAId, WH_NVM_FLAGS_USAGE_DERIVE, sizeof(lbl), lbl);
     }
     if (ret == 0) {
-        ret = wc_ecc_init_ex(keyB, NULL, WH_DEV_ID);
+        ret = wc_ecc_init_ex(keyB, NULL, WH_CLIENT_DEVID(ctx));
     }
     if (ret == 0) {
         keyBInit = 1;
@@ -3446,7 +4226,7 @@ static int whTest_CryptoEd25519ExportPublic(whClientContext* ctx, int devId,
 
     /* Sign on HSM */
     if (ret == 0) {
-        ret = wc_ed25519_init_ex(hsmKey, NULL, WH_DEV_ID);
+        ret = wc_ed25519_init_ex(hsmKey, NULL, WH_CLIENT_DEVID(ctx));
         if (ret == 0) {
             ret = wh_Client_Ed25519SetKeyId(hsmKey, keyId);
         }
@@ -3499,6 +4279,93 @@ static int whTest_CryptoEd25519ExportPublic(whClientContext* ctx, int devId,
     (void)rng;
     if (ret == 0) {
         WH_TEST_PRINT("Ed25519 EXPORT-PUBLIC SUCCESS\n");
+    }
+    return ret;
+}
+
+/* One keygen call caches the private key and returns the public key. Verify
+ * the returned public key byte-matches wh_Client_Ed25519ExportPublicKey and
+ * that it verifies a signature made by the cached private key. */
+static int whTest_CryptoEd25519CacheKeyAndExportPublic(whClientContext* ctx,
+                                                       int devId, WC_RNG* rng)
+{
+    int         ret       = 0;
+    whKeyId     keyId     = WH_KEYID_ERASED;
+    ed25519_key genPub[1] = {0};
+    ed25519_key refPub[1] = {0};
+    byte        msg[]     = "Ed25519 cache-export-public message";
+    byte        sig[ED25519_SIG_SIZE];
+    uint32_t    sigSz     = sizeof(sig);
+    int         verified  = 0;
+    byte        genDer[128];
+    byte        refDer[128];
+    int         genDerSz  = 0;
+    int         refDerSz  = 0;
+    (void)devId;
+
+    ret = wc_ed25519_init_ex(genPub, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wh_Client_Ed25519MakeCacheKeyAndExportPublic(
+            ctx, &keyId, WH_NVM_FLAGS_USAGE_SIGN | WH_NVM_FLAGS_USAGE_VERIFY, 0,
+            NULL, genPub);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Ed25519MakeCacheKeyAndExportPublic failed %d\n",
+                           ret);
+        }
+    }
+
+    /* Cross-check the keygen-returned public key against ExportPublicKey. */
+    if (ret == 0) {
+        ret = wc_ed25519_init_ex(refPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wh_Client_Ed25519ExportPublicKey(ctx, keyId, refPub, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("wh_Client_Ed25519ExportPublicKey failed %d\n",
+                               ret);
+            }
+        }
+    }
+    if (ret == 0) {
+        genDerSz = wc_Ed25519PublicKeyToDer(genPub, genDer, sizeof(genDer), 1);
+        refDerSz = wc_Ed25519PublicKeyToDer(refPub, refDer, sizeof(refDer), 1);
+        if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+            (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+            WH_ERROR_PRINT("keygen pubkey mismatch vs ExportPublicKey\n");
+            ret = -1;
+        }
+    }
+
+    /* Prove usability: sign on the HSM using genPub directly as the private-key
+     * handle (no separate key object), then verify locally with the exported
+     * public key (refPub) the client holds. */
+    if (ret == 0) {
+        ret = wh_Client_Ed25519Sign(ctx, genPub, msg, (uint32_t)sizeof(msg),
+                                    (uint8_t)Ed25519, NULL, 0, sig, &sigSz);
+        if (ret != 0) {
+            WH_ERROR_PRINT("HSM Ed25519 sign failed %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ret = wc_ed25519_verify_msg(sig, sigSz, msg, (word32)sizeof(msg),
+                                    &verified, refPub);
+        if ((ret != 0) || (verified != 1)) {
+            WH_ERROR_PRINT("verify with keygen pub failed ret=%d verify=%d\n",
+                           ret, verified);
+            if (ret == 0) {
+                ret = -1;
+            }
+        }
+    }
+
+    wc_ed25519_free(refPub);
+    wc_ed25519_free(genPub);
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+
+    (void)rng;
+    if (ret == 0) {
+        WH_TEST_PRINT("Ed25519 CACHE-AND-EXPORT-PUBLIC SUCCESS\n");
     }
     return ret;
 }
@@ -4199,6 +5066,109 @@ static int whTest_CryptoCurve25519ExportPublic(whClientContext* ctx, int devId,
 
     if (ret == 0) {
         WH_TEST_PRINT("CURVE25519 EXPORT-PUBLIC SUCCESS\n");
+    }
+    return ret;
+}
+
+/* One keygen call caches the private key and returns the public key. Verify
+ * the returned public key byte-matches wh_Client_Curve25519ExportPublicKey and
+ * that an X25519 shared secret round-trips against the cached private key. */
+static int whTest_CryptoCurve25519CacheKeyAndExportPublic(whClientContext* ctx,
+                                                          int devId,
+                                                          WC_RNG* rng)
+{
+    int            ret        = 0;
+    whKeyId        keyId      = WH_KEYID_ERASED;
+    curve25519_key genPub[1]  = {0};
+    curve25519_key refPub[1]  = {0};
+    curve25519_key localKey[1] = {0};
+    uint8_t        genRaw[CURVE25519_KEYSIZE] = {0};
+    uint8_t        refRaw[CURVE25519_KEYSIZE] = {0};
+    word32         genRawLen  = sizeof(genRaw);
+    word32         refRawLen  = sizeof(refRaw);
+    uint8_t        shared_hsm[CURVE25519_KEYSIZE]   = {0};
+    uint8_t        shared_local[CURVE25519_KEYSIZE] = {0};
+    word32         len        = 0;
+    (void)devId;
+
+    ret = wc_curve25519_init_ex(genPub, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wh_Client_Curve25519MakeCacheKeyAndExportPublic(
+            ctx, (uint16_t)CURVE25519_KEYSIZE, &keyId,
+            WH_NVM_FLAGS_USAGE_DERIVE, NULL, 0, genPub);
+        if (ret != 0) {
+            WH_ERROR_PRINT(
+                "Curve25519MakeCacheKeyAndExportPublic failed %d\n", ret);
+        }
+    }
+
+    /* Cross-check the keygen-returned public key against ExportPublicKey. */
+    if (ret == 0) {
+        ret = wc_curve25519_init_ex(refPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wh_Client_Curve25519ExportPublicKey(ctx, keyId, refPub, 0,
+                                                      NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT(
+                    "wh_Client_Curve25519ExportPublicKey failed %d\n", ret);
+            }
+        }
+    }
+    if (ret == 0) {
+        ret = wc_curve25519_export_public(genPub, genRaw, &genRawLen);
+        if (ret == 0) {
+            ret = wc_curve25519_export_public(refPub, refRaw, &refRawLen);
+        }
+        if (ret != 0) {
+            WH_ERROR_PRINT("Curve25519 export_public failed %d\n", ret);
+        }
+        else if ((genRawLen != refRawLen) ||
+                 (memcmp(genRaw, refRaw, genRawLen) != 0)) {
+            WH_ERROR_PRINT("keygen pubkey mismatch vs ExportPublicKey\n");
+            ret = -1;
+        }
+    }
+
+    /* Shared-secret round-trip using genPub directly as the HSM private-key
+     * handle (no separate key object): our local private key * genPub's
+     * exported public key (computed locally) must equal genPub's HSM private
+     * key * our local public key (computed on the server). */
+    if (ret == 0) {
+        ret = wc_curve25519_init_ex(localKey, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wc_curve25519_make_key(rng, CURVE25519_KEYSIZE, localKey);
+        }
+    }
+    if (ret == 0) {
+        len = sizeof(shared_local);
+        ret = wc_curve25519_shared_secret(localKey, genPub, shared_local, &len);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Local Curve25519 shared secret failed %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        len = sizeof(shared_hsm);
+        ret = wc_curve25519_shared_secret(genPub, localKey, shared_hsm, &len);
+        if (ret != 0) {
+            WH_ERROR_PRINT("HSM Curve25519 shared secret failed %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        if (memcmp(shared_hsm, shared_local, len) != 0) {
+            WH_ERROR_PRINT("Curve25519 keygen-pub shared secret mismatch\n");
+            ret = -1;
+        }
+    }
+
+    wc_curve25519_free(localKey);
+    wc_curve25519_free(refPub);
+    wc_curve25519_free(genPub);
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("CURVE25519 CACHE-AND-EXPORT-PUBLIC SUCCESS\n");
     }
     return ret;
 }
@@ -6282,6 +7252,678 @@ static int whTest_CryptoSha512DmaAsync(whClientContext* ctx, int devId,
 
 #endif /* WOLFSSL_SHA512 */
 
+#if defined(WOLFSSL_SHA3)
+/* SHA3 native crypto tests.
+ *
+ * A single set of tests runs against all four variants (224/256/384/512)
+ * via a small dispatch table. Tests check both the wolfCrypt API path
+ * (devId-dispatched -> our cryptocb) and the native async API.
+ */
+
+typedef struct {
+    const char* name;
+    int         hashType;
+    uint32_t    blockSize;
+    uint32_t    digestSize;
+    uint32_t    maxInlineSz;
+    int (*initFn)(wc_Sha3* sha, void* heap, int devId);
+    int (*updateFn)(wc_Sha3* sha, const byte* data, word32 len);
+    int (*finalFn)(wc_Sha3* sha, byte* hash);
+    /* native async client helpers */
+    int (*asyncUpdateRequest)(whClientContext*, wc_Sha3*, const uint8_t*,
+                              uint32_t, bool*);
+    int (*asyncUpdateResponse)(whClientContext*, wc_Sha3*);
+    int (*asyncFinalRequest)(whClientContext*, wc_Sha3*);
+    int (*asyncFinalResponse)(whClientContext*, wc_Sha3*, uint8_t*);
+    /* native one-shot helpers */
+    int (*oneshotFn)(whClientContext*, wc_Sha3*, const uint8_t*, uint32_t,
+                     uint8_t*);
+#ifdef WOLFHSM_CFG_DMA
+    int (*dmaUpdateRequest)(whClientContext*, wc_Sha3*, const uint8_t*,
+                            uint32_t, bool*);
+    int (*dmaUpdateResponse)(whClientContext*, wc_Sha3*);
+    int (*dmaFinalRequest)(whClientContext*, wc_Sha3*);
+    int (*dmaFinalResponse)(whClientContext*, wc_Sha3*, uint8_t*);
+    int (*dmaOneshotFn)(whClientContext*, wc_Sha3*, const uint8_t*, uint32_t,
+                        uint8_t*);
+#endif
+} whTestSha3Variant;
+
+static const whTestSha3Variant whTestSha3Variants[] = {
+#ifndef WOLFSSL_NOSHA3_224
+    {
+        "SHA3-224",
+        WC_HASH_TYPE_SHA3_224,
+        WC_SHA3_224_BLOCK_SIZE,
+        WC_SHA3_224_DIGEST_SIZE,
+        WH_MESSAGE_CRYPTO_SHA3_224_MAX_INLINE_UPDATE_SZ,
+        wc_InitSha3_224,
+        wc_Sha3_224_Update,
+        wc_Sha3_224_Final,
+        wh_Client_Sha3_224UpdateRequest,
+        wh_Client_Sha3_224UpdateResponse,
+        wh_Client_Sha3_224FinalRequest,
+        wh_Client_Sha3_224FinalResponse,
+        wh_Client_Sha3_224,
+#ifdef WOLFHSM_CFG_DMA
+        wh_Client_Sha3_224DmaUpdateRequest,
+        wh_Client_Sha3_224DmaUpdateResponse,
+        wh_Client_Sha3_224DmaFinalRequest,
+        wh_Client_Sha3_224DmaFinalResponse,
+        wh_Client_Sha3_224Dma,
+#endif
+    },
+#endif
+#ifndef WOLFSSL_NOSHA3_256
+    {
+        "SHA3-256",
+        WC_HASH_TYPE_SHA3_256,
+        WC_SHA3_256_BLOCK_SIZE,
+        WC_SHA3_256_DIGEST_SIZE,
+        WH_MESSAGE_CRYPTO_SHA3_256_MAX_INLINE_UPDATE_SZ,
+        wc_InitSha3_256,
+        wc_Sha3_256_Update,
+        wc_Sha3_256_Final,
+        wh_Client_Sha3_256UpdateRequest,
+        wh_Client_Sha3_256UpdateResponse,
+        wh_Client_Sha3_256FinalRequest,
+        wh_Client_Sha3_256FinalResponse,
+        wh_Client_Sha3_256,
+#ifdef WOLFHSM_CFG_DMA
+        wh_Client_Sha3_256DmaUpdateRequest,
+        wh_Client_Sha3_256DmaUpdateResponse,
+        wh_Client_Sha3_256DmaFinalRequest,
+        wh_Client_Sha3_256DmaFinalResponse,
+        wh_Client_Sha3_256Dma,
+#endif
+    },
+#endif
+#ifndef WOLFSSL_NOSHA3_384
+    {
+        "SHA3-384",
+        WC_HASH_TYPE_SHA3_384,
+        WC_SHA3_384_BLOCK_SIZE,
+        WC_SHA3_384_DIGEST_SIZE,
+        WH_MESSAGE_CRYPTO_SHA3_384_MAX_INLINE_UPDATE_SZ,
+        wc_InitSha3_384,
+        wc_Sha3_384_Update,
+        wc_Sha3_384_Final,
+        wh_Client_Sha3_384UpdateRequest,
+        wh_Client_Sha3_384UpdateResponse,
+        wh_Client_Sha3_384FinalRequest,
+        wh_Client_Sha3_384FinalResponse,
+        wh_Client_Sha3_384,
+#ifdef WOLFHSM_CFG_DMA
+        wh_Client_Sha3_384DmaUpdateRequest,
+        wh_Client_Sha3_384DmaUpdateResponse,
+        wh_Client_Sha3_384DmaFinalRequest,
+        wh_Client_Sha3_384DmaFinalResponse,
+        wh_Client_Sha3_384Dma,
+#endif
+    },
+#endif
+#ifndef WOLFSSL_NOSHA3_512
+    {
+        "SHA3-512",
+        WC_HASH_TYPE_SHA3_512,
+        WC_SHA3_512_BLOCK_SIZE,
+        WC_SHA3_512_DIGEST_SIZE,
+        WH_MESSAGE_CRYPTO_SHA3_512_MAX_INLINE_UPDATE_SZ,
+        wc_InitSha3_512,
+        wc_Sha3_512_Update,
+        wc_Sha3_512_Final,
+        wh_Client_Sha3_512UpdateRequest,
+        wh_Client_Sha3_512UpdateResponse,
+        wh_Client_Sha3_512FinalRequest,
+        wh_Client_Sha3_512FinalResponse,
+        wh_Client_Sha3_512,
+#ifdef WOLFHSM_CFG_DMA
+        wh_Client_Sha3_512DmaUpdateRequest,
+        wh_Client_Sha3_512DmaUpdateResponse,
+        wh_Client_Sha3_512DmaFinalRequest,
+        wh_Client_Sha3_512DmaFinalResponse,
+        wh_Client_Sha3_512Dma,
+#endif
+    },
+#endif
+};
+
+/* Reference hash via software (INVALID_DEVID) for cross-checks. */
+static int whTest_Sha3Reference(const whTestSha3Variant* v, const uint8_t* in,
+                                uint32_t inLen, uint8_t* out)
+{
+    wc_Sha3 sw[1];
+    int     ret = v->initFn(sw, NULL, INVALID_DEVID);
+    if (ret == 0 && inLen > 0) {
+        ret = v->updateFn(sw, in, inLen);
+    }
+    if (ret == 0) {
+        ret = v->finalFn(sw, out);
+    }
+    /* No Free variant function in our table — wc_Sha3 doesn't allocate by
+     * default on POSIX so this is fine. */
+    return ret;
+}
+
+/* Static buffer sized to cover all variants' max inline + tail slack.
+ * SHA3-512 has the smallest block (72) so its floor((P)/block)*block lands
+ * closest to the payload cap, making it the upper bound (possibly tied
+ * with SHA3-224) across variants. 2x multiplier + 256 tail adds margin. */
+#define WH_TEST_SHA3_BIGBUF_SZ \
+    (2u * (WH_MESSAGE_CRYPTO_SHA3_512_MAX_INLINE_UPDATE_SZ + 256u))
+static uint8_t whTest_Sha3BigBuf[WH_TEST_SHA3_BIGBUF_SZ];
+
+static void whTest_Sha3FillBuf(uint8_t* buf, uint32_t sz)
+{
+    uint32_t i;
+    for (i = 0; i < sz; i++) {
+        buf[i] = (uint8_t)((i * 31u + 7u) & 0xffu);
+    }
+}
+
+/* Per-variant basic + large-input test using the wolfCrypt API. */
+static int whTest_CryptoSha3OneVariant(whClientContext* ctx, int devId,
+                                       const whTestSha3Variant* v)
+{
+    int      ret = WH_ERROR_OK;
+    wc_Sha3  sha[1];
+    uint8_t  out[WC_SHA3_512_DIGEST_SIZE];
+    uint8_t  ref[WC_SHA3_512_DIGEST_SIZE];
+    uint32_t cases[] = {0u,
+                        1u,
+                        v->blockSize - 1u,
+                        v->blockSize,
+                        v->blockSize + 1u,
+                        3u * v->blockSize,
+                        v->maxInlineSz,
+                        v->maxInlineSz + 1u,
+                        WH_TEST_SHA3_BIGBUF_SZ - 1u};
+    size_t   n;
+    (void)ctx;
+
+    whTest_Sha3FillBuf(whTest_Sha3BigBuf, WH_TEST_SHA3_BIGBUF_SZ);
+
+    for (n = 0; n < sizeof(cases) / sizeof(cases[0]) && ret == 0; n++) {
+        uint32_t len = cases[n];
+        if (len > WH_TEST_SHA3_BIGBUF_SZ)
+            continue;
+
+        ret = whTest_Sha3Reference(v, whTest_Sha3BigBuf, len, ref);
+        if (ret != 0) {
+            WH_ERROR_PRINT("%s reference failed: %d\n", v->name, ret);
+            break;
+        }
+
+        ret = v->initFn(sha, NULL, devId);
+        if (ret == 0 && len > 0) {
+            ret = v->updateFn(sha, whTest_Sha3BigBuf, len);
+        }
+        if (ret == 0) {
+            ret = v->finalFn(sha, out);
+        }
+        if (ret == 0 && memcmp(out, ref, v->digestSize) != 0) {
+            WH_ERROR_PRINT("%s mismatch at len=%u devId=0x%X\n", v->name,
+                           (unsigned)len, devId);
+            ret = -1;
+        }
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("%s DEVID=0x%X SUCCESS\n", v->name, devId);
+    }
+    return ret;
+}
+
+/* One-shot wrapper bad-arg coverage: (in == NULL, inLen != 0) must be
+ * rejected before any state mutation. Regression check: the oneshot
+ * wrappers previously skipped the update branch on this input and silently
+ * returned a digest of the (empty) state. */
+static int whTest_CryptoSha3OneshotBadArgs(whClientContext*         ctx,
+                                           const whTestSha3Variant* v)
+{
+    int     ret;
+    wc_Sha3 sha[1];
+    uint8_t out[WC_SHA3_512_DIGEST_SIZE];
+    uint8_t in[1] = {0};
+
+    ret = v->initFn(sha, NULL, INVALID_DEVID);
+    if (ret != 0)
+        return ret;
+
+    ret = v->oneshotFn(ctx, sha, NULL, 1u, out);
+    if (ret != WH_ERROR_BADARGS) {
+        WH_ERROR_PRINT("%s oneshot(NULL,1): expected BADARGS, got %d\n",
+                       v->name, ret);
+        return -1;
+    }
+
+    /* sha == NULL with valid input must be rejected, not dereferenced: the
+     * oneshot reads sha->i to size each chunk before the lower-level helper's
+     * NULL check runs. */
+    ret = v->oneshotFn(ctx, NULL, in, sizeof(in), out);
+    if (ret != WH_ERROR_BADARGS) {
+        WH_ERROR_PRINT("%s oneshot(sha=NULL): expected BADARGS, got %d\n",
+                       v->name, ret);
+        return -1;
+    }
+
+#ifdef WOLFHSM_CFG_DMA
+    ret = v->initFn(sha, NULL, INVALID_DEVID);
+    if (ret != 0)
+        return ret;
+    ret = v->dmaOneshotFn(ctx, sha, NULL, 1u, out);
+    if (ret != WH_ERROR_BADARGS) {
+        WH_ERROR_PRINT("%s dma oneshot(NULL,1): expected BADARGS, got %d\n",
+                       v->name, ret);
+        return -1;
+    }
+    ret = v->dmaOneshotFn(ctx, NULL, in, sizeof(in), out);
+    if (ret != WH_ERROR_BADARGS) {
+        WH_ERROR_PRINT("%s dma oneshot(sha=NULL): expected BADARGS, got %d\n",
+                       v->name, ret);
+        return -1;
+    }
+#endif
+
+    WH_TEST_PRINT("%s ONESHOT BADARGS SUCCESS\n", v->name);
+    return 0;
+}
+
+#if defined(WOLFSSL_HASH_FLAGS) && !defined(WOLFSSL_NOSHA3_256)
+/* Keccak-mode (legacy 0x01-padding) SHA3-256 is a software-only mode. Lock in
+ * the deliberate behavioral split for a KECCAK256-flagged context:
+ *   - wolfCrypt API path (HSM devId): the cryptocb returns CRYPTOCB_UNAVAILABLE
+ *     so wolfCrypt falls back to software and still produces the Keccak digest
+ *     (NOT a standard SHA3-256 digest, which is what a silent offload of the
+ *     0x06-padding wire format would yield).
+ *   - direct client API (and DMA variant): must be rejected with
+ *     WH_ERROR_BADARGS, since the wire format would re-pad as standard SHA3. */
+static int whTest_CryptoSha3Keccak(whClientContext* ctx, int devId)
+{
+    int        ret;
+    wc_Sha3    sha[1];
+    uint8_t    out[WC_SHA3_256_DIGEST_SIZE];
+    uint8_t    keccakRef[WC_SHA3_256_DIGEST_SIZE];
+    uint8_t    sha3Ref[WC_SHA3_256_DIGEST_SIZE];
+    const char in[]  = "wolfHSM SHA3 Keccak-mode fallback vector";
+    uint32_t   inLen = (uint32_t)(sizeof(in) - 1u);
+
+    /* Software Keccak reference (0x01 padding). */
+    ret = wc_InitSha3_256(sha, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wc_Sha3_SetFlags(sha, WC_HASH_SHA3_KECCAK256);
+    }
+    if (ret == 0) {
+        ret = wc_Sha3_256_Update(sha, (const byte*)in, inLen);
+    }
+    if (ret == 0) {
+        ret = wc_Sha3_256_Final(sha, keccakRef);
+    }
+    if (ret != 0) {
+        WH_ERROR_PRINT("Keccak reference failed: %d\n", ret);
+        return ret;
+    }
+
+    /* Software standard SHA3-256 reference (0x06 padding). Must differ from the
+     * Keccak digest, else the comparisons below would prove nothing. */
+    ret = wc_InitSha3_256(sha, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wc_Sha3_256_Update(sha, (const byte*)in, inLen);
+    }
+    if (ret == 0) {
+        ret = wc_Sha3_256_Final(sha, sha3Ref);
+    }
+    if (ret != 0) {
+        WH_ERROR_PRINT("SHA3-256 reference failed: %d\n", ret);
+        return ret;
+    }
+    if (memcmp(keccakRef, sha3Ref, WC_SHA3_256_DIGEST_SIZE) == 0) {
+        WH_ERROR_PRINT("Keccak and SHA3-256 digests unexpectedly equal\n");
+        return -1;
+    }
+
+    /* cryptocb contract: HSM devId + KECCAK256 flag falls back to software and
+     * matches the Keccak (not the standard SHA3) reference. */
+    ret = wc_InitSha3_256(sha, NULL, devId);
+    if (ret == 0) {
+        ret = wc_Sha3_SetFlags(sha, WC_HASH_SHA3_KECCAK256);
+    }
+    if (ret == 0) {
+        ret = wc_Sha3_256_Update(sha, (const byte*)in, inLen);
+    }
+    if (ret == 0) {
+        ret = wc_Sha3_256_Final(sha, out);
+    }
+    if (ret != 0) {
+        WH_ERROR_PRINT("Keccak cryptocb fallback failed: %d\n", ret);
+        return ret;
+    }
+    if (memcmp(out, keccakRef, WC_SHA3_256_DIGEST_SIZE) != 0) {
+        WH_ERROR_PRINT("Keccak cryptocb fallback mismatch (devId=0x%X)\n",
+                       devId);
+        return -1;
+    }
+
+    /* direct client API contract: KECCAK256 flag must be rejected. */
+    ret = wc_InitSha3_256(sha, NULL, devId);
+    if (ret == 0) {
+        ret = wc_Sha3_SetFlags(sha, WC_HASH_SHA3_KECCAK256);
+    }
+    if (ret != 0) {
+        return ret;
+    }
+    ret = wh_Client_Sha3_256(ctx, sha, (const uint8_t*)in, inLen, out);
+    if (ret != WH_ERROR_BADARGS) {
+        WH_ERROR_PRINT("Keccak direct API: expected BADARGS, got %d\n", ret);
+        return -1;
+    }
+
+#ifdef WOLFHSM_CFG_DMA
+    ret = wc_InitSha3_256(sha, NULL, devId);
+    if (ret == 0) {
+        ret = wc_Sha3_SetFlags(sha, WC_HASH_SHA3_KECCAK256);
+    }
+    if (ret != 0) {
+        return ret;
+    }
+    ret = wh_Client_Sha3_256Dma(ctx, sha, (const uint8_t*)in, inLen, out);
+    if (ret != WH_ERROR_BADARGS) {
+        WH_ERROR_PRINT("Keccak direct DMA API: expected BADARGS, got %d\n",
+                       ret);
+        return -1;
+    }
+#endif
+
+    WH_TEST_PRINT("SHA3-256 KECCAK fallback/reject DEVID=0x%X SUCCESS\n",
+                  devId);
+    return 0;
+}
+#endif /* WOLFSSL_HASH_FLAGS && !WOLFSSL_NOSHA3_256 */
+
+static int whTest_CryptoSha3(whClientContext* ctx, int devId, WC_RNG* rng)
+{
+    int    ret = WH_ERROR_OK;
+    size_t v;
+    (void)rng;
+    for (v = 0; v < sizeof(whTestSha3Variants) / sizeof(whTestSha3Variants[0]);
+         v++) {
+        ret = whTest_CryptoSha3OneVariant(ctx, devId, &whTestSha3Variants[v]);
+        if (ret != 0)
+            break;
+        ret = whTest_CryptoSha3OneshotBadArgs(ctx, &whTestSha3Variants[v]);
+        if (ret != 0)
+            break;
+    }
+#if defined(WOLFSSL_HASH_FLAGS) && !defined(WOLFSSL_NOSHA3_256)
+    if (ret == 0) {
+        ret = whTest_CryptoSha3Keccak(ctx, devId);
+    }
+#endif
+    return ret;
+}
+
+/* Per-variant native async test. Exercises: basic single round, pure-buffer
+ * fill, multi-round, and oversized-input rejection. */
+static int whTest_CryptoSha3AsyncOneVariant(whClientContext* ctx, int devId,
+                                            const whTestSha3Variant* v)
+{
+    int     ret = WH_ERROR_OK;
+    wc_Sha3 sha[1];
+    uint8_t out[WC_SHA3_512_DIGEST_SIZE];
+    uint8_t ref[WC_SHA3_512_DIGEST_SIZE];
+
+    whTest_Sha3FillBuf(whTest_Sha3BigBuf, WH_TEST_SHA3_BIGBUF_SZ);
+
+    /* Case A: basic Update + Final via the async API */
+    if (ret == 0) {
+        uint32_t len  = 3u * v->blockSize + 17u;
+        bool     sent = false;
+        ret           = whTest_Sha3Reference(v, whTest_Sha3BigBuf, len, ref);
+        if (ret == 0)
+            ret = v->initFn(sha, NULL, devId);
+        if (ret == 0)
+            ret =
+                v->asyncUpdateRequest(ctx, sha, whTest_Sha3BigBuf, len, &sent);
+        if (ret == 0 && sent) {
+            do {
+                ret = v->asyncUpdateResponse(ctx, sha);
+            } while (ret == WH_ERROR_NOTREADY);
+        }
+        if (ret == 0)
+            ret = v->asyncFinalRequest(ctx, sha);
+        if (ret == 0) {
+            do {
+                ret = v->asyncFinalResponse(ctx, sha, out);
+            } while (ret == WH_ERROR_NOTREADY);
+        }
+        if (ret == 0 && memcmp(out, ref, v->digestSize) != 0) {
+            WH_ERROR_PRINT("%s async case A mismatch\n", v->name);
+            ret = -1;
+        }
+    }
+
+    /* Case B: pure-buffer-fill update (less than one block), Final */
+    if (ret == 0) {
+        uint32_t len  = v->blockSize - 1u;
+        bool     sent = false;
+        ret           = whTest_Sha3Reference(v, whTest_Sha3BigBuf, len, ref);
+        if (ret == 0)
+            ret = v->initFn(sha, NULL, devId);
+        if (ret == 0)
+            ret =
+                v->asyncUpdateRequest(ctx, sha, whTest_Sha3BigBuf, len, &sent);
+        if (ret == 0 && sent) {
+            /* unexpected — should have been fully buffered */
+            WH_ERROR_PRINT("%s case B: unexpected sent==true\n", v->name);
+            ret = -1;
+        }
+        if (ret == 0)
+            ret = v->asyncFinalRequest(ctx, sha);
+        if (ret == 0) {
+            do {
+                ret = v->asyncFinalResponse(ctx, sha, out);
+            } while (ret == WH_ERROR_NOTREADY);
+        }
+        if (ret == 0 && memcmp(out, ref, v->digestSize) != 0) {
+            WH_ERROR_PRINT("%s async case B mismatch\n", v->name);
+            ret = -1;
+        }
+    }
+
+    /* Case C: multi-round, ~70% of per-call capacity per chunk */
+    if (ret == 0) {
+        uint32_t total    = WH_TEST_SHA3_BIGBUF_SZ;
+        uint32_t consumed = 0;
+        uint32_t cap;
+        ret = whTest_Sha3Reference(v, whTest_Sha3BigBuf, total, ref);
+        if (ret == 0)
+            ret = v->initFn(sha, NULL, devId);
+        while (ret == 0 && consumed < total) {
+            cap = v->maxInlineSz + (uint32_t)(v->blockSize - 1u - sha->i);
+            uint32_t chunk = (cap * 7u) / 10u;
+            uint32_t rem   = total - consumed;
+            bool     sent  = false;
+            if (chunk == 0)
+                chunk = 1;
+            if (chunk > cap)
+                chunk = cap;
+            if (chunk > rem)
+                chunk = rem;
+            ret = v->asyncUpdateRequest(ctx, sha, whTest_Sha3BigBuf + consumed,
+                                        chunk, &sent);
+            if (ret == 0 && sent) {
+                do {
+                    ret = v->asyncUpdateResponse(ctx, sha);
+                } while (ret == WH_ERROR_NOTREADY);
+            }
+            if (ret == 0)
+                consumed += chunk;
+        }
+        if (ret == 0)
+            ret = v->asyncFinalRequest(ctx, sha);
+        if (ret == 0) {
+            do {
+                ret = v->asyncFinalResponse(ctx, sha, out);
+            } while (ret == WH_ERROR_NOTREADY);
+        }
+        if (ret == 0 && memcmp(out, ref, v->digestSize) != 0) {
+            WH_ERROR_PRINT("%s async case C mismatch\n", v->name);
+            ret = -1;
+        }
+    }
+
+    /* Case D: oversize input must be rejected without state mutation. */
+    if (ret == 0) {
+        uint32_t cap, oversz;
+        wc_Sha3  saved;
+        bool     sent = false;
+        ret           = v->initFn(sha, NULL, devId);
+        cap           = v->maxInlineSz + (uint32_t)(v->blockSize - 1u - sha->i);
+        oversz        = cap + 1u;
+        if (oversz > WH_TEST_SHA3_BIGBUF_SZ)
+            oversz = WH_TEST_SHA3_BIGBUF_SZ;
+        if (ret == 0) {
+            saved = *sha;
+            ret   = v->asyncUpdateRequest(ctx, sha, whTest_Sha3BigBuf, oversz,
+                                          &sent);
+            if (ret != WH_ERROR_BADARGS) {
+                WH_ERROR_PRINT("%s case D: expected BADARGS, got %d\n", v->name,
+                               ret);
+                ret = -1;
+            }
+            else if (sent) {
+                WH_ERROR_PRINT("%s case D: sent should be false\n", v->name);
+                ret = -1;
+            }
+            else if (memcmp(&saved, sha, sizeof(saved)) != 0) {
+                WH_ERROR_PRINT("%s case D: sha state mutated\n", v->name);
+                ret = -1;
+            }
+            else {
+                ret = WH_ERROR_OK;
+            }
+        }
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("%s ASYNC DEVID=0x%X SUCCESS\n", v->name, devId);
+    }
+    return ret;
+}
+
+static int whTest_CryptoSha3Async(whClientContext* ctx, int devId, WC_RNG* rng)
+{
+    int    ret = WH_ERROR_OK;
+    size_t v;
+    (void)rng;
+    for (v = 0; v < sizeof(whTestSha3Variants) / sizeof(whTestSha3Variants[0]);
+         v++) {
+        ret = whTest_CryptoSha3AsyncOneVariant(ctx, devId,
+                                               &whTestSha3Variants[v]);
+        if (ret != 0)
+            break;
+    }
+    return ret;
+}
+
+#ifdef WOLFHSM_CFG_DMA
+static int whTest_CryptoSha3DmaAsyncOneVariant(whClientContext* ctx, int devId,
+                                               const whTestSha3Variant* v)
+{
+    int     ret = WH_ERROR_OK;
+    wc_Sha3 sha[1];
+    uint8_t out[WC_SHA3_512_DIGEST_SIZE];
+    uint8_t ref[WC_SHA3_512_DIGEST_SIZE];
+
+    whTest_Sha3FillBuf(whTest_Sha3BigBuf, WH_TEST_SHA3_BIGBUF_SZ);
+
+    /* Case A: single large DMA update + final */
+    if (ret == 0) {
+        uint32_t len  = WH_TEST_SHA3_BIGBUF_SZ;
+        bool     sent = false;
+        ret           = whTest_Sha3Reference(v, whTest_Sha3BigBuf, len, ref);
+        if (ret == 0)
+            ret = v->initFn(sha, NULL, devId);
+        if (ret == 0)
+            ret = v->dmaUpdateRequest(ctx, sha, whTest_Sha3BigBuf, len, &sent);
+        if (ret == 0 && sent) {
+            do {
+                ret = v->dmaUpdateResponse(ctx, sha);
+            } while (ret == WH_ERROR_NOTREADY);
+        }
+        if (ret == 0)
+            ret = v->dmaFinalRequest(ctx, sha);
+        if (ret == 0) {
+            do {
+                ret = v->dmaFinalResponse(ctx, sha, out);
+            } while (ret == WH_ERROR_NOTREADY);
+        }
+        if (ret == 0 && memcmp(out, ref, v->digestSize) != 0) {
+            WH_ERROR_PRINT("%s DMA async case A mismatch\n", v->name);
+            ret = -1;
+        }
+    }
+
+    /* Case B: multi-round DMA with 1024-byte chunks */
+    if (ret == 0) {
+        uint32_t       total    = WH_TEST_SHA3_BIGBUF_SZ;
+        uint32_t       consumed = 0;
+        const uint32_t chunkSz  = 1024u;
+        ret = whTest_Sha3Reference(v, whTest_Sha3BigBuf, total, ref);
+        if (ret == 0)
+            ret = v->initFn(sha, NULL, devId);
+        while (ret == 0 && consumed < total) {
+            uint32_t rem   = total - consumed;
+            uint32_t chunk = (rem < chunkSz) ? rem : chunkSz;
+            bool     sent  = false;
+            ret = v->dmaUpdateRequest(ctx, sha, whTest_Sha3BigBuf + consumed,
+                                      chunk, &sent);
+            if (ret == 0 && sent) {
+                do {
+                    ret = v->dmaUpdateResponse(ctx, sha);
+                } while (ret == WH_ERROR_NOTREADY);
+            }
+            if (ret == 0)
+                consumed += chunk;
+        }
+        if (ret == 0)
+            ret = v->dmaFinalRequest(ctx, sha);
+        if (ret == 0) {
+            do {
+                ret = v->dmaFinalResponse(ctx, sha, out);
+            } while (ret == WH_ERROR_NOTREADY);
+        }
+        if (ret == 0 && memcmp(out, ref, v->digestSize) != 0) {
+            WH_ERROR_PRINT("%s DMA async case B mismatch\n", v->name);
+            ret = -1;
+        }
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("%s DMA ASYNC DEVID=0x%X SUCCESS\n", v->name, devId);
+    }
+    return ret;
+}
+
+static int whTest_CryptoSha3DmaAsync(whClientContext* ctx, int devId,
+                                     WC_RNG* rng)
+{
+    int    ret = WH_ERROR_OK;
+    size_t v;
+    (void)rng;
+    for (v = 0; v < sizeof(whTestSha3Variants) / sizeof(whTestSha3Variants[0]);
+         v++) {
+        ret = whTest_CryptoSha3DmaAsyncOneVariant(ctx, devId,
+                                                  &whTestSha3Variants[v]);
+        if (ret != 0)
+            break;
+    }
+    return ret;
+}
+#endif /* WOLFHSM_CFG_DMA */
+
+#endif /* WOLFSSL_SHA3 */
+
 #ifdef HAVE_HKDF
 static int whTest_CryptoHkdf(whClientContext* ctx, int devId, WC_RNG* rng)
 {
@@ -6736,6 +8378,110 @@ static int whTest_CacheExportKeyDma(whClientContext* ctx, whKeyId* inout_key_id,
     return ret;
 }
 #endif /* WOLFHSM_CFG_DMA */
+
+static int whTest_KeyCacheRandom(whClientContext* ctx, int devId,
+                                     WC_RNG* rng)
+{
+    (void)devId;
+    (void)rng; /* Unused */
+
+#define WH_TEST_KEYCACHERANDOM_KEYSIZE 32
+    int      ret;
+    int      i;
+    int      isZero;
+    uint16_t outLen;
+    uint16_t keyId;
+    uint16_t keyId2;
+    uint8_t  keyOut[WH_TEST_KEYCACHERANDOM_KEYSIZE]  = {0};
+    uint8_t  keyOut2[WH_TEST_KEYCACHERANDOM_KEYSIZE] = {0};
+    uint8_t  labelIn[WH_NVM_LABEL_LEN]      = "KeyCacheRandom Test";
+    uint8_t  labelOut[WH_NVM_LABEL_LEN]     = {0};
+
+    /* Generate a key from the server RNG and cache it */
+    keyId = WH_KEYID_ERASED;
+    ret   = wh_Client_KeyCacheRandom(ctx, 0, labelIn, sizeof(labelIn),
+                                         WH_TEST_KEYCACHERANDOM_KEYSIZE, &keyId);
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed to wh_Client_KeyCacheRandom %d\n", ret);
+    }
+    else if (keyId == WH_KEYID_ERASED) {
+        WH_ERROR_PRINT("KeyCacheRandom returned erased keyId\n");
+        ret = -1;
+    }
+
+    /* Export it back and verify size, label, and that RNG actually ran */
+    if (ret == 0) {
+        outLen = sizeof(keyOut);
+        ret    = wh_Client_KeyExport(ctx, keyId, labelOut, sizeof(labelOut),
+                                     keyOut, &outLen);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed to wh_Client_KeyExport %d\n", ret);
+        }
+        else if (outLen != WH_TEST_KEYCACHERANDOM_KEYSIZE) {
+            WH_ERROR_PRINT("KeyCacheRandom bad length %u\n", outLen);
+            ret = -1;
+        }
+        else if (memcmp(labelIn, labelOut, sizeof(labelIn)) != 0) {
+            WH_ERROR_PRINT("KeyCacheRandom label mismatch\n");
+            ret = -1;
+        }
+        else {
+            /* sanity: generated key should not be all zeros */
+            isZero = 1;
+            for (i = 0; i < (int)outLen; i++) {
+                if (keyOut[i] != 0) {
+                    isZero = 0;
+                    break;
+                }
+            }
+            if (isZero) {
+                WH_ERROR_PRINT("KeyCacheRandom produced all-zero key\n");
+                ret = -1;
+            }
+        }
+    }
+
+    /* A second generation should yield a distinct auto-assigned keyId and
+     * distinct key material */
+    if (ret == 0) {
+        keyId2 = WH_KEYID_ERASED;
+        ret    = wh_Client_KeyCacheRandom(ctx, 0, labelIn, sizeof(labelIn),
+                                              WH_TEST_KEYCACHERANDOM_KEYSIZE, &keyId2);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed to wh_Client_KeyCacheRandom(2) %d\n", ret);
+        }
+        else if (keyId2 == keyId) {
+            WH_ERROR_PRINT("KeyCacheRandom reused keyId 0x%X\n", keyId);
+            ret = -1;
+        }
+        else {
+            /* Export the second key and confirm its bytes differ from the
+             * first — two RNG generations must not produce the same key */
+            outLen = sizeof(keyOut2);
+            ret    = wh_Client_KeyExport(ctx, keyId2, labelOut,
+                                         sizeof(labelOut), keyOut2, &outLen);
+            if (ret != 0) {
+                WH_ERROR_PRINT("Failed to wh_Client_KeyExport(2) %d\n", ret);
+            }
+            else if (outLen != WH_TEST_KEYCACHERANDOM_KEYSIZE) {
+                WH_ERROR_PRINT("KeyCacheRandom(2) bad length %u\n", outLen);
+                ret = -1;
+            }
+            else if (memcmp(keyOut, keyOut2, outLen) == 0) {
+                WH_ERROR_PRINT("KeyCacheRandom produced identical keys\n");
+                ret = -1;
+            }
+        }
+        (void)wh_Client_KeyEvict(ctx, keyId2);
+    }
+
+    (void)wh_Client_KeyEvict(ctx, keyId);
+
+    if (ret == 0) {
+        WH_TEST_PRINT("KEY CACHE RANDOM SUCCESS\n");
+    }
+    return ret;
+}
 
 static int whTest_KeyCache(whClientContext* ctx, int devId, WC_RNG* rng)
 {
@@ -8438,6 +10184,31 @@ static int whTest_CryptoAesAsync(whClientContext* ctx, int devId, WC_RNG* rng)
         }
         (void)wc_AesFree(aes);
     }
+
+    /* CTR: server must reject left > AES_BLOCK_SIZE.
+     * wc_AesCtrEncrypt indexes aes->tmp via AES_BLOCK_SIZE - aes->left;
+     * an oversized client-supplied value would cause an out-of-bounds read
+     * disclosing server-side memory across the HSM trust boundary. */
+    if (ret == 0) {
+        int tmp;
+        ret = wc_AesInit(aes, NULL, devId);
+        if (ret == 0) {
+            ret = wc_AesSetKeyDirect(aes, key, sizeof(key), iv, AES_ENCRYPTION);
+        }
+        if (ret == 0) {
+            aes->left = AES_BLOCK_SIZE + 1;
+            tmp = wh_Client_AesCtr(ctx, aes, 1, plainIn, sizeof(plainIn),
+                                   cipher);
+            if (tmp != WH_ERROR_BADARGS) {
+                WH_ERROR_PRINT(
+                    "AES-CTR async: left > AES_BLOCK_SIZE should be "
+                    "BADARGS, got %d\n",
+                    tmp);
+                ret = -1;
+            }
+        }
+        (void)wc_AesFree(aes);
+    }
     if (ret == 0) {
         WH_TEST_PRINT("AES CTR ASYNC DEVID=0x%X SUCCESS\n", devId);
     }
@@ -9436,6 +11207,28 @@ static int whTest_CryptoAesDmaAsync(whClientContext* ctx, int devId,
         (void)wc_AesFree(aes);
         memset(cipher, 0, sizeof(cipher));
         memset(plainOut, 0, sizeof(plainOut));
+    }
+
+    /* CTR DMA: same left > AES_BLOCK_SIZE rejection as the non-DMA path. */
+    if (ret == 0) {
+        int tmp;
+        ret = wc_AesInit(aes, NULL, devId);
+        if (ret == 0) {
+            ret = wc_AesSetKeyDirect(aes, key, sizeof(key), iv, AES_ENCRYPTION);
+        }
+        if (ret == 0) {
+            aes->left = AES_BLOCK_SIZE + 1;
+            tmp = wh_Client_AesCtrDma(ctx, aes, 1, plainIn, sizeof(plainIn),
+                                      cipher);
+            if (tmp != WH_ERROR_BADARGS) {
+                WH_ERROR_PRINT(
+                    "AES-CTR DMA async: left > AES_BLOCK_SIZE should be "
+                    "BADARGS, got %d\n",
+                    tmp);
+                ret = -1;
+            }
+        }
+        (void)wc_AesFree(aes);
     }
     if (ret == 0) {
         WH_TEST_PRINT("AES CTR DMA ASYNC DEVID=0x%X SUCCESS\n", devId);
@@ -11372,6 +13165,101 @@ static int whTestCrypto_MlDsaExportPublic(whClientContext* ctx, int devId,
     }
     return ret;
 }
+
+/* One keygen call caches the private key and returns the public key. Verify
+ * the returned public key byte-matches wh_Client_MlDsaExportPublicKey and that
+ * it verifies a signature made by the cached private key. */
+static int whTestCrypto_MlDsaCacheKeyAndExportPublic(whClientContext* ctx,
+                                                     int devId, WC_RNG* rng,
+                                                     int level)
+{
+    int         ret       = 0;
+    whKeyId     keyId     = WH_KEYID_ERASED;
+    wc_MlDsaKey genPub[1] = {0};
+    wc_MlDsaKey refPub[1] = {0};
+    byte        msg[]     = "ML-DSA cache-export-public message";
+    byte        sig[MLDSA_MAX_SIG_SIZE];
+    word32      sigLen    = sizeof(sig);
+    int         verified  = 0;
+    byte        genDer[MLDSA_MAX_BOTH_KEY_DER_SIZE];
+    byte        refDer[MLDSA_MAX_BOTH_KEY_DER_SIZE];
+    int         genDerSz  = 0;
+    int         refDerSz  = 0;
+    (void)devId;
+    (void)rng;
+
+    ret = wc_MlDsaKey_Init(genPub, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wc_MlDsaKey_SetParams(genPub, level);
+    }
+    if (ret == 0) {
+        ret = wh_Client_MlDsaMakeCacheKeyAndExportPublic(
+            ctx, 0, level, &keyId,
+            WH_NVM_FLAGS_USAGE_SIGN | WH_NVM_FLAGS_USAGE_VERIFY, 0, NULL,
+            genPub);
+        if (ret != 0) {
+            WH_ERROR_PRINT("MlDsaMakeCacheKeyAndExportPublic failed %d\n", ret);
+        }
+    }
+
+    /* Cross-check the keygen-returned public key against ExportPublicKey. */
+    if (ret == 0) {
+        ret = wc_MlDsaKey_Init(refPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wc_MlDsaKey_SetParams(refPub, level);
+        }
+        if (ret == 0) {
+            ret = wh_Client_MlDsaExportPublicKey(ctx, keyId, refPub, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("wh_Client_MlDsaExportPublicKey failed %d\n",
+                               ret);
+            }
+        }
+    }
+    if (ret == 0) {
+        genDerSz = wc_MlDsaKey_PublicKeyToDer(genPub, genDer, sizeof(genDer), 1);
+        refDerSz = wc_MlDsaKey_PublicKeyToDer(refPub, refDer, sizeof(refDer), 1);
+        if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+            (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+            WH_ERROR_PRINT("keygen pubkey mismatch vs ExportPublicKey\n");
+            ret = -1;
+        }
+    }
+
+    /* Prove usability: sign on the HSM using genPub directly as the private-key
+     * handle (no separate key object), then verify with its exported public
+     * key. */
+    if (ret == 0) {
+        ret = wh_Client_MlDsaSign(ctx, msg, sizeof(msg), sig, &sigLen, genPub,
+                                  NULL, 0, WC_HASH_TYPE_NONE);
+        if (ret != 0) {
+            WH_ERROR_PRINT("HSM ML-DSA sign failed %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ret = wh_Client_MlDsaVerify(ctx, sig, sigLen, msg, sizeof(msg),
+                                    &verified, genPub, NULL, 0,
+                                    WC_HASH_TYPE_NONE);
+        if ((ret != 0) || (verified != 1)) {
+            WH_ERROR_PRINT("verify with keygen pub failed ret=%d verify=%d\n",
+                           ret, verified);
+            if (ret == 0) {
+                ret = -1;
+            }
+        }
+    }
+
+    wc_MlDsaKey_Free(refPub);
+    wc_MlDsaKey_Free(genPub);
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ML-DSA CACHE-AND-EXPORT-PUBLIC SUCCESS\n");
+    }
+    return ret;
+}
 #endif /* WOLFSSL_MLDSA_PUBLIC_KEY && ML_DSA_44 available */
 
 #ifdef WOLFHSM_CFG_DMA
@@ -11709,6 +13597,102 @@ static int whTestCrypto_MlDsaExportPublicDma(whClientContext* ctx, int devId,
 
     if (ret == 0) {
         WH_TEST_PRINT("ML-DSA EXPORT-PUBLIC DMA SUCCESS\n");
+    }
+    return ret;
+}
+
+/* DMA variant: one keygen call caches the private key and streams the public
+ * key back through the client's DMA buffer. Verify it byte-matches
+ * wh_Client_MlDsaExportPublicKeyDma and that it verifies an HSM signature. */
+static int whTestCrypto_MlDsaCacheKeyAndExportPublicDma(whClientContext* ctx,
+                                                        int devId, WC_RNG* rng,
+                                                        int level)
+{
+    int         ret       = 0;
+    whKeyId     keyId     = WH_KEYID_ERASED;
+    wc_MlDsaKey genPub[1] = {0};
+    wc_MlDsaKey refPub[1] = {0};
+    byte        msg[]     = "ML-DSA DMA cache-export-public message";
+    byte        sig[MLDSA_MAX_SIG_SIZE];
+    word32      sigLen    = sizeof(sig);
+    int         verified  = 0;
+    byte        genDer[MLDSA_MAX_PUB_KEY_DER_SIZE];
+    byte        refDer[MLDSA_MAX_PUB_KEY_DER_SIZE];
+    int         genDerSz  = 0;
+    int         refDerSz  = 0;
+    (void)devId;
+    (void)rng;
+
+    ret = wc_MlDsaKey_Init(genPub, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wc_MlDsaKey_SetParams(genPub, level);
+    }
+    if (ret == 0) {
+        ret = wh_Client_MlDsaMakeCacheKeyDma(
+            ctx, level, &keyId,
+            WH_NVM_FLAGS_USAGE_SIGN | WH_NVM_FLAGS_USAGE_VERIFY, 0, NULL,
+            genPub);
+        if (ret != 0) {
+            WH_ERROR_PRINT("MlDsaMakeCacheKeyDma failed %d\n", ret);
+        }
+    }
+
+    /* Cross-check the keygen-returned public key against ExportPublicKeyDma. */
+    if (ret == 0) {
+        ret = wc_MlDsaKey_Init(refPub, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            ret = wc_MlDsaKey_SetParams(refPub, level);
+        }
+        if (ret == 0) {
+            ret = wh_Client_MlDsaExportPublicKeyDma(ctx, keyId, refPub, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("wh_Client_MlDsaExportPublicKeyDma failed %d\n",
+                               ret);
+            }
+        }
+    }
+    if (ret == 0) {
+        genDerSz = wc_MlDsaKey_PublicKeyToDer(genPub, genDer, sizeof(genDer), 1);
+        refDerSz = wc_MlDsaKey_PublicKeyToDer(refPub, refDer, sizeof(refDer), 1);
+        if ((genDerSz <= 0) || (genDerSz != refDerSz) ||
+            (memcmp(genDer, refDer, (size_t)genDerSz) != 0)) {
+            WH_ERROR_PRINT("keygen pubkey (DMA) mismatch vs export\n");
+            ret = -1;
+        }
+    }
+
+    /* Prove usability: sign on the HSM (DMA) using genPub directly as the
+     * private-key handle (no separate key object), then verify with its
+     * exported public key. */
+    if (ret == 0) {
+        ret = wh_Client_MlDsaSignDma(ctx, msg, sizeof(msg), sig, &sigLen,
+                                     genPub, NULL, 0, WC_HASH_TYPE_NONE);
+        if (ret != 0) {
+            WH_ERROR_PRINT("HSM ML-DSA DMA sign failed %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ret = wh_Client_MlDsaVerifyDma(ctx, sig, sigLen, msg, sizeof(msg),
+                                       &verified, genPub, NULL, 0,
+                                       WC_HASH_TYPE_NONE);
+        if ((ret != 0) || (verified != 1)) {
+            WH_ERROR_PRINT(
+                "DMA verify with keygen pub failed ret=%d verify=%d\n", ret,
+                verified);
+            if (ret == 0) {
+                ret = -1;
+            }
+        }
+    }
+
+    wc_MlDsaKey_Free(refPub);
+    wc_MlDsaKey_Free(genPub);
+    if (!WH_KEYID_ISERASED(keyId)) {
+        (void)wh_Client_KeyEvict(ctx, keyId);
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ML-DSA CACHE-AND-EXPORT-PUBLIC DMA SUCCESS\n");
     }
     return ret;
 }
@@ -12120,14 +14104,12 @@ int whTestCrypto_MlDsaVerifyOnlyDma(whClientContext* ctx, int devId,
             WH_ERROR_PRINT("Failed to import ML-DSA public key: %d\n", ret);
         }
     }
-    /* Import the key into wolfHSM via the wolfCrypt structure */
+    /* Import the key into wolfHSM via the wolfCrypt structure. This is the
+     * DMA-only verify test, so always import via the DMA path. The verify
+     * usage flag is required: the DMA verify handler enforces it. */
     if (ret == 0) {
-        if (devId == WH_DEV_ID_DMA) {
-            ret = wh_Client_MlDsaImportKeyDma(ctx, key, &keyId, 0, 0, NULL);
-        }
-        else {
-            ret = wh_Client_MlDsaImportKey(ctx, key, &keyId, 0, 0, NULL);
-        }
+        ret = wh_Client_MlDsaImportKeyDma(ctx, key, &keyId,
+                                          WH_NVM_FLAGS_USAGE_VERIFY, 0, NULL);
         if (ret == WH_ERROR_OK) {
             evictKey = 1;
         }
@@ -12732,6 +14714,136 @@ static int whTestCrypto_MlKemExportPublic(whClientContext* ctx, int devId,
     return ret;
 }
 
+/* One keygen call caches the private key and returns the public key. Verify
+ * the returned public key byte-matches wh_Client_MlKemExportPublicKey and that
+ * a KEM encapsulate/decapsulate round-trips against the cached private key. */
+static int whTestCrypto_MlKemCacheKeyAndExportPublic(whClientContext* ctx,
+                                                     int devId, WC_RNG* rng)
+{
+    int      ret      = 0;
+    int      levels[3];
+    int      levelCnt = 0;
+    int      i;
+
+    levelCnt = whTestCrypto_MlKemGetLevels(
+        levels, (int)(sizeof(levels) / sizeof(levels[0])));
+
+    for (i = 0; (ret == 0) && (i < levelCnt); i++) {
+        whKeyId  keyId        = WH_KEYID_ERASED;
+        MlKemKey genPub[1]    = {0};
+        MlKemKey refPub[1]    = {0};
+        int      genInited    = 0;
+        int      refInited    = 0;
+        byte     genRaw[WC_ML_KEM_MAX_PUBLIC_KEY_SIZE];
+        byte     refRaw[WC_ML_KEM_MAX_PUBLIC_KEY_SIZE];
+        word32   genRawSz     = 0;
+        word32   refRawSz     = 0;
+        byte     ct[WC_ML_KEM_MAX_CIPHER_TEXT_SIZE];
+        byte     ssEnc[WC_ML_KEM_SS_SZ];
+        byte     ssDec[WC_ML_KEM_SS_SZ];
+        word32   ctLen    = sizeof(ct);
+        word32   ssEncLen = sizeof(ssEnc);
+        word32   ssDecLen = sizeof(ssDec);
+        (void)devId;
+
+        ret = wc_MlKemKey_Init(genPub, levels[i], NULL, INVALID_DEVID);
+        if (ret == 0) {
+            genInited = 1;
+            ret       = wh_Client_MlKemMakeCacheKeyAndExportPublic(
+                ctx, levels[i], &keyId, WH_NVM_FLAGS_USAGE_DERIVE, 0, NULL,
+                genPub);
+            if (ret != 0) {
+                WH_ERROR_PRINT(
+                    "MlKemMakeCacheKeyAndExportPublic failed level=%d %d\n",
+                    levels[i], ret);
+            }
+        }
+
+        /* Cross-check the keygen-returned public key against ExportPublicKey. */
+        if (ret == 0) {
+            ret = wc_MlKemKey_Init(refPub, levels[i], NULL, INVALID_DEVID);
+            if (ret == 0) {
+                refInited = 1;
+                ret = wh_Client_MlKemExportPublicKey(ctx, keyId, refPub, 0,
+                                                     NULL);
+                if (ret != 0) {
+                    WH_ERROR_PRINT(
+                        "wh_Client_MlKemExportPublicKey failed level=%d %d\n",
+                        levels[i], ret);
+                }
+            }
+        }
+        if (ret == 0) {
+            ret = wc_MlKemKey_PublicKeySize(genPub, &genRawSz);
+            if (ret == 0) {
+                ret = wc_MlKemKey_EncodePublicKey(genPub, genRaw, genRawSz);
+            }
+            if (ret == 0) {
+                ret = wc_MlKemKey_PublicKeySize(refPub, &refRawSz);
+            }
+            if (ret == 0) {
+                ret = wc_MlKemKey_EncodePublicKey(refPub, refRaw, refRawSz);
+            }
+            if ((ret == 0) && ((genRawSz != refRawSz) ||
+                               (memcmp(genRaw, refRaw, genRawSz) != 0))) {
+                WH_ERROR_PRINT(
+                    "keygen pubkey mismatch vs ExportPublicKey level=%d\n",
+                    levels[i]);
+                ret = -1;
+            }
+        }
+
+        /* Roundtrip: encapsulate locally with the exported public key (refPub)
+         * the client holds, decapsulate on the HSM using genPub directly as the
+         * private-key handle (no separate key object). */
+        if (ret == 0) {
+            ret = wc_MlKemKey_CipherTextSize(refPub, &ctLen);
+            if (ret == 0) {
+                ret = wc_MlKemKey_SharedSecretSize(refPub, &ssEncLen);
+            }
+            if (ret == 0) {
+                ssDecLen = ssEncLen;
+                ret      = wc_MlKemKey_Encapsulate(refPub, ct, ssEnc, rng);
+                if (ret != 0) {
+                    WH_ERROR_PRINT(
+                        "Encapsulate against keygen pub failed level=%d %d\n",
+                        levels[i], ret);
+                }
+            }
+        }
+        if (ret == 0) {
+            ret = wh_Client_MlKemDecapsulate(ctx, genPub, ct, ctLen, ssDec,
+                                             &ssDecLen);
+            if (ret != 0) {
+                WH_ERROR_PRINT("Server decapsulate failed level=%d %d\n",
+                               levels[i], ret);
+            }
+            else if ((ssEncLen != ssDecLen) ||
+                     (memcmp(ssEnc, ssDec, ssEncLen) != 0)) {
+                WH_ERROR_PRINT(
+                    "ML-KEM keygen-pub roundtrip ss mismatch level=%d\n",
+                    levels[i]);
+                ret = -1;
+            }
+        }
+
+        if (refInited) {
+            wc_MlKemKey_Free(refPub);
+        }
+        if (genInited) {
+            wc_MlKemKey_Free(genPub);
+        }
+        if (!WH_KEYID_ISERASED(keyId)) {
+            (void)wh_Client_KeyEvict(ctx, keyId);
+        }
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ML-KEM CACHE-AND-EXPORT-PUBLIC SUCCESS\n");
+    }
+    return ret;
+}
+
 #ifdef WOLFHSM_CFG_DMA
 static int whTestCrypto_MlKemExportPublicDma(whClientContext* ctx, int devId,
                                              WC_RNG* rng)
@@ -12908,6 +15020,136 @@ static int whTestCrypto_MlKemExportPublicDma(whClientContext* ctx, int devId,
 
     if (ret == 0) {
         WH_TEST_PRINT("ML-KEM EXPORT-PUBLIC DMA SUCCESS\n");
+    }
+    return ret;
+}
+
+/* DMA variant: one keygen call caches the private key and streams the public
+ * key back through the client's DMA buffer. Verify it byte-matches
+ * wh_Client_MlKemExportPublicKeyDma and that a KEM round-trips against the
+ * cached private key. */
+static int whTestCrypto_MlKemCacheKeyAndExportPublicDma(whClientContext* ctx,
+                                                        int devId, WC_RNG* rng)
+{
+    int      ret      = 0;
+    int      levels[3];
+    int      levelCnt = 0;
+    int      i;
+
+    levelCnt = whTestCrypto_MlKemGetLevels(
+        levels, (int)(sizeof(levels) / sizeof(levels[0])));
+
+    for (i = 0; (ret == 0) && (i < levelCnt); i++) {
+        whKeyId  keyId        = WH_KEYID_ERASED;
+        MlKemKey genPub[1]    = {0};
+        MlKemKey refPub[1]    = {0};
+        int      genInited    = 0;
+        int      refInited    = 0;
+        byte     genRaw[WC_ML_KEM_MAX_PUBLIC_KEY_SIZE];
+        byte     refRaw[WC_ML_KEM_MAX_PUBLIC_KEY_SIZE];
+        word32   genRawSz     = 0;
+        word32   refRawSz     = 0;
+        byte     ct[WC_ML_KEM_MAX_CIPHER_TEXT_SIZE];
+        byte     ssEnc[WC_ML_KEM_SS_SZ];
+        byte     ssDec[WC_ML_KEM_SS_SZ];
+        word32   ctLen    = sizeof(ct);
+        word32   ssEncLen = sizeof(ssEnc);
+        word32   ssDecLen = sizeof(ssDec);
+        (void)devId;
+
+        ret = wc_MlKemKey_Init(genPub, levels[i], NULL, INVALID_DEVID);
+        if (ret == 0) {
+            genInited = 1;
+            ret       = wh_Client_MlKemMakeCacheKeyDma(
+                ctx, levels[i], &keyId, WH_NVM_FLAGS_USAGE_DERIVE, 0, NULL,
+                genPub);
+            if (ret != 0) {
+                WH_ERROR_PRINT("MlKemMakeCacheKeyDma failed level=%d %d\n",
+                               levels[i], ret);
+            }
+        }
+
+        /* Cross-check against a separate public DMA export of the same keyId. */
+        if (ret == 0) {
+            ret = wc_MlKemKey_Init(refPub, levels[i], NULL, INVALID_DEVID);
+            if (ret == 0) {
+                refInited = 1;
+                ret = wh_Client_MlKemExportPublicKeyDma(ctx, keyId, refPub, 0,
+                                                        NULL);
+                if (ret != 0) {
+                    WH_ERROR_PRINT(
+                        "wh_Client_MlKemExportPublicKeyDma failed level=%d %d\n",
+                        levels[i], ret);
+                }
+            }
+        }
+        if (ret == 0) {
+            ret = wc_MlKemKey_PublicKeySize(genPub, &genRawSz);
+            if (ret == 0) {
+                ret = wc_MlKemKey_EncodePublicKey(genPub, genRaw, genRawSz);
+            }
+            if (ret == 0) {
+                ret = wc_MlKemKey_PublicKeySize(refPub, &refRawSz);
+            }
+            if (ret == 0) {
+                ret = wc_MlKemKey_EncodePublicKey(refPub, refRaw, refRawSz);
+            }
+            if ((ret == 0) && ((genRawSz != refRawSz) ||
+                               (memcmp(genRaw, refRaw, genRawSz) != 0))) {
+                WH_ERROR_PRINT(
+                    "keygen pubkey (DMA) mismatch vs export level=%d\n",
+                    levels[i]);
+                ret = -1;
+            }
+        }
+
+        /* Roundtrip: encapsulate locally with the exported public key (refPub)
+         * the client holds, decapsulate on the HSM using genPub directly as the
+         * private-key handle (no separate key object). */
+        if (ret == 0) {
+            ret = wc_MlKemKey_CipherTextSize(refPub, &ctLen);
+            if (ret == 0) {
+                ret = wc_MlKemKey_SharedSecretSize(refPub, &ssEncLen);
+            }
+            if (ret == 0) {
+                ssDecLen = ssEncLen;
+                ret      = wc_MlKemKey_Encapsulate(refPub, ct, ssEnc, rng);
+                if (ret != 0) {
+                    WH_ERROR_PRINT(
+                        "Encapsulate against keygen pub (DMA) failed level=%d "
+                        "%d\n", levels[i], ret);
+                }
+            }
+        }
+        if (ret == 0) {
+            ret = wh_Client_MlKemDecapsulate(ctx, genPub, ct, ctLen, ssDec,
+                                             &ssDecLen);
+            if (ret != 0) {
+                WH_ERROR_PRINT("Server decapsulate (DMA) failed level=%d %d\n",
+                               levels[i], ret);
+            }
+            else if ((ssEncLen != ssDecLen) ||
+                     (memcmp(ssEnc, ssDec, ssEncLen) != 0)) {
+                WH_ERROR_PRINT(
+                    "ML-KEM DMA keygen-pub roundtrip ss mismatch level=%d\n",
+                    levels[i]);
+                ret = -1;
+            }
+        }
+
+        if (refInited) {
+            wc_MlKemKey_Free(refPub);
+        }
+        if (genInited) {
+            wc_MlKemKey_Free(genPub);
+        }
+        if (!WH_KEYID_ISERASED(keyId)) {
+            (void)wh_Client_KeyEvict(ctx, keyId);
+        }
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("ML-KEM CACHE-AND-EXPORT-PUBLIC DMA SUCCESS\n");
     }
     return ret;
 }
@@ -13174,6 +15416,102 @@ static int whTestCrypto_MlKemDmaClient(whClientContext* ctx, int devId,
             }
         }
 
+        /* Positive path: a key referenced by its cached ID rather than
+         * implicitly imported, driven through the DMA encaps/decaps calls.
+         * This is what the ML-KEM benchmark rows do. */
+        if (ret == 0) {
+            MlKemKey      cachedKey[1];
+            whKeyId       cachedKeyId    = WH_KEYID_ERASED;
+            int           cachedInited   = 0;
+            int           cachedCached   = 0;
+            word32        cachedCtLen    = sizeof(ct);
+            word32        cachedSsEncLen = sizeof(ssEnc);
+            word32        cachedSsDecLen = sizeof(ssDec);
+            const uint8_t cachedLabel[]  = "mlkem-dma-byid";
+
+            memset(ct, 0, sizeof(ct));
+            memset(ssEnc, 0, sizeof(ssEnc));
+            memset(ssDec, 0, sizeof(ssDec));
+
+            ret = wh_Client_MlKemMakeCacheKey(
+                ctx, levels[i], &cachedKeyId, WH_NVM_FLAGS_USAGE_ANY,
+                (uint16_t)strlen((const char*)cachedLabel),
+                (uint8_t*)cachedLabel);
+            if (ret != 0) {
+                WH_ERROR_PRINT("Failed ML-KEM DMA by-id cache keygen level=%d "
+                               "ret=%d\n",
+                               levels[i], ret);
+            }
+            else {
+                cachedCached = 1;
+            }
+            if (ret == 0) {
+                ret = wc_MlKemKey_Init(cachedKey, levels[i], NULL, devId);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("Failed init ML-KEM DMA by-id key level=%d "
+                                   "ret=%d\n",
+                                   levels[i], ret);
+                }
+                else {
+                    cachedInited = 1;
+                }
+            }
+            if (ret == 0) {
+                ret = wh_Client_MlKemSetKeyId(cachedKey, cachedKeyId);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("Failed ML-KEM DMA by-id set key id "
+                                   "level=%d ret=%d\n",
+                                   levels[i], ret);
+                }
+            }
+            if (ret == 0) {
+                ret = wh_Client_MlKemEncapsulateDma(ctx, cachedKey, ct,
+                                                    &cachedCtLen, ssEnc,
+                                                    &cachedSsEncLen);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("Failed ML-KEM DMA by-id encapsulate "
+                                   "level=%d ret=%d\n",
+                                   levels[i], ret);
+                }
+            }
+            if (ret == 0) {
+                ret = wh_Client_MlKemDecapsulateDma(ctx, cachedKey, ct,
+                                                    cachedCtLen, ssDec,
+                                                    &cachedSsDecLen);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("Failed ML-KEM DMA by-id decapsulate "
+                                   "level=%d ret=%d\n",
+                                   levels[i], ret);
+                }
+                else if ((cachedSsEncLen != cachedSsDecLen) ||
+                         (memcmp(ssEnc, ssDec, cachedSsEncLen) != 0)) {
+                    WH_ERROR_PRINT("ML-KEM DMA by-id shared secret mismatch "
+                                   "level=%d\n",
+                                   levels[i]);
+                    ret = -1;
+                }
+            }
+            /* The key must still be cached: a by-id operation must not take
+             * the implicit-import path, which evicts after every call. */
+            if (ret == 0) {
+                ret = wh_Client_KeyEvict(ctx, cachedKeyId);
+                if (ret != 0) {
+                    WH_ERROR_PRINT("ML-KEM DMA by-id key was not left cached "
+                                   "level=%d ret=%d\n",
+                                   levels[i], ret);
+                }
+                else {
+                    cachedCached = 0;
+                }
+            }
+            if (cachedCached) {
+                (void)wh_Client_KeyEvict(ctx, cachedKeyId);
+            }
+            if (cachedInited) {
+                wc_MlKemKey_Free(cachedKey);
+            }
+        }
+
         if (keyCached) {
             int evictRet = wh_Client_KeyEvict(ctx, keyId);
             if ((evictRet != 0) && (ret == 0)) {
@@ -13205,6 +15543,832 @@ static int whTestCrypto_MlKemDmaClient(whClientContext* ctx, int devId,
           !defined(WOLFSSL_MLKEM_NO_ENCAPSULATE) && \
           !defined(WOLFSSL_MLKEM_NO_DECAPSULATE) */
 #endif /* WOLFSSL_HAVE_MLKEM */
+
+#if defined(WOLFHSM_CFG_DMA) && \
+    defined(WOLFSSL_HAVE_LMS) && !defined(WOLFSSL_LMS_VERIFY_ONLY)
+/* L=1, H=5, W=8 keeps the signature ~1.3 KB and gives 2^5 = 32 signatures. */
+#define WH_TEST_LMS_LEVELS     (1)
+#define WH_TEST_LMS_HEIGHT     (5)
+#define WH_TEST_LMS_WINTERNITZ (8)
+/* Generous buffer that fits L1_H5_W8 (~1328) and any W<8 variant of the same
+ * height (W=1 ~8688). Keeps off the stack so ASAN builds stay happy. */
+static byte whTest_LmsSigBuf[8800];
+
+static int whTestCrypto_LmsCryptoCb(whClientContext* ctx, int devId,
+                                    WC_RNG* rng)
+{
+    int        ret           = 0;
+    LmsKey     key[1];
+    int        keyInited     = 0;
+    word32     sigLen        = 0;
+    word32     sigCap        = 0;
+    const byte msg[]         = "wolfHSM LMS cryptocb test";
+    word32     msgSz         = (word32)sizeof(msg) - 1;
+
+    (void)rng;
+
+    memset(whTest_LmsSigBuf, 0, sizeof(whTest_LmsSigBuf));
+
+    ret = wc_LmsKey_Init(key, NULL, devId);
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed wc_LmsKey_Init devId=0x%X ret=%d\n", devId, ret);
+        return ret;
+    }
+    keyInited = 1;
+
+    if (ret == 0) {
+        ret = wc_LmsKey_SetParameters(key, WH_TEST_LMS_LEVELS,
+                                      WH_TEST_LMS_HEIGHT,
+                                      WH_TEST_LMS_WINTERNITZ);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed LMS SetParameters ret=%d\n", ret);
+        }
+    }
+
+    if (ret == 0) {
+        ret = wc_LmsKey_GetSigLen(key, &sigCap);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed LMS GetSigLen ret=%d\n", ret);
+        }
+        else if (sigCap > sizeof(whTest_LmsSigBuf)) {
+            WH_ERROR_PRINT("LMS sig buffer too small: need=%u have=%u\n",
+                           (unsigned)sigCap,
+                           (unsigned)sizeof(whTest_LmsSigBuf));
+            ret = BUFFER_E;
+        }
+    }
+
+    /* MakeKey via cryptocb: the server commits the key to NVM before
+     * returning the public key over DMA. */
+    if (ret == 0) {
+        ret = wc_LmsKey_MakeKey(key, rng);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed LMS MakeKey ret=%d\n", ret);
+        }
+    }
+
+    /* wc_LmsKey_SigsLeft returns a boolean: nonzero = signatures available,
+     * 0 = exhausted. Fresh key should report nonzero. */
+    if (ret == 0) {
+        if (wc_LmsKey_SigsLeft(key) == 0) {
+            WH_ERROR_PRINT("LMS reported exhausted on fresh key\n");
+            ret = -1;
+        }
+    }
+
+    /* Durability: keygen must commit the key to NVM before returning the pub,
+     * not defer it. Evict the volatile cache copy (as a power loss before the
+     * first sign would) and confirm the key is still resident in NVM. */
+    if (ret == 0) {
+        whKeyId durId = WH_KEYID_ERASED;
+        if ((wh_Client_LmsGetKeyId(key, &durId) == 0) &&
+            !WH_KEYID_ISERASED(durId)) {
+            ret = wh_Client_KeyEvict(ctx, durId);
+            if (ret != 0) {
+                WH_ERROR_PRINT("LMS durability evict failed: ret=%d\n", ret);
+            }
+            else {
+                /* SigsLeft reloads the key from NVM; a negative return means
+                 * keygen failed to commit it. A fresh key reports 1. */
+                ret = wh_Client_LmsSigsLeftDma(ctx, key);
+                if (ret < 0) {
+                    WH_ERROR_PRINT("LMS key not durable after keygen: ret=%d\n",
+                                   ret);
+                }
+                else {
+                    ret = 0;
+                }
+            }
+        }
+    }
+
+    /* EPHEMERAL is invalid for a stateful private keygen and must be rejected
+     * locally with WH_ERROR_BADARGS (no server round-trip). */
+    if (ret == 0) {
+        int badRet = wh_Client_LmsMakeKeyDma(ctx, key, NULL,
+                                             WH_NVM_FLAGS_EPHEMERAL, 0, NULL);
+        if (badRet != WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("LMS ephemeral keygen not rejected: ret=%d "
+                           "(expected WH_ERROR_BADARGS)\n", badRet);
+            ret = WH_ERROR_ABORTED;
+        }
+    }
+
+    /* Direct DMA keygen with a label and a caller-visible keyId. The cryptocb
+     * keygen above passes neither, so this drives the label-copy and keyId
+     * write-back paths on both client and server. */
+    if (ret == 0) {
+        LmsKey  lblKey[1];
+        int     lblInited = 0;
+        whKeyId lblId     = WH_KEYID_ERASED;
+        byte    label[]   = "wolfHSM LMS key";
+
+        ret = wc_LmsKey_Init(lblKey, NULL, devId);
+        if (ret == 0) {
+            lblInited = 1;
+            ret = wc_LmsKey_SetParameters(lblKey, WH_TEST_LMS_LEVELS,
+                                          WH_TEST_LMS_HEIGHT,
+                                          WH_TEST_LMS_WINTERNITZ);
+        }
+        if (ret == 0) {
+            ret = wh_Client_LmsMakeKeyDma(ctx, lblKey, &lblId,
+                                          WH_NVM_FLAGS_NONE,
+                                          (uint16_t)(sizeof(label) - 1), label);
+            if (ret != 0) {
+                WH_ERROR_PRINT("LMS labeled keygen failed: ret=%d\n", ret);
+            }
+        }
+        if ((ret == 0) && WH_KEYID_ISERASED(lblId)) {
+            WH_ERROR_PRINT("LMS labeled keygen returned no keyId\n");
+            ret = WH_ERROR_ABORTED;
+        }
+        /* Keygen is write-through, so erase (cache + NVM) to avoid leaking a
+         * committed key. */
+        if (!WH_KEYID_ISERASED(lblId)) {
+            (void)wh_Client_KeyErase(ctx, lblId);
+        }
+        if (lblInited) {
+            wc_LmsKey_Free(lblKey);
+        }
+    }
+
+    /* Test that a client must not be able to set the server-only trusted-KEK
+     * flag on its own stateful key */
+    if (ret == 0) {
+        LmsKey  kekKey[1];
+        int     kekInited = 0;
+        whKeyId kekId     = WH_KEYID_ERASED;
+
+        ret = wc_LmsKey_Init(kekKey, NULL, devId);
+        if (ret == 0) {
+            kekInited = 1;
+            ret       = wc_LmsKey_SetParameters(kekKey, WH_TEST_LMS_LEVELS,
+                                                WH_TEST_LMS_HEIGHT,
+                                                WH_TEST_LMS_WINTERNITZ);
+        }
+        if (ret == 0) {
+            ret = wh_Client_LmsMakeKeyDma(
+                ctx, kekKey, &kekId,
+                WH_NVM_FLAGS_TRUSTED | WH_NVM_FLAGS_USAGE_WRAP, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("LMS trusted-flag keygen failed: ret=%d\n", ret);
+            }
+        }
+        /* A surviving WH_NVM_FLAGS_TRUSTED would make this evict
+         * WH_ERROR_ACCESS. */
+        if ((ret == 0) && !WH_KEYID_ISERASED(kekId)) {
+            ret = wh_Client_KeyEvict(ctx, kekId);
+            if (ret != 0) {
+                WH_ERROR_PRINT("LMS server-only trusted flag not stripped "
+                               "(evict ret=%d)\n",
+                               ret);
+            }
+            (void)wh_Client_KeyErase(ctx, kekId);
+        }
+        if (kekInited) {
+            wc_LmsKey_Free(kekKey);
+        }
+    }
+
+    /* Sign via cryptocb. */
+    if (ret == 0) {
+        sigLen = sigCap;
+        ret = wc_LmsKey_Sign(key, whTest_LmsSigBuf, &sigLen, msg, (int)msgSz);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed LMS Sign ret=%d\n", ret);
+        }
+        else if (sigLen != sigCap) {
+            WH_ERROR_PRINT("LMS Sign produced unexpected length=%u expected=%u\n",
+                           (unsigned)sigLen, (unsigned)sigCap);
+            ret = -1;
+        }
+    }
+
+    /* Verify the signature via cryptocb. */
+    if (ret == 0) {
+        ret = wc_LmsKey_Verify(key, whTest_LmsSigBuf, sigLen, msg, (int)msgSz);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed LMS Verify ret=%d\n", ret);
+        }
+    }
+
+    /* Tampered signature must fail to verify. */
+    if (ret == 0) {
+        whTest_LmsSigBuf[0] ^= 0xFF;
+        ret = wc_LmsKey_Verify(key, whTest_LmsSigBuf, sigLen, msg, (int)msgSz);
+        whTest_LmsSigBuf[0] ^= 0xFF;
+        if (ret == 0) {
+            WH_ERROR_PRINT("LMS Verify unexpectedly accepted tampered sig\n");
+            ret = -1;
+        }
+        else {
+            ret = 0;
+        }
+    }
+
+    /* Wrong message must also fail to verify. */
+    if (ret == 0) {
+        const byte wrongMsg[] = "wolfHSM LMS cryptocb wrong";
+        ret = wc_LmsKey_Verify(key, whTest_LmsSigBuf, sigLen, wrongMsg,
+                               (int)(sizeof(wrongMsg) - 1));
+        if (ret == 0) {
+            WH_ERROR_PRINT("LMS Verify unexpectedly accepted wrong message\n");
+            ret = -1;
+        }
+        else {
+            ret = 0;
+        }
+    }
+
+    /* H=5 means 32 sigs total; after one sign, the key is still not
+     * exhausted. */
+    if (ret == 0) {
+        if (wc_LmsKey_SigsLeft(key) == 0) {
+            WH_ERROR_PRINT("LMS reported exhausted after one sign\n");
+            ret = -1;
+        }
+    }
+
+    /* Verify the public key matches when read back */
+    if (ret == 0) {
+        whKeyId  pubId     = WH_KEYID_ERASED;
+        word32   pubLen    = 0;
+        uint8_t  pubBuf[128];
+        uint16_t pubBufLen = (uint16_t)sizeof(pubBuf);
+        if ((wh_Client_LmsGetKeyId(key, &pubId) == 0) &&
+            !WH_KEYID_ISERASED(pubId) &&
+            (wc_LmsKey_GetPubLen(key, &pubLen) == 0) &&
+            (pubLen <= sizeof(pubBuf))) {
+            int pubRet = wh_Client_KeyExportPublic(ctx, pubId, WH_KEY_ALGO_LMS,
+                                                   NULL, 0, pubBuf, &pubBufLen);
+            if (pubRet != WH_ERROR_OK) {
+                WH_ERROR_PRINT("LMS export pub failed: ret=%d\n", pubRet);
+                ret = pubRet;
+            }
+            else if (((word32)pubBufLen != pubLen) ||
+                     (memcmp(pubBuf, key->pub, pubLen) != 0)) {
+                WH_ERROR_PRINT("LMS export pub mismatch len=%u expected=%u\n",
+                               (unsigned)pubBufLen, (unsigned)pubLen);
+                ret = WH_ERROR_ABORTED;
+            }
+        }
+    }
+
+    /* Public-key import: provision a verify-only copy of this key's public
+     * half under a new keyId, verify the signature made above against it, and
+     * confirm signing with it is refused (no private state). */
+    if (ret == 0) {
+        LmsKey  pubKey[1];
+        int     pubInited = 0;
+        word32  pubLen    = 0;
+        uint8_t pubRaw[128];
+        whKeyId pubKeyId  = WH_KEYID_ERASED;
+        int     vres      = 0;
+
+        ret = wc_LmsKey_GetPubLen(key, &pubLen);
+        if ((ret == 0) && (pubLen > sizeof(pubRaw))) {
+            ret = BUFFER_E;
+        }
+        if (ret == 0) {
+            ret = wc_LmsKey_ExportPubRaw(key, pubRaw, &pubLen);
+        }
+        if (ret == 0) {
+            ret = wc_LmsKey_Init(pubKey, NULL, devId);
+        }
+        if (ret == 0) {
+            pubInited = 1;
+            ret = wc_LmsKey_SetParameters(pubKey, WH_TEST_LMS_LEVELS,
+                                          WH_TEST_LMS_HEIGHT,
+                                          WH_TEST_LMS_WINTERNITZ);
+        }
+        if (ret == 0) {
+            ret = wc_LmsKey_ImportPubRaw(pubKey, pubRaw, pubLen);
+        }
+        /* EPHEMERAL keeps it cache-only for an easy cleanup; production would
+         * pin with WH_NVM_FLAGS_NONMODIFIABLE and commit. */
+        if (ret == 0) {
+            ret = wh_Client_LmsImportPubKey(ctx, pubKey, &pubKeyId,
+                                            WH_NVM_FLAGS_EPHEMERAL, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("LMS import pub failed: ret=%d\n", ret);
+            }
+        }
+        if (ret == 0) {
+            ret = wh_Client_LmsVerifyDma(ctx, whTest_LmsSigBuf, sigLen, msg,
+                                         msgSz, &vres, pubKey);
+            if ((ret == 0) && (vres != 1)) {
+                WH_ERROR_PRINT("LMS verify with imported pub failed\n");
+                ret = WH_ERROR_ABORTED;
+            }
+        }
+        if (ret == 0) {
+            word32 tmpSigLen = (word32)sizeof(whTest_LmsSigBuf);
+            int    signRet =
+                wh_Client_LmsSignDma(ctx, msg, msgSz, whTest_LmsSigBuf,
+                                     &tmpSigLen, pubKey);
+            if (signRet == 0) {
+                WH_ERROR_PRINT("LMS sign with verify-only key unexpectedly "
+                               "succeeded\n");
+                ret = WH_ERROR_ABORTED;
+            }
+        }
+        if (!WH_KEYID_ISERASED(pubKeyId)) {
+            (void)wh_Client_KeyEvict(ctx, pubKeyId);
+        }
+        if (pubInited) {
+            wc_LmsKey_Free(pubKey);
+        }
+    }
+
+    /* The generic export API must refuse to return the private key state.
+     * Keygen forces WH_NVM_FLAGS_NONEXPORTABLE, so export of the resident
+     * key is denied with WH_ERROR_ACCESS. */
+    if (ret == 0) {
+        whKeyId  exportId = WH_KEYID_ERASED;
+        uint8_t  expBuf[256];
+        uint16_t expLen   = (uint16_t)sizeof(expBuf);
+        if ((wh_Client_LmsGetKeyId(key, &exportId) == 0) &&
+            !WH_KEYID_ISERASED(exportId)) {
+            int expRet =
+                wh_Client_KeyExport(ctx, exportId, NULL, 0, expBuf, &expLen);
+            if (expRet != WH_ERROR_ACCESS) {
+                WH_ERROR_PRINT("LMS export not blocked: ret=%d "
+                               "(expected WH_ERROR_ACCESS)\n", expRet);
+                ret = (expRet == 0) ? WH_ERROR_ABORTED : expRet;
+            }
+        }
+    }
+
+    /* Attempt to import an LMS key which must be rejected */
+    if (ret == 0) {
+        uint8_t  fakeBlob[64];
+        uint32_t lmsMagic = 0x4C4D5301u; /* 'LMS\1', see wh_crypto.c */
+        whKeyId  impId    = WH_KEYID_ERASED;
+        int      impRet;
+        memset(fakeBlob, 0, sizeof(fakeBlob));
+        memcpy(fakeBlob, &lmsMagic, sizeof(lmsMagic));
+        fakeBlob[6] = 1; /* privLen field nonzero: a private-bearing blob */
+        impRet = wh_Client_KeyCache(ctx, 0, NULL, 0, fakeBlob,
+                                    (uint16_t)sizeof(fakeBlob), &impId);
+        if (impRet != WH_ERROR_ACCESS) {
+            WH_ERROR_PRINT("LMS blob import not blocked: ret=%d "
+                           "(expected WH_ERROR_ACCESS)\n", impRet);
+            if ((impRet == 0) && !WH_KEYID_ISERASED(impId)) {
+                (void)wh_Client_KeyEvict(ctx, impId);
+            }
+            ret = (impRet == 0) ? WH_ERROR_ABORTED : impRet;
+        }
+    }
+
+    /* Also ensure direct NVM import is blocked */
+    if (ret == 0) {
+        uint8_t  fakeBlob[64];
+        uint32_t lmsMagic = 0x4C4D5301u; /* 'LMS\1', see wh_crypto.c */
+        int32_t  addRc    = 0;
+        int      addRet;
+        whNvmId  addId    = 0x1042; /* An arbitrary ID in the NVM range */
+        memset(fakeBlob, 0, sizeof(fakeBlob));
+        memcpy(fakeBlob, &lmsMagic, sizeof(lmsMagic));
+        fakeBlob[6] = 1; /* privLen field nonzero: a private-bearing blob */
+        addRet = wh_Client_NvmAddObject(ctx, addId, WH_NVM_ACCESS_ANY,
+                                        WH_NVM_FLAGS_NONE, 0, NULL,
+                                        (whNvmSize)sizeof(fakeBlob), fakeBlob,
+                                        &addRc);
+        if ((addRet != WH_ERROR_OK) || (addRc != WH_ERROR_ACCESS)) {
+            WH_ERROR_PRINT("LMS blob NVM import not blocked: ret=%d rc=%d "
+                           "(expected rc WH_ERROR_ACCESS)\n", addRet,
+                           (int)addRc);
+            ret = (addRc != 0) ? addRc : WH_ERROR_ABORTED;
+        }
+    }
+
+    if (keyInited) {
+        whKeyId evictId = WH_KEYID_ERASED;
+        if ((wh_Client_LmsGetKeyId(key, &evictId) == 0) &&
+            !WH_KEYID_ISERASED(evictId)) {
+            int evictRet = wh_Client_KeyEvict(ctx, evictId);
+            if ((evictRet != 0) && (ret == 0)) {
+                WH_ERROR_PRINT("Failed LMS evict keyId=0x%X ret=%d\n",
+                               (unsigned)evictId, evictRet);
+                ret = evictRet;
+            }
+        }
+        wc_LmsKey_Free(key);
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("LMS CryptoCb DEVID=0x%X SUCCESS\n", devId);
+    }
+
+    return ret;
+}
+#endif /* WOLFHSM_CFG_DMA && WOLFSSL_HAVE_LMS && !WOLFSSL_LMS_VERIFY_ONLY */
+
+#if defined(WOLFHSM_CFG_DMA) && \
+    defined(WOLFSSL_HAVE_XMSS) && !defined(WOLFSSL_XMSS_VERIFY_ONLY)
+/* "XMSS-SHA2_10_256" is the smallest standardized XMSS parameter set
+ * (height 10, 1024 signatures). pubLen=68, sigLen=2500. */
+#define WH_TEST_XMSS_PARAM_STR "XMSS-SHA2_10_256"
+static byte whTest_XmssSigBuf[2500];
+
+static int whTestCrypto_XmssCryptoCb(whClientContext* ctx, int devId,
+                                     WC_RNG* rng)
+{
+    int        ret           = 0;
+    XmssKey    key[1];
+    int        keyInited     = 0;
+    word32     sigLen        = 0;
+    word32     sigCap        = 0;
+    const byte msg[]         = "wolfHSM XMSS cryptocb test";
+    word32     msgSz         = (word32)sizeof(msg) - 1;
+
+    (void)rng;
+
+    memset(whTest_XmssSigBuf, 0, sizeof(whTest_XmssSigBuf));
+
+    ret = wc_XmssKey_Init(key, NULL, devId);
+    if (ret != 0) {
+        WH_ERROR_PRINT("Failed wc_XmssKey_Init devId=0x%X ret=%d\n", devId, ret);
+        return ret;
+    }
+    keyInited = 1;
+
+    if (ret == 0) {
+        ret = wc_XmssKey_SetParamStr(key, WH_TEST_XMSS_PARAM_STR);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed XMSS SetParamStr=\"%s\" ret=%d\n",
+                           WH_TEST_XMSS_PARAM_STR, ret);
+        }
+    }
+
+    if (ret == 0) {
+        ret = wc_XmssKey_GetSigLen(key, &sigCap);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed XMSS GetSigLen ret=%d\n", ret);
+        }
+        else if (sigCap > sizeof(whTest_XmssSigBuf)) {
+            WH_ERROR_PRINT("XMSS sig buffer too small: need=%u have=%u\n",
+                           (unsigned)sigCap,
+                           (unsigned)sizeof(whTest_XmssSigBuf));
+            ret = BUFFER_E;
+        }
+    }
+
+    /* MakeKey via cryptocb: the server commits the key to NVM before
+     * returning the public key over DMA. */
+    if (ret == 0) {
+        ret = wc_XmssKey_MakeKey(key, rng);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed XMSS MakeKey ret=%d\n", ret);
+        }
+    }
+
+    /* wc_XmssKey_SigsLeft returns a boolean: nonzero = signatures available,
+     * 0 = exhausted. */
+    if (ret == 0) {
+        if (wc_XmssKey_SigsLeft(key) == 0) {
+            WH_ERROR_PRINT("XMSS reported exhausted on fresh key\n");
+            ret = -1;
+        }
+    }
+
+    /* Durability: keygen must commit the key to NVM before returning the pub.
+     * Evict the volatile cache copy (as a power loss before the first sign
+     * would) and confirm the key is still resident in NVM. */
+    if (ret == 0) {
+        whKeyId durId = WH_KEYID_ERASED;
+        if ((wh_Client_XmssGetKeyId(key, &durId) == 0) &&
+            !WH_KEYID_ISERASED(durId)) {
+            ret = wh_Client_KeyEvict(ctx, durId);
+            if (ret != 0) {
+                WH_ERROR_PRINT("XMSS durability evict failed: ret=%d\n", ret);
+            }
+            else {
+                /* SigsLeft reloads the key from NVM; a negative return means
+                 * keygen failed to commit it. A fresh key reports 1. */
+                ret = wh_Client_XmssSigsLeftDma(ctx, key);
+                if (ret < 0) {
+                    WH_ERROR_PRINT("XMSS key not durable after keygen: "
+                                   "ret=%d\n", ret);
+                }
+                else {
+                    ret = 0;
+                }
+            }
+        }
+    }
+
+    /* EPHEMERAL is invalid for a stateful private keygen and must be rejected
+     * locally with WH_ERROR_BADARGS. */
+    if (ret == 0) {
+        int badRet = wh_Client_XmssMakeKeyDma(ctx, key, NULL,
+                                              WH_NVM_FLAGS_EPHEMERAL, 0, NULL);
+        if (badRet != WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("XMSS ephemeral keygen not rejected: ret=%d "
+                           "(expected WH_ERROR_BADARGS)\n", badRet);
+            ret = WH_ERROR_ABORTED;
+        }
+    }
+
+    /* Direct DMA keygen with a label and a caller-visible keyId. The cryptocb
+     * keygen above passes neither, so this drives the label-copy and keyId
+     * write-back paths on both client and server. */
+    if (ret == 0) {
+        XmssKey lblKey[1];
+        int     lblInited = 0;
+        whKeyId lblId     = WH_KEYID_ERASED;
+        byte    label[]   = "wolfHSM XMSS key";
+
+        ret = wc_XmssKey_Init(lblKey, NULL, devId);
+        if (ret == 0) {
+            lblInited = 1;
+            ret = wc_XmssKey_SetParamStr(lblKey, WH_TEST_XMSS_PARAM_STR);
+        }
+        if (ret == 0) {
+            ret = wh_Client_XmssMakeKeyDma(ctx, lblKey, &lblId,
+                                           WH_NVM_FLAGS_NONE,
+                                           (uint16_t)(sizeof(label) - 1), label);
+            if (ret != 0) {
+                WH_ERROR_PRINT("XMSS labeled keygen failed: ret=%d\n", ret);
+            }
+        }
+        if ((ret == 0) && WH_KEYID_ISERASED(lblId)) {
+            WH_ERROR_PRINT("XMSS labeled keygen returned no keyId\n");
+            ret = WH_ERROR_ABORTED;
+        }
+        /* Keygen is write-through, so erase (cache + NVM) to avoid leaking a
+         * committed key. */
+        if (!WH_KEYID_ISERASED(lblId)) {
+            (void)wh_Client_KeyErase(ctx, lblId);
+        }
+        if (lblInited) {
+            wc_XmssKey_Free(lblKey);
+        }
+    }
+
+    /* Test that keygen must strip a client-supplied server-only flags */
+    if (ret == 0) {
+        XmssKey kekKey[1];
+        int     kekInited = 0;
+        whKeyId kekId     = WH_KEYID_ERASED;
+
+        ret = wc_XmssKey_Init(kekKey, NULL, devId);
+        if (ret == 0) {
+            kekInited = 1;
+            ret       = wc_XmssKey_SetParamStr(kekKey, WH_TEST_XMSS_PARAM_STR);
+        }
+        if (ret == 0) {
+            ret = wh_Client_XmssMakeKeyDma(
+                ctx, kekKey, &kekId,
+                WH_NVM_FLAGS_TRUSTED | WH_NVM_FLAGS_USAGE_WRAP, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("XMSS trusted-flag keygen failed: ret=%d\n",
+                               ret);
+            }
+        }
+        /* A surviving WH_NVM_FLAGS_TRUSTED would make this evict
+         * WH_ERROR_ACCESS. */
+        if ((ret == 0) && !WH_KEYID_ISERASED(kekId)) {
+            ret = wh_Client_KeyEvict(ctx, kekId);
+            if (ret != 0) {
+                WH_ERROR_PRINT("XMSS server-only trusted flag not stripped "
+                               "(evict ret=%d)\n",
+                               ret);
+            }
+            (void)wh_Client_KeyErase(ctx, kekId);
+        }
+        if (kekInited) {
+            wc_XmssKey_Free(kekKey);
+        }
+    }
+
+    if (ret == 0) {
+        sigLen = sigCap;
+        ret = wc_XmssKey_Sign(key, whTest_XmssSigBuf, &sigLen, msg, (int)msgSz);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed XMSS Sign ret=%d\n", ret);
+        }
+        else if (sigLen != sigCap) {
+            WH_ERROR_PRINT("XMSS Sign produced unexpected length=%u expected=%u\n",
+                           (unsigned)sigLen, (unsigned)sigCap);
+            ret = -1;
+        }
+    }
+
+    if (ret == 0) {
+        ret = wc_XmssKey_Verify(key, whTest_XmssSigBuf, sigLen, msg, (int)msgSz);
+        if (ret != 0) {
+            WH_ERROR_PRINT("Failed XMSS Verify ret=%d\n", ret);
+        }
+    }
+
+    if (ret == 0) {
+        whTest_XmssSigBuf[0] ^= 0xFF;
+        ret = wc_XmssKey_Verify(key, whTest_XmssSigBuf, sigLen, msg, (int)msgSz);
+        whTest_XmssSigBuf[0] ^= 0xFF;
+        if (ret == 0) {
+            WH_ERROR_PRINT("XMSS Verify unexpectedly accepted tampered sig\n");
+            ret = -1;
+        }
+        else {
+            ret = 0;
+        }
+    }
+
+    if (ret == 0) {
+        const byte wrongMsg[] = "wolfHSM XMSS cryptocb wrong";
+        ret = wc_XmssKey_Verify(key, whTest_XmssSigBuf, sigLen, wrongMsg,
+                                (int)(sizeof(wrongMsg) - 1));
+        if (ret == 0) {
+            WH_ERROR_PRINT("XMSS Verify unexpectedly accepted wrong message\n");
+            ret = -1;
+        }
+        else {
+            ret = 0;
+        }
+    }
+
+    /* H=10 means 1024 sigs total; after one sign, the key is still not
+     * exhausted. */
+    if (ret == 0) {
+        if (wc_XmssKey_SigsLeft(key) == 0) {
+            WH_ERROR_PRINT("XMSS reported exhausted after one sign\n");
+            ret = -1;
+        }
+    }
+
+    /* Verify the public key matches when read back */
+    if (ret == 0) {
+        whKeyId  pubId     = WH_KEYID_ERASED;
+        word32   pubLen    = 0;
+        uint8_t  pubBuf[128];
+        uint16_t pubBufLen = (uint16_t)sizeof(pubBuf);
+        if ((wh_Client_XmssGetKeyId(key, &pubId) == 0) &&
+            !WH_KEYID_ISERASED(pubId) &&
+            (wc_XmssKey_GetPubLen(key, &pubLen) == 0) &&
+            (pubLen <= sizeof(pubBuf))) {
+            int pubRet = wh_Client_KeyExportPublic(ctx, pubId, WH_KEY_ALGO_XMSS,
+                                                   NULL, 0, pubBuf, &pubBufLen);
+            if (pubRet != WH_ERROR_OK) {
+                WH_ERROR_PRINT("XMSS export pub failed: ret=%d\n", pubRet);
+                ret = pubRet;
+            }
+            else if (((word32)pubBufLen != pubLen) ||
+                     (memcmp(pubBuf, key->pk, pubLen) != 0)) {
+                WH_ERROR_PRINT("XMSS export pub mismatch len=%u expected=%u\n",
+                               (unsigned)pubBufLen, (unsigned)pubLen);
+                ret = WH_ERROR_ABORTED;
+            }
+        }
+    }
+
+    /* Public-key import: provision a verify-only copy of this key's public
+     * half under a new keyId, verify the signature made above against it, and
+     * confirm signing with it is refused (no private state). */
+    if (ret == 0) {
+        XmssKey pubKey[1];
+        int     pubInited = 0;
+        word32  pubLen    = 0;
+        uint8_t pubRaw[128];
+        whKeyId pubKeyId  = WH_KEYID_ERASED;
+        int     vres      = 0;
+
+        ret = wc_XmssKey_GetPubLen(key, &pubLen);
+        if ((ret == 0) && (pubLen > sizeof(pubRaw))) {
+            ret = BUFFER_E;
+        }
+        if (ret == 0) {
+            ret = wc_XmssKey_ExportPubRaw(key, pubRaw, &pubLen);
+        }
+        if (ret == 0) {
+            ret = wc_XmssKey_Init(pubKey, NULL, devId);
+        }
+        if (ret == 0) {
+            pubInited = 1;
+            ret = wc_XmssKey_SetParamStr(pubKey, WH_TEST_XMSS_PARAM_STR);
+        }
+        if (ret == 0) {
+            ret = wc_XmssKey_ImportPubRaw(pubKey, pubRaw, pubLen);
+        }
+        /* EPHEMERAL keeps it cache-only for an easy cleanup; production would
+         * pin with WH_NVM_FLAGS_NONMODIFIABLE and commit. */
+        if (ret == 0) {
+            ret = wh_Client_XmssImportPubKey(ctx, pubKey, &pubKeyId,
+                                             WH_NVM_FLAGS_EPHEMERAL, 0, NULL);
+            if (ret != 0) {
+                WH_ERROR_PRINT("XMSS import pub failed: ret=%d\n", ret);
+            }
+        }
+        if (ret == 0) {
+            ret = wh_Client_XmssVerifyDma(ctx, whTest_XmssSigBuf, sigLen, msg,
+                                          msgSz, &vres, pubKey);
+            if ((ret == 0) && (vres != 1)) {
+                WH_ERROR_PRINT("XMSS verify with imported pub failed\n");
+                ret = WH_ERROR_ABORTED;
+            }
+        }
+        if (ret == 0) {
+            word32 tmpSigLen = (word32)sizeof(whTest_XmssSigBuf);
+            int    signRet =
+                wh_Client_XmssSignDma(ctx, msg, msgSz, whTest_XmssSigBuf,
+                                      &tmpSigLen, pubKey);
+            if (signRet == 0) {
+                WH_ERROR_PRINT("XMSS sign with verify-only key unexpectedly "
+                               "succeeded\n");
+                ret = WH_ERROR_ABORTED;
+            }
+        }
+        if (!WH_KEYID_ISERASED(pubKeyId)) {
+            (void)wh_Client_KeyEvict(ctx, pubKeyId);
+        }
+        if (pubInited) {
+            wc_XmssKey_Free(pubKey);
+        }
+    }
+
+    /* The generic export API must refuse to return the private key state.
+     * Keygen forces WH_NVM_FLAGS_NONEXPORTABLE, so export of the resident
+     * key is denied with WH_ERROR_ACCESS. */
+    if (ret == 0) {
+        whKeyId  exportId = WH_KEYID_ERASED;
+        uint8_t  expBuf[256];
+        uint16_t expLen   = (uint16_t)sizeof(expBuf);
+        if ((wh_Client_XmssGetKeyId(key, &exportId) == 0) &&
+            !WH_KEYID_ISERASED(exportId)) {
+            int expRet =
+                wh_Client_KeyExport(ctx, exportId, NULL, 0, expBuf, &expLen);
+            if (expRet != WH_ERROR_ACCESS) {
+                WH_ERROR_PRINT("XMSS export not blocked: ret=%d "
+                               "(expected WH_ERROR_ACCESS)\n", expRet);
+                ret = (expRet == 0) ? WH_ERROR_ABORTED : expRet;
+            }
+        }
+    }
+
+    /* Attempt to import an XMSS key which must be rejected */
+    if (ret == 0) {
+        uint8_t  fakeBlob[64];
+        uint32_t xmssMagic = 0x584D5301u; /* 'XMS\1', see wh_crypto.c */
+        whKeyId  impId     = WH_KEYID_ERASED;
+        int      impRet;
+        memset(fakeBlob, 0, sizeof(fakeBlob));
+        memcpy(fakeBlob, &xmssMagic, sizeof(xmssMagic));
+        fakeBlob[6] = 1; /* privLen field nonzero: a private-bearing blob */
+        impRet = wh_Client_KeyCache(ctx, 0, NULL, 0, fakeBlob,
+                                    (uint16_t)sizeof(fakeBlob), &impId);
+        if (impRet != WH_ERROR_ACCESS) {
+            WH_ERROR_PRINT("XMSS blob import not blocked: ret=%d "
+                           "(expected WH_ERROR_ACCESS)\n", impRet);
+            if ((impRet == 0) && !WH_KEYID_ISERASED(impId)) {
+                (void)wh_Client_KeyEvict(ctx, impId);
+            }
+            ret = (impRet == 0) ? WH_ERROR_ABORTED : impRet;
+        }
+    }
+
+    /* Also ensure direct NVM import is blocked */
+    if (ret == 0) {
+        uint8_t  fakeBlob[64];
+        uint32_t xmssMagic = 0x584D5301u; /* 'XMS\1', see wh_crypto.c */
+        int32_t  addRc    = 0;
+        int      addRet;
+        whNvmId  addId    = 0x1042; /* An arbitrary ID in the NVM range */
+        memset(fakeBlob, 0, sizeof(fakeBlob));
+        memcpy(fakeBlob, &xmssMagic, sizeof(xmssMagic));
+        fakeBlob[6] = 1; /* privLen field nonzero: a private-bearing blob */
+        addRet = wh_Client_NvmAddObject(ctx, addId, WH_NVM_ACCESS_ANY,
+                                        WH_NVM_FLAGS_NONE, 0, NULL,
+                                        (whNvmSize)sizeof(fakeBlob), fakeBlob,
+                                        &addRc);
+        if ((addRet != WH_ERROR_OK) || (addRc != WH_ERROR_ACCESS)) {
+            WH_ERROR_PRINT("XMSS blob NVM import not blocked: ret=%d rc=%d "
+                           "(expected rc WH_ERROR_ACCESS)\n", addRet,
+                           (int)addRc);
+            ret = (addRc != 0) ? addRc : WH_ERROR_ABORTED;
+        }
+    }
+
+    if (keyInited) {
+        whKeyId evictId = WH_KEYID_ERASED;
+        if ((wh_Client_XmssGetKeyId(key, &evictId) == 0) &&
+            !WH_KEYID_ISERASED(evictId)) {
+            int evictRet = wh_Client_KeyEvict(ctx, evictId);
+            if ((evictRet != 0) && (ret == 0)) {
+                WH_ERROR_PRINT("Failed XMSS evict keyId=0x%X ret=%d\n",
+                               (unsigned)evictId, evictRet);
+                ret = evictRet;
+            }
+        }
+        wc_XmssKey_Free(key);
+    }
+
+    if (ret == 0) {
+        WH_TEST_PRINT("XMSS CryptoCb DEVID=0x%X SUCCESS\n", devId);
+    }
+
+    return ret;
+}
+#endif /* WOLFHSM_CFG_DMA && WOLFSSL_HAVE_XMSS && !WOLFSSL_XMSS_VERIFY_ONLY */
 
 /* Test key usage policy enforcement for various crypto operations */
 int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
@@ -13246,7 +16410,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    key, keyLen, &keyId);
         if (ret == 0) {
             /* Initialize AES with HSM device ID */
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 /* Set the cached keyId (not raw key material) */
                 ret = wh_Client_AesSetKeyId(aes, keyId);
@@ -13292,7 +16456,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"aes-enc-only",
                                    strlen("aes-enc-only"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13318,7 +16482,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                   &keyId);
             if (ret == 0) {
                 /* Initialize AES with HSM device ID */
-                ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+                ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
                 if (ret == 0) {
                     /* Set the cached keyId */
                     ret = wh_Client_AesSetKeyId(aes, keyId);
@@ -13367,7 +16531,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"ctr-no-enc", strlen("ctr-no-enc"),
                                    key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13407,7 +16571,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"ctr-no-dec", strlen("ctr-no-dec"),
                                    key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13448,7 +16612,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"ecb-no-enc", strlen("ecb-no-enc"),
                                    key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13484,7 +16648,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"ecb-no-dec", strlen("ecb-no-dec"),
                                    key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13524,7 +16688,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"gcm-no-enc", strlen("gcm-no-enc"),
                                    key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13564,7 +16728,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"gcm-no-dec", strlen("gcm-no-dec"),
                                    key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13606,7 +16770,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"dctr-no-enc",
                                    strlen("dctr-no-enc"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13646,7 +16810,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"dctr-no-dec",
                                    strlen("dctr-no-dec"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13687,7 +16851,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"decb-no-enc",
                                    strlen("decb-no-enc"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13723,7 +16887,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"decb-no-dec",
                                    strlen("decb-no-dec"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13762,7 +16926,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"dcbc-no-enc",
                                    strlen("dcbc-no-enc"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13802,7 +16966,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"dcbc-no-dec",
                                    strlen("dcbc-no-dec"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13845,7 +17009,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"dgcm-no-enc",
                                    strlen("dgcm-no-enc"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13886,7 +17050,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                                    (uint8_t*)"dgcm-no-dec",
                                    strlen("dgcm-no-dec"), key, keyLen, &keyId);
         if (ret == 0) {
-            ret = wc_AesInit(aes, NULL, WH_DEV_ID_DMA);
+            ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wh_Client_AesSetKeyId(aes, keyId);
                 if (ret == 0) {
@@ -13936,7 +17100,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
               strlen("ecc-no-sign"), (uint8_t*)"ecc-no-sign");
         if (ret == 0) {
             /* Initialize ecc_key with HSM device ID and set curve */
-            ret = wc_ecc_init_ex(eccKey, NULL, WH_DEV_ID);
+            ret = wc_ecc_init_ex(eccKey, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wc_ecc_set_curve(eccKey, 32, ECC_SECP256R1);
                 if (ret == 0) {
@@ -13988,7 +17152,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
               strlen("ecc-no-derive"), (uint8_t*)"ecc-no-derive");
         if (ret == 0) {
             /* Initialize private key with HSM device ID and set curve */
-            ret = wc_ecc_init_ex(privKey, NULL, WH_DEV_ID);
+            ret = wc_ecc_init_ex(privKey, NULL, WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 ret = wc_ecc_set_curve(privKey, 32, ECC_SECP256R1);
                 if (ret == 0) {
@@ -14111,7 +17275,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
         if (ret == 0) {
             /* Initialize CMAC with HSM device ID */
             ret = wc_InitCmac_ex(&cmac, NULL, 0, WC_CMAC_AES, NULL, NULL,
-                                 WH_DEV_ID);
+                                 WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 /* Associate cached key */
                 ret = wh_Client_CmacSetKeyId(&cmac, keyId);
@@ -14119,7 +17283,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                     /* Try to generate CMAC - should fail */
                     ret = wc_AesCmacGenerate_ex(&cmac, tag, &tagLen, message,
                                                 sizeof(message), NULL, 0, NULL,
-                                                WH_DEV_ID);
+                                                WH_CLIENT_DEVID(client));
                     if (ret == WH_ERROR_USAGE) {
                         WH_TEST_PRINT("    PASS: Correctly denied CMAC generate\n");
                         ret = 0; /* Test passed */
@@ -14164,7 +17328,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
         if (ret == 0) {
             /* Initialize CMAC with HSM device ID */
             ret = wc_InitCmac_ex(&cmac, NULL, 0, WC_CMAC_AES, NULL, NULL,
-                                 WH_DEV_ID);
+                                 WH_CLIENT_DEVID(client));
             if (ret == 0) {
                 /* Associate cached key */
                 ret = wh_Client_CmacSetKeyId(&cmac, keyId);
@@ -14172,7 +17336,7 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
                     /* Try to verify CMAC - should fail */
                     ret = wc_AesCmacVerify_ex(&cmac, tag, tagLen, message,
                                               sizeof(message), NULL, 0, NULL,
-                                              WH_DEV_ID);
+                                              WH_CLIENT_DEVID(client));
                     if (ret == WH_ERROR_USAGE) {
                         WH_TEST_PRINT("    PASS: Correctly denied CMAC verify\n");
                         ret = 0; /* Test passed */
@@ -14250,7 +17414,8 @@ int whTest_CryptoKeyUsagePolicies(whClientContext* client, WC_RNG* rng)
 
 #if !defined(NO_AES) && defined(HAVE_AES_CBC) && \
     defined(WOLFHSM_CFG_TEST_ALLOW_PERSISTENT_NVM_ARTIFACTS)
-int _testRevocationTryAESEncrypt(whKeyId keyId, WC_RNG* rng, int* encryptRes)
+int _testRevocationTryAESEncrypt(whClientContext* client, whKeyId keyId,
+                                 WC_RNG* rng, int* encryptRes)
 {
     int     ret;
     Aes     aes[1];
@@ -14268,7 +17433,7 @@ int _testRevocationTryAESEncrypt(whKeyId keyId, WC_RNG* rng, int* encryptRes)
         return ret;
     }
     /* try to encrypt with the given keyId */
-    ret = wc_AesInit(aes, NULL, WH_DEV_ID);
+    ret = wc_AesInit(aes, NULL, WH_CLIENT_DEVID(client));
     if (ret != 0) {
         WH_ERROR_PRINT("Failed to init AES for revoked key test: %d\n", ret);
         return ret;
@@ -14325,7 +17490,7 @@ int whTest_CryptoKeyRevocationAesCbc(whClientContext* client, WC_RNG* rng)
         }
 
         /* encrypt should work */
-        ret = _testRevocationTryAESEncrypt(keyId, rng, &encryptRes);
+        ret = _testRevocationTryAESEncrypt(client, keyId, rng, &encryptRes);
         if (ret != 0) {
             WH_ERROR_PRINT("Failed to encrypt with unrevoked AES key: %d\n",
                            ret);
@@ -14347,7 +17512,7 @@ int whTest_CryptoKeyRevocationAesCbc(whClientContext* client, WC_RNG* rng)
         }
 
         /* now encrypt should fail */
-        ret = _testRevocationTryAESEncrypt(keyId, rng, &encryptRes);
+        ret = _testRevocationTryAESEncrypt(client, keyId, rng, &encryptRes);
         if (ret != 0 || encryptRes != WH_ERROR_USAGE) {
             WH_ERROR_PRINT(
                 "Encrypt with revoked AES key should fail (%d), got %d\n",
@@ -14363,7 +17528,7 @@ int whTest_CryptoKeyRevocationAesCbc(whClientContext* client, WC_RNG* rng)
         }
 
         /* keep failing */
-        ret = _testRevocationTryAESEncrypt(keyId, rng, &encryptRes);
+        ret = _testRevocationTryAESEncrypt(client, keyId, rng, &encryptRes);
         if (ret != 0 || encryptRes != WH_ERROR_USAGE) {
             WH_ERROR_PRINT(
                 "Encrypt with revoked AES key should fail (%d), got %d\n",
@@ -14394,7 +17559,7 @@ int whTest_CryptoKeyRevocationAesCbc(whClientContext* client, WC_RNG* rng)
             return ret;
         }
         /* try encrypt first */
-        ret = _testRevocationTryAESEncrypt(keyId, rng, &encryptRes);
+        ret = _testRevocationTryAESEncrypt(client, keyId, rng, &encryptRes);
         if (ret != 0 || encryptRes != 0) {
             WH_ERROR_PRINT("Failed to encrypt with unrevoked AES key (2nd "
                            "time): %d\n",
@@ -14415,7 +17580,7 @@ int whTest_CryptoKeyRevocationAesCbc(whClientContext* client, WC_RNG* rng)
             return ret;
         }
         /* this should still fail */
-        ret = _testRevocationTryAESEncrypt(keyId, rng, &encryptRes);
+        ret = _testRevocationTryAESEncrypt(client, keyId, rng, &encryptRes);
         if (ret != 0 || encryptRes != WH_ERROR_USAGE) {
             WH_ERROR_PRINT(
                 "Encrypt with revoked AES key should fail (%d), got %d\n",
@@ -14432,6 +17597,162 @@ int whTest_CryptoKeyRevocationAesCbc(whClientContext* client, WC_RNG* rng)
 }
 #endif /* !NO_AES && HAVE_AES_CBC && \
           WOLFHSM_CFG_TEST_ALLOW_PERSISTENT_NVM_ARTIFACTS */
+
+/* Negative tests: every cache-and-export keygen function must reject
+ * WH_NVM_FLAGS_EPHEMERAL, a NULL inout_key_id, and a NULL pub with
+ * WH_ERROR_BADARGS, before contacting the server. level is passed as 0 for the
+ * PQC calls since the argument guards run before any level validation. */
+static int whTest_CryptoMakeCacheKeyExportPublicArgs(whClientContext* ctx)
+{
+    int     ret   = 0;
+    whKeyId keyId = WH_KEYID_ERASED;
+
+#if !defined(NO_RSA) && defined(WOLFSSL_KEY_GEN)
+    {
+        RsaKey rsa[1] = {0};
+        if (wh_Client_RsaMakeCacheKeyAndExportPublic(
+                ctx, 2048, WC_RSA_EXPONENT, &keyId, WH_NVM_FLAGS_EPHEMERAL, 0,
+                NULL, rsa) != WH_ERROR_BADARGS ||
+            wh_Client_RsaMakeCacheKeyAndExportPublic(
+                NULL, 2048, WC_RSA_EXPONENT, &keyId, WH_NVM_FLAGS_NONE, 0, NULL,
+                rsa) != WH_ERROR_BADARGS ||
+            wh_Client_RsaMakeCacheKeyAndExportPublic(
+                ctx, 2048, WC_RSA_EXPONENT, NULL, WH_NVM_FLAGS_NONE, 0, NULL,
+                rsa) != WH_ERROR_BADARGS ||
+            wh_Client_RsaMakeCacheKeyAndExportPublic(
+                ctx, 2048, WC_RSA_EXPONENT, &keyId, WH_NVM_FLAGS_NONE, 0, NULL,
+                NULL) != WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("RSA cache-export arg validation failed\n");
+            ret = -1;
+        }
+    }
+#endif
+#ifdef HAVE_ECC
+    if (ret == 0) {
+        ecc_key ecc[1] = {0};
+        if (wh_Client_EccMakeCacheKeyAndExportPublic(
+                ctx, 32, ECC_SECP256R1, &keyId, WH_NVM_FLAGS_EPHEMERAL, 0, NULL,
+                ecc) != WH_ERROR_BADARGS ||
+            wh_Client_EccMakeCacheKeyAndExportPublic(
+                NULL, 32, ECC_SECP256R1, &keyId, WH_NVM_FLAGS_NONE, 0, NULL,
+                ecc) != WH_ERROR_BADARGS ||
+            wh_Client_EccMakeCacheKeyAndExportPublic(
+                ctx, 32, ECC_SECP256R1, NULL, WH_NVM_FLAGS_NONE, 0, NULL,
+                ecc) != WH_ERROR_BADARGS ||
+            wh_Client_EccMakeCacheKeyAndExportPublic(
+                ctx, 32, ECC_SECP256R1, &keyId, WH_NVM_FLAGS_NONE, 0, NULL,
+                NULL) != WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("ECC cache-export arg validation failed\n");
+            ret = -1;
+        }
+    }
+#endif
+#ifdef HAVE_CURVE25519
+    if (ret == 0) {
+        curve25519_key cv[1] = {0};
+        if (wh_Client_Curve25519MakeCacheKeyAndExportPublic(
+                ctx, CURVE25519_KEYSIZE, &keyId, WH_NVM_FLAGS_EPHEMERAL, NULL, 0,
+                cv) != WH_ERROR_BADARGS ||
+            wh_Client_Curve25519MakeCacheKeyAndExportPublic(
+                ctx, CURVE25519_KEYSIZE, NULL, WH_NVM_FLAGS_NONE, NULL, 0,
+                cv) != WH_ERROR_BADARGS ||
+            wh_Client_Curve25519MakeCacheKeyAndExportPublic(
+                ctx, CURVE25519_KEYSIZE, &keyId, WH_NVM_FLAGS_NONE, NULL, 0,
+                NULL) != WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("Curve25519 cache-export arg validation failed\n");
+            ret = -1;
+        }
+    }
+#endif
+#ifdef HAVE_ED25519
+    if (ret == 0) {
+        ed25519_key ed[1] = {0};
+        if (wh_Client_Ed25519MakeCacheKeyAndExportPublic(
+                ctx, &keyId, WH_NVM_FLAGS_EPHEMERAL, 0, NULL, ed) !=
+                WH_ERROR_BADARGS ||
+            wh_Client_Ed25519MakeCacheKeyAndExportPublic(
+                ctx, NULL, WH_NVM_FLAGS_NONE, 0, NULL, ed) != WH_ERROR_BADARGS ||
+            wh_Client_Ed25519MakeCacheKeyAndExportPublic(
+                ctx, &keyId, WH_NVM_FLAGS_NONE, 0, NULL, NULL) !=
+                WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("Ed25519 cache-export arg validation failed\n");
+            ret = -1;
+        }
+    }
+#endif
+#ifdef WOLFSSL_MLDSA_PUBLIC_KEY
+    if (ret == 0) {
+        wc_MlDsaKey mldsa[1] = {0};
+        if (wh_Client_MlDsaMakeCacheKeyAndExportPublic(
+                ctx, 0, 0, &keyId, WH_NVM_FLAGS_EPHEMERAL, 0, NULL, mldsa) !=
+                WH_ERROR_BADARGS ||
+            wh_Client_MlDsaMakeCacheKeyAndExportPublic(
+                ctx, 0, 0, NULL, WH_NVM_FLAGS_NONE, 0, NULL, mldsa) !=
+                WH_ERROR_BADARGS ||
+            wh_Client_MlDsaMakeCacheKeyAndExportPublic(
+                ctx, 0, 0, &keyId, WH_NVM_FLAGS_NONE, 0, NULL, NULL) !=
+                WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("ML-DSA cache-export arg validation failed\n");
+            ret = -1;
+        }
+#ifdef WOLFHSM_CFG_DMA
+        if (ret == 0 &&
+            (wh_Client_MlDsaMakeCacheKeyDma(
+                 ctx, 0, &keyId, WH_NVM_FLAGS_EPHEMERAL, 0, NULL, mldsa) !=
+                 WH_ERROR_BADARGS ||
+             wh_Client_MlDsaMakeCacheKeyDma(
+                 ctx, 0, NULL, WH_NVM_FLAGS_NONE, 0, NULL, mldsa) !=
+                 WH_ERROR_BADARGS ||
+             wh_Client_MlDsaMakeCacheKeyDma(
+                 ctx, 0, &keyId, WH_NVM_FLAGS_NONE, 0, NULL, NULL) !=
+                 WH_ERROR_BADARGS)) {
+            WH_ERROR_PRINT("ML-DSA DMA cache-export arg validation failed\n");
+            ret = -1;
+        }
+#endif /* WOLFHSM_CFG_DMA */
+    }
+#endif /* WOLFSSL_MLDSA_PUBLIC_KEY */
+#ifdef WOLFSSL_HAVE_MLKEM
+    if (ret == 0) {
+        MlKemKey mlkem[1] = {0};
+        if (wh_Client_MlKemMakeCacheKeyAndExportPublic(
+                ctx, 0, &keyId, WH_NVM_FLAGS_EPHEMERAL, 0, NULL, mlkem) !=
+                WH_ERROR_BADARGS ||
+            wh_Client_MlKemMakeCacheKeyAndExportPublic(
+                ctx, 0, NULL, WH_NVM_FLAGS_NONE, 0, NULL, mlkem) !=
+                WH_ERROR_BADARGS ||
+            wh_Client_MlKemMakeCacheKeyAndExportPublic(
+                ctx, 0, &keyId, WH_NVM_FLAGS_NONE, 0, NULL, NULL) !=
+                WH_ERROR_BADARGS) {
+            WH_ERROR_PRINT("ML-KEM cache-export arg validation failed\n");
+            ret = -1;
+        }
+#ifdef WOLFHSM_CFG_DMA
+        if (ret == 0 &&
+            (wh_Client_MlKemMakeCacheKeyDma(
+                 ctx, 0, &keyId, WH_NVM_FLAGS_EPHEMERAL, 0, NULL, mlkem) !=
+                 WH_ERROR_BADARGS ||
+             wh_Client_MlKemMakeCacheKeyDma(
+                 ctx, 0, NULL, WH_NVM_FLAGS_NONE, 0, NULL, mlkem) !=
+                 WH_ERROR_BADARGS ||
+             wh_Client_MlKemMakeCacheKeyDma(
+                 ctx, 0, &keyId, WH_NVM_FLAGS_NONE, 0, NULL, NULL) !=
+                 WH_ERROR_BADARGS)) {
+            WH_ERROR_PRINT("ML-KEM DMA cache-export arg validation failed\n");
+            ret = -1;
+        }
+#endif /* WOLFHSM_CFG_DMA */
+    }
+#endif /* WOLFSSL_HAVE_MLKEM */
+
+    if (ret == 0) {
+        WH_TEST_PRINT("KEYGEN-EXPORT-PUBLIC ARG VALIDATION SUCCESS\n");
+    }
+    return ret;
+}
+
+/* WH_TEST_DMA_MODE_CNT (number of cryptoCb dispatch modes to exercise) is
+ * provided by wh_test_common.h */
 
 int whTest_CryptoClientConfig(whClientConfig* config)
 {
@@ -14470,11 +17791,26 @@ int whTest_CryptoClientConfig(whClientConfig* config)
     }
 #endif /* WOLFHSM_CFG_DEBUG_VERBOSE */
 
-    /* First crypto test should be of RNG so we can iterate over and test all
-     * devIds before choosing one to run the rest of the tests on */
+    /* Run RNG first, exercising each DMA dispatch mode (std and, when compiled,
+     * DMA-preferred) on the single per-client devId before the remaining tests
+     * settle on a default mode. */
     i = 0;
-    while ((ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS)) {
-        ret = whTest_CryptoRng(client, WH_DEV_IDS_ARRAY[i], rng);
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        int dmaMode = -1;
+        /* Exercise RNG through both dispatch modes (std and, if compiled,
+         * DMA-preferred) on the single per-client devId. */
+        (void)wh_Client_SetDmaMode(client, i);
+        /* Round-trip the dispatch mode through the getter (reports 0 in
+         * non-DMA builds, where this loop only runs mode 0) */
+        ret = wh_Client_GetDmaMode(client, &dmaMode);
+        if ((ret == WH_ERROR_OK) && (dmaMode != i)) {
+            WH_ERROR_PRINT("GetDmaMode returned %d after SetDmaMode(%d)\n",
+                           dmaMode, i);
+            ret = WH_ERROR_ABORTED;
+        }
+        if (ret == WH_ERROR_OK) {
+            ret = whTest_CryptoRng(client, WH_CLIENT_DEVID(client), rng);
+        }
         if (ret == WH_ERROR_OK) {
             wc_FreeRng(rng);
             i++;
@@ -14482,7 +17818,7 @@ int whTest_CryptoClientConfig(whClientConfig* config)
     }
 
     /* Direct exercise of the async RNG primitives (does not go through the
-     * wolfCrypt callback path, so devId is not relevant). */
+     * wolfCrypt callback path, so DMA mode is not relevant). */
     if (ret == WH_ERROR_OK) {
         ret = whTest_CryptoRngAsync(client);
     }
@@ -14492,11 +17828,12 @@ int whTest_CryptoClientConfig(whClientConfig* config)
     }
 #endif /* WOLFHSM_CFG_DMA */
 
-    /* Now that we have tested all RNG devIds, reinitialize the default RNG
-     * devId (non-DMA) that will be used by the remainder of the tests for
-     * random input generation */
+    /* The remaining once-run tests below historically used the non-DMA devId;
+     * select the std (non-DMA) dispatch mode for them. Reinitialize the default
+     * RNG used by the rest of the tests for random input generation. */
     if (ret == 0) {
-        ret = wc_InitRng_ex(rng, NULL, WH_DEV_ID);
+        (void)wh_Client_SetDmaMode(client, 0);
+        ret = wc_InitRng_ex(rng, NULL, WH_CLIENT_DEVID(client));
         if (ret != 0) {
             WH_ERROR_PRINT("Failed to reinitialize RNG %d\n", ret);
         }
@@ -14507,12 +17844,18 @@ int whTest_CryptoClientConfig(whClientConfig* config)
 
     if (ret == 0) {
         /* Test Key Cache functions */
-        ret = whTest_KeyCache(client, WH_DEV_ID, rng);
+        ret = whTest_KeyCache(client, WH_CLIENT_DEVID(client), rng);
+    }
+
+    if (ret == 0) {
+        /* Test server-side key generation from RNG */
+        ret = whTest_KeyCacheRandom(client, WH_DEV_ID, rng);
     }
 
     if (ret == 0) {
         /* Test Non-Exportable Flag enforcement on keystore */
-        ret = whTest_NonExportableKeystore(client, WH_DEV_ID, rng);
+        ret =
+            whTest_NonExportableKeystore(client, WH_CLIENT_DEVID(client), rng);
     }
 
     if (ret == 0) {
@@ -14527,53 +17870,72 @@ int whTest_CryptoClientConfig(whClientConfig* config)
     if (ret == 0) {
         ret = whTest_Client_DataWrap(client);
     }
+#if defined(WOLFHSM_CFG_HWKEYSTORE) && defined(WOLFHSM_CFG_ENABLE_SERVER)
+    /* Hardware-only KEK tests need the in-process test server, which binds
+     * the test hardware keystore; external (client-only) servers may not */
+    if (ret == 0) {
+        ret = whTest_Client_HwKeystore(client);
+    }
+#endif
 #endif
 
 #ifndef NO_AES
     i = 0;
-    while ((ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS)) {
-        ret = whTestCrypto_Aes(client, WH_DEV_IDS_ARRAY[i], rng);
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTestCrypto_Aes(client, WH_CLIENT_DEVID(client), rng);
         if (ret == WH_ERROR_OK) {
-            ret = whTest_CryptoAesAsync(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret = whTest_CryptoAesAsync(client, WH_CLIENT_DEVID(client), rng);
         }
         if (ret == WH_ERROR_OK) {
-            ret = whTest_CryptoAesAsyncKat(client, WH_DEV_IDS_ARRAY[i]);
+            ret = whTest_CryptoAesAsyncKat(client, WH_CLIENT_DEVID(client));
         }
         if (ret == WH_ERROR_OK) {
             i++;
         }
     }
 #ifdef WOLFHSM_CFG_DMA
+    /* Dedicated async DMA tests drive the wh_Client_*Dma APIs directly; prefer
+     * DMA so any wolfCrypt-routed operations also take the DMA path. */
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoAesDmaAsync(client, WH_DEV_ID_DMA, rng);
+        ret = whTest_CryptoAesDmaAsync(client, WH_CLIENT_DEVID(client), rng);
     }
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoAesDmaAsyncKat(client, WH_DEV_ID_DMA);
+        ret = whTest_CryptoAesDmaAsyncKat(client, WH_CLIENT_DEVID(client));
     }
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* !NO_AES */
 
 #if defined(WOLFSSL_CMAC) && !defined(NO_AES) && defined(WOLFSSL_AES_DIRECT)
     i = 0;
-    while ((ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS)) {
-        ret = whTestCrypto_Cmac(client, WH_DEV_IDS_ARRAY[i], rng);
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTestCrypto_Cmac(client, WH_CLIENT_DEVID(client), rng);
         if (ret == WH_ERROR_OK) {
-            ret = whTestCrypto_CmacAsync(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret = whTestCrypto_CmacAsync(client, WH_CLIENT_DEVID(client), rng);
         }
         if (ret == WH_ERROR_OK) {
             i++;
         }
     }
 #ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == WH_ERROR_OK) {
-        ret = whTestCrypto_CmacDmaAsync(client, WH_DEV_ID_DMA, rng);
+        ret = whTestCrypto_CmacDmaAsync(client, WH_CLIENT_DEVID(client), rng);
     }
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* WOLFSSL_CMAC && !NO_AES && WOLFSSL_AES_DIRECT */
 
+    /* Once-run public-key tests use the std (non-DMA) dispatch mode. */
+    (void)wh_Client_SetDmaMode(client, 0);
+    if (ret == 0) {
+        ret = whTest_CryptoMakeCacheKeyExportPublicArgs(client);
+    }
+
 #ifndef NO_RSA
     if (ret == 0) {
-        ret = whTest_CryptoRsa(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoRsa(client, WH_CLIENT_DEVID(client), rng);
     }
     if (ret == 0) {
         ret = whTest_CryptoRsaAsync(client, rng);
@@ -14581,12 +17943,23 @@ int whTest_CryptoClientConfig(whClientConfig* config)
 #endif /* NO_RSA */
 
 #ifdef HAVE_ECC
+    (void)wh_Client_SetDmaMode(client, 0);
     if (ret == 0) {
-        ret = whTest_CryptoEcc(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoEcc(client, WH_CLIENT_DEVID(client), rng);
     }
     if (ret == 0) {
         ret = whTest_CryptoEccCacheDuplicate(client);
     }
+#if !defined(WOLF_CRYPTO_CB_ONLY_ECC)
+    if (ret == 0) {
+        ret = whTest_CryptoEccMakePub(client, WH_CLIENT_DEVID(client), rng);
+    }
+#ifdef HAVE_ECC_CHECK_KEY
+    if (ret == 0) {
+        ret = whTest_CryptoEccCheckPubKey(client, WH_CLIENT_DEVID(client), rng);
+    }
+#endif /* HAVE_ECC_CHECK_KEY */
+#endif /* !WOLF_CRYPTO_CB_ONLY_ECC */
 #if defined(HAVE_ECC_SIGN) && defined(HAVE_ECC_VERIFY) && \
     !defined(WOLF_CRYPTO_CB_ONLY_ECC)
     if (ret == 0) {
@@ -14597,8 +17970,10 @@ int whTest_CryptoClientConfig(whClientConfig* config)
     }
 #endif
 #ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == 0) {
-        ret = whTest_CryptoEccExportPublicDma(client, WH_DEV_ID_DMA, rng);
+        ret = whTest_CryptoEccExportPublicDma(client, WH_CLIENT_DEVID(client),
+                                              rng);
         if (ret != 0) {
             WH_ERROR_PRINT(
                 "ECC export-public DMA test failed: %d\n", ret);
@@ -14612,27 +17987,39 @@ int whTest_CryptoClientConfig(whClientConfig* config)
         WH_ERROR_PRINT("Pre-Ed25519 tests ret=%d\n", ret);
         return ret;
     }
+    (void)wh_Client_SetDmaMode(client, 0);
     if (ret == 0) {
-        ret = whTest_CryptoEd25519Inline(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoEd25519Inline(client, WH_CLIENT_DEVID(client), rng);
         if (ret != 0) {
             WH_ERROR_PRINT("Ed25519 inline test failed: %d\n", ret);
         }
     }
     if (ret == 0) {
-        ret = whTest_CryptoEd25519ServerKey(client, WH_DEV_ID, rng);
+        ret =
+            whTest_CryptoEd25519ServerKey(client, WH_CLIENT_DEVID(client), rng);
         if (ret != 0) {
             WH_ERROR_PRINT("Ed25519 server key test failed: %d\n", ret);
         }
     }
     if (ret == 0) {
-        ret = whTest_CryptoEd25519ExportPublic(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoEd25519ExportPublic(client, WH_CLIENT_DEVID(client),
+                                               rng);
         if (ret != 0) {
             WH_ERROR_PRINT("Ed25519 export-public test failed: %d\n", ret);
         }
     }
-#ifdef WOLFHSM_CFG_DMA
     if (ret == 0) {
-        ret = whTest_CryptoEd25519Dma(client, WH_DEV_ID_DMA, rng);
+        ret = whTest_CryptoEd25519CacheKeyAndExportPublic(
+            client, WH_CLIENT_DEVID(client), rng);
+        if (ret != 0) {
+            WH_ERROR_PRINT(
+                "Ed25519 cache-and-export-public test failed: %d\n", ret);
+        }
+    }
+#ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
+    if (ret == 0) {
+        ret = whTest_CryptoEd25519Dma(client, WH_CLIENT_DEVID(client), rng);
         if (ret != 0) {
             WH_ERROR_PRINT("Ed25519 DMA test failed: %d\n", ret);
         }
@@ -14641,123 +18028,167 @@ int whTest_CryptoClientConfig(whClientConfig* config)
 #endif /* HAVE_ED25519 */
 
 #ifdef HAVE_CURVE25519
-    /* test curve25519 */
+    /* test curve25519 (std/non-DMA dispatch mode) */
+    (void)wh_Client_SetDmaMode(client, 0);
     if (ret == 0) {
-        ret = whTest_CryptoCurve25519(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoCurve25519(client, WH_CLIENT_DEVID(client), rng);
     }
     if (ret == 0) {
-        ret =
-            whTest_CryptoCurve25519SharedSecretCacheKey(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoCurve25519SharedSecretCacheKey(
+            client, WH_CLIENT_DEVID(client), rng);
         if (ret != 0) {
             WH_ERROR_PRINT(
                 "Curve25519 shared-secret cache-key test failed: %d\n", ret);
         }
     }
     if (ret == 0) {
-        ret = whTest_CryptoCurve25519ExportPublic(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoCurve25519ExportPublic(client,
+                                                  WH_CLIENT_DEVID(client), rng);
         if (ret != 0) {
             WH_ERROR_PRINT("Curve25519 export-public test failed: %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ret = whTest_CryptoCurve25519CacheKeyAndExportPublic(
+            client, WH_CLIENT_DEVID(client), rng);
+        if (ret != 0) {
+            WH_ERROR_PRINT(
+                "Curve25519 cache-and-export-public test failed: %d\n", ret);
         }
     }
 #endif /* HAVE_CURVE25519 */
 
 #ifndef NO_SHA256
     i = 0;
-    while ((ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS)) {
-        ret = whTest_CryptoSha256(client, WH_DEV_IDS_ARRAY[i], rng);
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTest_CryptoSha256(client, WH_CLIENT_DEVID(client), rng);
         if (ret == WH_ERROR_OK) {
-            ret =
-                whTest_CryptoSha256LargeInput(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret = whTest_CryptoSha256LargeInput(client, WH_CLIENT_DEVID(client),
+                                                rng);
         }
         if (ret == WH_ERROR_OK) {
-            ret = whTest_CryptoSha256Async(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret =
+                whTest_CryptoSha256Async(client, WH_CLIENT_DEVID(client), rng);
         }
         if (ret == WH_ERROR_OK) {
             i++;
         }
     }
 #ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoSha256DmaAsync(client, WH_DEV_ID_DMA, rng);
+        ret = whTest_CryptoSha256DmaAsync(client, WH_CLIENT_DEVID(client), rng);
     }
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* !NO_SHA256 */
 
 #ifdef WOLFSSL_SHA224
     i = 0;
-    while ((ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS)) {
-        ret = whTest_CryptoSha224(client, WH_DEV_IDS_ARRAY[i], rng);
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTest_CryptoSha224(client, WH_CLIENT_DEVID(client), rng);
         if (ret == WH_ERROR_OK) {
-            ret =
-                whTest_CryptoSha224LargeInput(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret = whTest_CryptoSha224LargeInput(client, WH_CLIENT_DEVID(client),
+                                                rng);
         }
         if (ret == WH_ERROR_OK) {
-            ret = whTest_CryptoSha224Async(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret =
+                whTest_CryptoSha224Async(client, WH_CLIENT_DEVID(client), rng);
         }
         if (ret == WH_ERROR_OK) {
             i++;
         }
     }
 #ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoSha224DmaAsync(client, WH_DEV_ID_DMA, rng);
+        ret = whTest_CryptoSha224DmaAsync(client, WH_CLIENT_DEVID(client), rng);
     }
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* WOLFSSL_SHA224 */
 
 #ifdef WOLFSSL_SHA384
     i = 0;
-    while ((ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS)) {
-        ret = whTest_CryptoSha384(client, WH_DEV_IDS_ARRAY[i], rng);
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTest_CryptoSha384(client, WH_CLIENT_DEVID(client), rng);
         if (ret == WH_ERROR_OK) {
-            ret =
-                whTest_CryptoSha384LargeInput(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret = whTest_CryptoSha384LargeInput(client, WH_CLIENT_DEVID(client),
+                                                rng);
         }
         if (ret == WH_ERROR_OK) {
-            ret = whTest_CryptoSha384Async(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret =
+                whTest_CryptoSha384Async(client, WH_CLIENT_DEVID(client), rng);
         }
         if (ret == WH_ERROR_OK) {
             i++;
         }
     }
 #ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoSha384DmaAsync(client, WH_DEV_ID_DMA, rng);
+        ret = whTest_CryptoSha384DmaAsync(client, WH_CLIENT_DEVID(client), rng);
     }
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* WOLFSSL_SHA384 */
 
 #ifdef WOLFSSL_SHA512
     i = 0;
-    while ((ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS)) {
-        ret = whTest_CryptoSha512(client, WH_DEV_IDS_ARRAY[i], rng);
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTest_CryptoSha512(client, WH_CLIENT_DEVID(client), rng);
         if (ret == WH_ERROR_OK) {
-            ret =
-                whTest_CryptoSha512LargeInput(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret = whTest_CryptoSha512LargeInput(client, WH_CLIENT_DEVID(client),
+                                                rng);
         }
         if (ret == WH_ERROR_OK) {
-            ret = whTest_CryptoSha512Async(client, WH_DEV_IDS_ARRAY[i], rng);
+            ret =
+                whTest_CryptoSha512Async(client, WH_CLIENT_DEVID(client), rng);
         }
         if (ret == WH_ERROR_OK) {
             i++;
         }
     }
 #ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoSha512DmaAsync(client, WH_DEV_ID_DMA, rng);
+        ret = whTest_CryptoSha512DmaAsync(client, WH_CLIENT_DEVID(client), rng);
     }
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* WOLFSSL_SHA512 */
 
-#ifdef HAVE_HKDF
+#if defined(WOLFSSL_SHA3)
+    i = 0;
+    while ((ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT)) {
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTest_CryptoSha3(client, WH_CLIENT_DEVID(client), rng);
+        if (ret == WH_ERROR_OK) {
+            ret = whTest_CryptoSha3Async(client, WH_CLIENT_DEVID(client), rng);
+        }
+        if (ret == WH_ERROR_OK) {
+            i++;
+        }
+    }
+#ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoHkdf(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoSha3DmaAsync(client, WH_CLIENT_DEVID(client), rng);
+    }
+#endif /* WOLFHSM_CFG_DMA */
+#endif /* WOLFSSL_SHA3 */
+
+#ifdef HAVE_HKDF
+    (void)wh_Client_SetDmaMode(client, 0);
+    if (ret == WH_ERROR_OK) {
+        ret = whTest_CryptoHkdf(client, WH_CLIENT_DEVID(client), rng);
     }
 #endif /* HAVE_HKDF */
 
 #ifdef HAVE_CMAC_KDF
+    (void)wh_Client_SetDmaMode(client, 0);
     if (ret == WH_ERROR_OK) {
-        ret = whTest_CryptoCmacKdf(client, WH_DEV_ID, rng);
+        ret = whTest_CryptoCmacKdf(client, WH_CLIENT_DEVID(client), rng);
     }
 #endif /* HAVE_CMAC_KDF */
 
@@ -14789,45 +18220,71 @@ int whTest_CryptoClientConfig(whClientConfig* config)
         for (li = 0; (ret == 0) && (li < mldsaLevelCnt); li++) {
             int level = mldsaLevels[li];
 
-            for (i = 0; (ret == WH_ERROR_OK) && (i < WH_NUM_DEVIDS); i++) {
+            for (i = 0; (ret == WH_ERROR_OK) && (i < WH_TEST_DMA_MODE_CNT);
+                 i++) {
 #ifdef WOLFHSM_CFG_TEST_CLIENT_LARGE_DATA_DMA_ONLY
-                if (WH_DEV_IDS_ARRAY[i] != WH_DEV_ID_DMA) {
+                /* Large-data DMA-only: exercise the DMA-preferred mode only */
+                if (i != 1) {
                     continue;
                 }
 #endif /* WOLFHSM_CFG_TEST_CLIENT_LARGE_DATA_DMA_ONLY */
-                ret = whTestCrypto_MlDsaWolfCrypt(client, WH_DEV_IDS_ARRAY[i],
-                                                  rng, level);
+                (void)wh_Client_SetDmaMode(client, i);
+                ret = whTestCrypto_MlDsaWolfCrypt(
+                    client, WH_CLIENT_DEVID(client), rng, level);
             }
 
+            (void)wh_Client_SetDmaMode(client, 0);
             if (ret == 0) {
-                ret = whTestCrypto_MlDsaClient(client, WH_DEV_ID, rng, level);
+                ret = whTestCrypto_MlDsaClient(client, WH_CLIENT_DEVID(client),
+                                               rng, level);
             }
 
 #ifdef WOLFSSL_MLDSA_PUBLIC_KEY
             if (ret == 0) {
-                ret = whTestCrypto_MlDsaExportPublic(client, WH_DEV_ID, rng,
-                                                     level);
+                ret = whTestCrypto_MlDsaExportPublic(
+                    client, WH_CLIENT_DEVID(client), rng, level);
                 if (ret != 0) {
                     WH_ERROR_PRINT(
                         "ML-DSA export-public test failed (level %d): %d\n",
                         level, ret);
                 }
             }
+            if (ret == 0) {
+                ret = whTestCrypto_MlDsaCacheKeyAndExportPublic(
+                    client, WH_CLIENT_DEVID(client), rng, level);
+                if (ret != 0) {
+                    WH_ERROR_PRINT(
+                        "ML-DSA cache-and-export-public test failed "
+                        "(level %d): %d\n",
+                        level, ret);
+                }
+            }
 #endif
 
 #ifdef WOLFHSM_CFG_DMA
+            (void)wh_Client_SetDmaMode(client, 1);
             if (ret == 0) {
-                ret = whTestCrypto_MlDsaDmaClient(client, WH_DEV_ID_DMA, rng,
-                                                  level);
+                ret = whTestCrypto_MlDsaDmaClient(
+                    client, WH_CLIENT_DEVID(client), rng, level);
             }
 #ifdef WOLFSSL_MLDSA_PUBLIC_KEY
             if (ret == 0) {
-                ret = whTestCrypto_MlDsaExportPublicDma(client, WH_DEV_ID_DMA,
-                                                        rng, level);
+                ret = whTestCrypto_MlDsaExportPublicDma(
+                    client, WH_CLIENT_DEVID(client), rng, level);
                 if (ret != 0) {
                     WH_ERROR_PRINT(
                         "ML-DSA export-public DMA test failed (level %d): "
                         "%d\n",
+                        level, ret);
+                }
+            }
+            if (ret == 0) {
+                ret = whTestCrypto_MlDsaCacheKeyAndExportPublicDma(
+                    client, WH_CLIENT_DEVID(client), rng, level);
+                if (ret != 0) {
+                    WH_ERROR_PRINT(
+                        "ML-DSA cache-and-export-public DMA test failed "
+                        "(level %d): %d\n",
                         level, ret);
                 }
             }
@@ -14843,8 +18300,10 @@ int whTest_CryptoClientConfig(whClientConfig* config)
 #if !defined(WOLFSSL_MLDSA_NO_VERIFY) && \
     !defined(WOLFSSL_NO_ML_DSA_44) && \
     defined(WOLFHSM_CFG_DMA)
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == 0) {
-        ret = whTestCrypto_MlDsaVerifyOnlyDma(client, WH_DEV_ID_DMA, rng);
+        ret = whTestCrypto_MlDsaVerifyOnlyDma(client, WH_CLIENT_DEVID(client),
+                                              rng);
     }
 #endif /* !defined(WOLFSSL_MLDSA_NO_VERIFY) && \
           !defined(WOLFSSL_NO_ML_DSA_44) && \
@@ -14857,38 +18316,60 @@ int whTest_CryptoClientConfig(whClientConfig* config)
     !defined(WOLFSSL_MLKEM_NO_ENCAPSULATE) && \
     !defined(WOLFSSL_MLKEM_NO_DECAPSULATE)
     i = 0;
-    while (ret == WH_ERROR_OK && i < WH_NUM_DEVIDS) {
+    while (ret == WH_ERROR_OK && i < WH_TEST_DMA_MODE_CNT) {
 #ifdef WOLFHSM_CFG_TEST_CLIENT_LARGE_DATA_DMA_ONLY
-        if (WH_DEV_IDS_ARRAY[i] != WH_DEV_ID_DMA) {
+        /* Large-data DMA-only: exercise the DMA-preferred mode only */
+        if (i != 1) {
             i++;
             continue;
         }
 #endif /* WOLFHSM_CFG_TEST_CLIENT_LARGE_DATA_DMA_ONLY */
-        ret = whTestCrypto_MlKemWolfCrypt(client, WH_DEV_IDS_ARRAY[i], rng);
+        (void)wh_Client_SetDmaMode(client, i);
+        ret = whTestCrypto_MlKemWolfCrypt(client, WH_CLIENT_DEVID(client), rng);
         if (ret == WH_ERROR_OK) {
             i++;
         }
     }
 
+    (void)wh_Client_SetDmaMode(client, 0);
     if (ret == 0) {
-        ret = whTestCrypto_MlKemClient(client, WH_DEV_ID, rng);
+        ret = whTestCrypto_MlKemClient(client, WH_CLIENT_DEVID(client), rng);
     }
 
     if (ret == 0) {
-        ret = whTestCrypto_MlKemExportPublic(client, WH_DEV_ID, rng);
+        ret = whTestCrypto_MlKemExportPublic(client, WH_CLIENT_DEVID(client),
+                                             rng);
         if (ret != 0) {
             WH_ERROR_PRINT("ML-KEM export-public test failed: %d\n", ret);
         }
     }
+    if (ret == 0) {
+        ret = whTestCrypto_MlKemCacheKeyAndExportPublic(
+            client, WH_CLIENT_DEVID(client), rng);
+        if (ret != 0) {
+            WH_ERROR_PRINT(
+                "ML-KEM cache-and-export-public test failed: %d\n", ret);
+        }
+    }
 
 #ifdef WOLFHSM_CFG_DMA
+    (void)wh_Client_SetDmaMode(client, 1);
     if (ret == 0) {
-        ret = whTestCrypto_MlKemDmaClient(client, WH_DEV_ID_DMA, rng);
+        ret = whTestCrypto_MlKemDmaClient(client, WH_CLIENT_DEVID(client), rng);
     }
     if (ret == 0) {
-        ret = whTestCrypto_MlKemExportPublicDma(client, WH_DEV_ID_DMA, rng);
+        ret = whTestCrypto_MlKemExportPublicDma(client, WH_CLIENT_DEVID(client),
+                                                rng);
         if (ret != 0) {
             WH_ERROR_PRINT("ML-KEM export-public DMA test failed: %d\n", ret);
+        }
+    }
+    if (ret == 0) {
+        ret = whTestCrypto_MlKemCacheKeyAndExportPublicDma(
+            client, WH_CLIENT_DEVID(client), rng);
+        if (ret != 0) {
+            WH_ERROR_PRINT(
+                "ML-KEM cache-and-export-public DMA test failed: %d\n", ret);
         }
     }
 #endif /* WOLFHSM_CFG_DMA */
@@ -14896,6 +18377,20 @@ int whTest_CryptoClientConfig(whClientConfig* config)
           !defined(WOLFSSL_MLKEM_NO_ENCAPSULATE) && \
           !defined(WOLFSSL_MLKEM_NO_DECAPSULATE) */
 #endif /* WOLFSSL_HAVE_MLKEM */
+
+#if defined(WOLFHSM_CFG_DMA) && \
+    defined(WOLFSSL_HAVE_LMS) && !defined(WOLFSSL_LMS_VERIFY_ONLY)
+    if (ret == 0) {
+        ret = whTestCrypto_LmsCryptoCb(client, WH_DEV_ID_DMA, rng);
+    }
+#endif
+
+#if defined(WOLFHSM_CFG_DMA) && \
+    defined(WOLFSSL_HAVE_XMSS) && !defined(WOLFSSL_XMSS_VERIFY_ONLY)
+    if (ret == 0) {
+        ret = whTestCrypto_XmssCryptoCb(client, WH_DEV_ID_DMA, rng);
+    }
+#endif
 
 #ifdef WOLFHSM_CFG_DEBUG_VERBOSE
     if (ret == 0) {
@@ -14907,6 +18402,9 @@ int whTest_CryptoClientConfig(whClientConfig* config)
     defined(WOLFHSM_CFG_TEST_ALLOW_PERSISTENT_NVM_ARTIFACTS)
     /* keep last, leaves artifact in the NVM layer */
     if (ret == 0) {
+        /* The DMA-only groups above don't restore the dispatch mode; reset to
+         * the std path so this test runs the same way in every config. */
+        (void)wh_Client_SetDmaMode(client, 0);
         /* Test key revocation */
         ret = whTest_CryptoKeyRevocationAesCbc(client, rng);
     }
@@ -15064,12 +18562,15 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
     }};
 
 #ifdef WOLFHSM_CFG_DMA
-    /* Run every crypto/cert *Dma op through the bounce-pool callback so a
-     * missing translation is rejected (see test/wh_test_dma.c). Catches missing
-     * translation; the use-after-free class is covered by the single-thread
-     * harness. */
+    /* In-process (shared address space) test: prefer DMA by default so the DMA
+     * dispatch paths are exercised. The orchestrator toggles this per-group via
+     * wh_Client_SetDmaMode() to exercise both the standard and DMA paths. Every
+     * crypto/cert *Dma op is also routed through the bounce-pool callback so a
+     * missing translation is rejected (see test/wh_test_dma.c); the
+     * use-after-free class is covered by the single-thread harness. */
     whClientDmaConfig clientDmaConfig = {
-        .cb = whTestDma_BounceClientCb,
+        .cb        = whTestDma_BounceClientCb,
+        .preferDma = 1,
     };
 #endif
     whClientConfig c_conf[1] = {{
@@ -15118,6 +18619,17 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
         .cb = whTestDma_BounceServerCb,
     };
 #endif
+#if defined(WOLFHSM_CFG_HWKEYSTORE) && defined(WOLFHSM_CFG_KEYWRAP)
+    /* Hardware keystore front-end backed by the test getKey callback. The
+     * callback is defined in wh_test_keywrap.c, so only bind it when the
+     * keywrap suite (its sole consumer) is compiled in */
+    static const whHwKeystoreCb hwksCb        = WH_TEST_HWKEYSTORE_CB;
+    whHwKeystoreContext         hwKeystore[1] = {{0}};
+    whHwKeystoreConfig          hwksConf[1]   = {{
+                   .cb      = &hwksCb,
+                   .context = NULL,
+    }};
+#endif
 
     whServerConfig s_conf[1] = {{
         .comm_config = cs_conf,
@@ -15127,9 +18639,15 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
 #ifdef WOLFHSM_CFG_DMA
         .dmaConfig   = &serverDmaConfig,
 #endif
+#if defined(WOLFHSM_CFG_HWKEYSTORE) && defined(WOLFHSM_CFG_KEYWRAP)
+        .hwKeystore = hwKeystore,
+#endif
     }};
 
     WH_TEST_RETURN_ON_FAIL(wh_Nvm_Init(nvm, n_conf));
+#if defined(WOLFHSM_CFG_HWKEYSTORE) && defined(WOLFHSM_CFG_KEYWRAP)
+    WH_TEST_RETURN_ON_FAIL(wh_HwKeystore_Init(hwKeystore, hwksConf));
+#endif
 
 #ifdef WOLFHSM_CFG_DMA
     whTestDma_BounceReset();
@@ -15166,6 +18684,9 @@ static int wh_ClientServer_MemThreadTest(whTestNvmBackendType nvmType)
     }
 
     wh_Nvm_Cleanup(nvm);
+#if defined(WOLFHSM_CFG_HWKEYSTORE) && defined(WOLFHSM_CFG_KEYWRAP)
+    (void)wh_HwKeystore_Cleanup(hwKeystore);
+#endif
     wc_FreeRng(crypto->rng);
     wolfCrypt_Cleanup();
 

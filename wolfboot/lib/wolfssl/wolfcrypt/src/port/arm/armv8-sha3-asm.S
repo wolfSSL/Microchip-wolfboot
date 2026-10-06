@@ -9,13 +9,17 @@
  * https://www.wolfssl.com
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
-
 /* Generated using (from wolfssl):
  *   cd ../scripts
  *   ruby ./sha3/sha3.rb arm64 \
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-sha3-asm.S
  */
+
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_SHA3_ASM_S
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+
 #ifdef WOLFSSL_ARMASM
 #ifdef __aarch64__
 #ifndef WOLFSSL_ARMASM_INLINE
@@ -51,12 +55,14 @@ L_SHA3_transform_crypto_r:
 #ifndef __APPLE__
 .text
 .globl	BlockSha3_crypto
+WC_ASM_ATT_HIDDEN(BlockSha3_crypto)
 .type	BlockSha3_crypto,@function
 .align	2
 BlockSha3_crypto:
 #else
 .section	__TEXT,__text
 .globl	_BlockSha3_crypto
+WC_ASM_ATT_HIDDEN(_BlockSha3_crypto)
 .p2align	2
 _BlockSha3_crypto:
 #endif /* __APPLE__ */
@@ -73,9 +79,7 @@ _BlockSha3_crypto:
 	adrp x1, L_SHA3_transform_crypto_r@PAGE
 	add  x1, x1, L_SHA3_transform_crypto_r@PAGEOFF
 #endif /* __APPLE__ */
-#ifdef __APPLE__
 .arch_extension sha3
-#endif /* __APPLE__ */
 	ld4	{v0.d, v1.d, v2.d, v3.d}[0], [x0], #32
 	ld4	{v4.d, v5.d, v6.d, v7.d}[0], [x0], #32
 	ld4	{v8.d, v9.d, v10.d, v11.d}[0], [x0], #32
@@ -214,12 +218,14 @@ L_SHA3_transform_base_r:
 #ifndef __APPLE__
 .text
 .globl	BlockSha3_base
+WC_ASM_ATT_HIDDEN(BlockSha3_base)
 .type	BlockSha3_base,@function
 .align	2
 BlockSha3_base:
 #else
 .section	__TEXT,__text
 .globl	_BlockSha3_base
+WC_ASM_ATT_HIDDEN(_BlockSha3_base)
 .p2align	2
 _BlockSha3_base:
 #endif /* __APPLE__ */

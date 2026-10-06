@@ -171,6 +171,7 @@ static void hal_spu_init(void)
 }
 
 #ifdef WOLFCRYPT_SECURE_MODE
+
 static uint32_t cryptocell_enable_prev = 0;
 
 void hal_trng_init(void)
@@ -198,6 +199,19 @@ void hal_trng_fini(void)
     CRYPTOCELL_ENABLE = cryptocell_enable_prev;
 }
 
+/* Scrub the staging buffer without depending on wolfCrypt: the hal
+ * layer is linked into builds (e.g. the OTP keystore primer) that have
+ * no wolfCrypt. The volatile loop also keeps the compiler from eliding
+ * the dead store. */
+static void trng_scrub(uint8_t *p, unsigned int len)
+{
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    unsigned int i;
+
+    for (i = 0; i < len; i++)
+        v[i] = 0;
+}
+
 int hal_trng_get_entropy(unsigned char *out, unsigned int len)
 {
     unsigned int i = 0;
@@ -215,6 +229,9 @@ int hal_trng_get_entropy(unsigned char *out, unsigned int len)
         for (byte = 0; byte < 4 * CC_RNG_EHR_DATA_LEN && i < len; byte++) {
             out[i++] = (unsigned char)data_bytes[byte];
         }
+        /* Raw TRNG output seeds the FIPS Hash-DRBG: do not leave the last
+         * batch on the stack for a later frame to observe. */
+        trng_scrub(data_bytes, 4 * CC_RNG_EHR_DATA_LEN);
     }
 
     return 0;
@@ -272,27 +289,14 @@ void uart_write_sz(const char* c, unsigned int sz)
     }
 }
 
+/* CRLF conversion lives in nrf5340_uart.c so it can be unit-tested on the
+ * host without the nrfx register access the rest of this HAL needs. */
+void nrf5340_uart_crlf(const char* buf, unsigned int sz,
+        void (*sink)(const char*, unsigned int));
+
 void uart_write(const char* buf, unsigned int sz)
 {
-    const char* line;
-    unsigned int lineSz;
-    do {
-        /* find `\n` */
-        line = memchr(buf, '\n', sz);
-        if (line == NULL) {
-            uart_write_sz(buf, sz);
-            break;
-        }
-        lineSz = line - buf;
-        if (lineSz > sz-1)
-            lineSz = sz-1;
-
-        uart_write_sz(buf, lineSz);
-        uart_write_sz("\r\n", 2); /* handle CRLF */
-
-        buf = line;
-        sz -= lineSz + 1; /* skip \n, already sent */
-    } while ((int)sz > 0);
+    nrf5340_uart_crlf(buf, sz, uart_write_sz);
 }
 #endif /* DEBUG_UART */
 
@@ -307,31 +311,39 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
     while (i < len) {
         if ((len - i > 3) && ((((address + i) & 0x03) == 0)  &&
                       ((((uint32_t)data) + i) & 0x03) == 0)) {
-            src = (uint32_t *)data;
-            dst = (uint32_t *)address;
+            /* Index by "i" directly: the condition above only guarantees
+             * that "address + i" and "data + i" are word aligned, so
+             * dst[i >> 2] off the unaligned base would address the wrong
+             * word (and fault on a strict-alignment core). */
+            src = (uint32_t *)(data + i);
+            dst = (uint32_t *)(address + i);
 #if TZ_SECURE() || defined(TARGET_nrf5340_net)
             NVMC_CONFIG = NVMC_CONFIG_WEN;
 #endif
             NVMC_CONFIGNS = NVMC_CONFIG_WEN;
             while (NVMC_READY == 0);
-            dst[i >> 2] = src[i >> 2];
+            *dst = *src;
             while (NVMC_READY == 0);
             i+=4;
         } else {
             uint32_t val;
             uint8_t *vbytes = (uint8_t *)(&val);
-            int off = (address + i) - (((address + i) >> 2) << 2);
-            dst = (uint32_t *)(address - off);
-            val = dst[i >> 2];
-            vbytes[off] = data[i];
+            uint32_t off = ((address + i) % 4);
+            dst = (uint32_t *)(address + i - off);
+            val = *dst;
+            while (off < 4) {
+                if (i < len)
+                    vbytes[off++] = data[i++];
+                else
+                    off++;
+            }
 #if TZ_SECURE() || defined(TARGET_nrf5340_net)
             NVMC_CONFIG = NVMC_CONFIG_WEN;
 #endif
             NVMC_CONFIGNS = NVMC_CONFIG_WEN;
             while (NVMC_READY == 0);
-            dst[i >> 2] = val;
+            *dst = val;
             while (NVMC_READY == 0);
-            i++;
         }
     }
     return 0;
@@ -569,11 +581,14 @@ static void hal_shm_init(void)
 
 static void hal_shm_status_set(ShmInfo_t* info, uint32_t status)
 {
-    IPC_TASKS_SEND(USE_IPC_SEND) = 1;
     if (info != NULL) {
         info->magic = SHAREM_MEM_MAGIC;
         info->status = status;
     }
+    /* publish the fields before signaling: the peer reads them right
+     * after seeing the IPC event */
+    DSB();
+    IPC_TASKS_SEND(USE_IPC_SEND) = 1;
 }
 
 static uint32_t hal_shm_status_wait(ShmInfo_t* info, uint32_t status,
@@ -598,6 +613,9 @@ static uint32_t hal_shm_status_wait(ShmInfo_t* info, uint32_t status,
         }
         /* clear event */
         IPC_EVENTS_RECEIVE(USE_IPC_RECV) = 0;
+        /* the sender published the fields before the event: order this
+         * core's field reads after the event observation */
+        DSB();
         /* if we got an event and "info" not provided, just return status to
          * signal event occurred */
         if (info == NULL) {
@@ -816,22 +834,43 @@ void hal_init(void)
 }
 
 #ifdef __WOLFBOOT
-/* enable write protection for the region of flash specified */
+/* Enable write protection for the region of flash specified.
+ *
+ * Contract: protects [start, start+len). A zero len protects nothing and
+ * succeeds; a negative len is rejected. Protection is granted in whole
+ * SPU_FLASH_BLOCK_SIZE blocks, so a partial block at either end is locked
+ * whole - the locked range may be wider than requested, never narrower.
+ */
 int RAMFUNCTION hal_flash_protect(haladdr_t start, int len)
 {
     /* only application core supports SPU */
 #ifdef TARGET_nrf5340_app
     uint32_t region, n, i;
+    uint32_t tail;
 
     /* limit check */
     if (start > FLASH_SIZE)
         return -1;
+    if (len < 0)
+        return -1;
+    /* An empty range protects nothing. Return before the region math below:
+     * `tail` carries the start offset, so an unaligned start would round up
+     * to one block and lock 16 KiB the caller never asked to protect. */
+    if (len == 0)
+        return 0;
     /* truncate if exceeds flash size */
-    if (start + len > FLASH_SIZE)
+    if (start + (uint32_t)len > FLASH_SIZE)
         len = FLASH_SIZE - start;
 
     region = (start / SPU_FLASH_BLOCK_SIZE);
-    n = (len / SPU_FLASH_BLOCK_SIZE);
+    /* SPU regions are SPU_FLASH_BLOCK_SIZE-aligned. Round the block count up
+     * so the locked range covers [start, start+len) whole: start may sit
+     * mid-block and len may not be a whole number of blocks, so the partial
+     * blocks at both ends are locked whole (safe: it only ever widens
+     * protection). The old `len / SPU_FLASH_BLOCK_SIZE` truncated, leaving
+     * the tail block writable while still returning success. */
+    tail = (start % SPU_FLASH_BLOCK_SIZE) + (uint32_t)len;
+    n = (tail + SPU_FLASH_BLOCK_SIZE - 1) / SPU_FLASH_BLOCK_SIZE;
 
     for (i = 0; i < n; i++) {
         /* do not allow write to this region and lock till next reset */

@@ -73,9 +73,14 @@ These macros enable or tune optional cryptographic subsystems built on top of wo
 |---|---|---|
 | `WOLFHSM_CFG_SHE_EXTENSION` | Undefined | If defined, compile the AUTOSAR SHE subsystem (SHE message types, SHE key slots, M1-M5 update protocol, SHE-specific RNG and SREG handling). Requires wolfCrypt built with AES, `WOLFSSL_CMAC`, `WOLFSSL_AES_DIRECT`, and `HAVE_AES_ECB`. |
 | `WOLFHSM_CFG_KEYWRAP` | Undefined | If defined, compile the key-wrap subsystem (`wh_Client_KeyWrap*` / server counterparts). Uses AES-GCM internally and therefore requires wolfCrypt built with AES and `HAVE_AESGCM`. Incompatible with `WOLFHSM_CFG_NO_CRYPTO`. |
-| `WOLFHSM_CFG_KEYWRAP_MAX_KEY_SIZE` | `2000` | Maximum size, in bytes, of a key that can be wrapped or unwrapped in a single operation. Only consulted when `WOLFHSM_CFG_KEYWRAP` is defined. |
-| `WOLFHSM_CFG_KEYWRAP_MAX_DATA_SIZE` | `2000` | Maximum size, in bytes, of the plaintext or wrapped payload carried by a single key-wrap request. Only consulted when `WOLFHSM_CFG_KEYWRAP` is defined. |
+| `WOLFHSM_CFG_KEYWRAP_MAX_KEY_SIZE` | `2000`, or `WOLFHSM_CFG_COMM_DATA_LEN` minus the request overhead when that is smaller | Maximum size, in bytes, of a key that can be wrapped or unwrapped in a single operation. Only consulted when `WOLFHSM_CFG_KEYWRAP` is defined. The key plus its request header and metadata must fit within `WOLFHSM_CFG_COMM_DATA_LEN`; the default is derived so that it always does, and an explicit value that does not fit fails to build. |
+| `WOLFHSM_CFG_KEYWRAP_MAX_DATA_SIZE` | `2000`, or `WOLFHSM_CFG_COMM_DATA_LEN` minus the request overhead when that is smaller | Maximum size, in bytes, of the plaintext or wrapped payload carried by a single key-wrap request. Only consulted when `WOLFHSM_CFG_KEYWRAP` is defined. The payload plus its request header must fit within `WOLFHSM_CFG_COMM_DATA_LEN`; the default is derived so that it always does, and an explicit value that does not fit fails to build. |
+| `WOLFHSM_CFG_HWKEYSTORE` | Undefined | If defined, compile the hardware keystore front-end (`wh_HwKeystore_*`) and hardware-only key support (`WH_KEYTYPE_HW`, `WH_CLIENT_KEYID_MAKE_HW()`). Hardware-only keys are served on demand by a user-supplied callback and are usable only as keywrap KEKs; they never enter the key cache or NVM and are never exported. See [Hardware-Only Keys](5-Features.md#hardware-only-keys). |
+| `WOLFHSM_CFG_HWKEYSTORE_MAX_KEY_SIZE` | `32` | Maximum size, in bytes, of a key served by the hardware keystore backend; sizes the local buffer that holds a hardware KEK for the duration of a keywrap operation. Only consulted when `WOLFHSM_CFG_HWKEYSTORE` is defined. |
 | `WOLFHSM_CFG_GLOBAL_KEYS` | Undefined | If defined, enable the global-keys feature, allowing keys to be cached so that they are visible to every client rather than scoped to the caching client. See [Global Keys](5-Features.md#global-keys) for a full discussion of the API and security implications. |
+| `WOLFHSM_CFG_SHE_GLOBAL_KEYS` | Undefined | If defined, all sixteen AUTOSAR SHE key slots live in the global-keys namespace (USER=0) so every connected client shares a single SHE device view, matching AUTOSAR's one-physical-SHE model rather than wolfHSM's default per-client SHE slots. Requires `WOLFHSM_CFG_GLOBAL_KEYS` and `WOLFHSM_CFG_SHE_EXTENSION` (enforced by `#error`). See [Global SHE Keys](5-Features.md#global-she-keys). |
+| `WH_DEV_ID` | `0x5748534D` (`"WHSM"`) | Value of the process-global crypto device ID registered by every `wh_Client_Init()` with the unified client crypto callback. Also the device ID bound to a client whose `whClientConfig.devId` is left `0`. Override it if the default collides with another crypto-callback device ID in the application. See [Transparent Offload via Crypto Callbacks](5-Features.md#transparent-offload-via-crypto-callbacks) for registration lifetime, multi-client rules, and wolfCrypt callback-table sizing (`MAX_CRYPTO_DEVID_CALLBACKS`, default 8). |
+| `WH_DEV_ID_DMA` | `0x57444D41` (`"WDMA"`) | Value of the process-global DMA-only crypto device ID, registered by every `wh_Client_Init()` when `WOLFHSM_CFG_DMA` is defined. Reserved: not valid as a `whClientConfig.devId`. Override it if the default collides with another crypto-callback device ID in the application. |
 
 ## Keystore and Key Cache
 
@@ -83,7 +88,7 @@ These macros size the server-side key cache. The cache is split into "regular" s
 
 | Macro | Default | Description |
 |---|---|---|
-| `WOLFHSM_CFG_SERVER_KEYCACHE_COUNT` | `8` | Number of regular RAM key-cache slots on the server. |
+| `WOLFHSM_CFG_SERVER_KEYCACHE_COUNT` | `8` (`16` with `WOLFHSM_CFG_SHE_EXTENSION`) | Number of regular RAM key-cache slots on the server. The SHE default holds all sixteen SHE slots at once. |
 | `WOLFHSM_CFG_SERVER_KEYCACHE_BUFSIZE` | `256` | Size, in bytes, of each regular key-cache slot. |
 | `WOLFHSM_CFG_SERVER_KEYCACHE_BIG_COUNT` | `1` | Number of "big" RAM key-cache slots on the server, used for large keys (e.g. RSA, ML-DSA). |
 | `WOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE` | `1200` | Size, in bytes, of each big key-cache slot. Should be at least the largest key the server is expected to hold (e.g. ~1024 bytes for an RSA-4096 private key). |
@@ -93,6 +98,7 @@ These macros size the server-side key cache. The cache is split into "regular" s
 | Macro | Default | Description |
 |---|---|---|
 | `WOLFHSM_CFG_NVM_OBJECT_COUNT` | `32` | Maximum number of objects the NVM directory can hold simultaneously (RAM directory cache *and* the on-disk directory it mirrors). Determines the upper bound on the number of keys, certificates, counters, and user objects that can coexist in NVM at one time. |
+| `WOLFHSM_CFG_NVM_FLASH_CRC16` | Undefined | If defined, the `nvm_flash` backend stores a CRC16 of each object's metadata and data in the on-flash object state and verifies them: metadata when the directory is loaded (failing objects become invisible and reclaimable), data on full-object reads and reclaim copies (returning `WH_ERROR_NOTVERIFIED` on mismatch). Partial reads are not verified. Changes the on-flash format: images written with and without this option are mutually incompatible, and `whnvmtool` must be built with the same setting as the server. |
 | `WOLFHSM_CFG_SERVER_NVM_FLASH_LOG` | Undefined | If defined, compile the log-structured NVM flash backend (`wh_nvm_flash_log`). When enabled it can be selected at runtime as an alternative to the regular flash backend; useful for flash parts that tolerate fewer erases or that prefer append-only update patterns. |
 
 ## Certificate Manager
@@ -124,7 +130,7 @@ These macros gate and tune DMA-mode crypto and large-buffer operations.
 
 | Macro | Default | Description |
 |---|---|---|
-| `WOLFHSM_CFG_DMA` | Undefined | If defined, compile the DMA-capable code paths: the `WH_DEV_ID_DMA` crypto device, DMA message types, pre/post access callbacks, and the address allowlist machinery. Without this macro, DMA APIs are stubbed out. |
+| `WOLFHSM_CFG_DMA` | Undefined | If defined, compile the DMA-capable code paths: the per-client DMA dispatch mode (`wh_Client_SetDmaMode()`), DMA message types, pre/post access callbacks, the address allowlist machinery, and the `WH_DEV_ID_DMA` crypto device. Without this macro, DMA APIs are stubbed out. |
 | `WOLFHSM_CFG_DMAADDR_COUNT` | `10` | Number of entries in the DMA address allowlist used by the server to validate client-supplied DMA buffers. |
 | `WOLFHSM_CFG_DMA_PTR_SIZE` | Compiler-detected (`__SIZEOF_POINTER__`) | Override the assumed DMA pointer size, in bytes (must be `4` or `8`). Auto-detection works for GCC/Clang and IAR; define this explicitly for any toolchain that does not provide `__SIZEOF_POINTER__`. |
 | `WOLFHSM_CFG_DMA_ALT_PTR_SIZE` | Undefined | If defined, allows the DMA pointer size to differ from the native CPU pointer size (e.g. a 32-bit-pointer server reachable from a 64-bit-pointer client). When undefined, wh_settings.h refuses to build with a mismatched `WOLFHSM_CFG_DMA_PTR_SIZE`. |

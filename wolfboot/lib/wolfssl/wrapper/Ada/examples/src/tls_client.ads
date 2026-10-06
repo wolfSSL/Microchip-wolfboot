@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 --  The WolfSSL package.
 with WolfSSL; pragma Elaborate_All (WolfSSL);
 

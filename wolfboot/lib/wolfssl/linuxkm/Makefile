@@ -1,8 +1,8 @@
 # libwolfssl Linux kernel module Makefile (wraps Kbuild-native makefile)
 #
-# Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+# Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
 #
-# This file is part of wolfBoot.
+# This file is part of wolfSSL.
 #
 # Contact licensing@wolfssl.com with any questions or comments.
 #
@@ -18,6 +18,13 @@ else ifeq "$(V)" "1"
 else
     QFLAG := --quiet
 endif
+
+# Some versions and invocations of Gnu make have glitched on --quiet builds,
+# due to a bug around $(MAKEFLAGS), like so:
+# "No rule to make target 's'.  Stop."
+# If you encounter this, try uncommenting the below line, which is supported on
+# Gnu make 4.3+:
+# NO_SILENT := --no-silent
 
 ifndef LIBWOLFSSL_NAME
     LIBWOLFSSL_NAME := libwolfssl
@@ -321,8 +328,7 @@ ifeq "$(ENABLED_LINUXKM_PIE)" "yes"
 	@RELOC_TMP=$$(mktemp "$(MAKE_TMPDIR)/wc_linuxkm_pie_reloc_tab.c.XXXXXX")
 	@trap 'rm "$$RELOC_TMP"' EXIT
 	@if [[ -f "$@" ]]; then touch -r "$@" "$$RELOC_TMP"; fi
-	# --no-silent works around make bug that otherwise leads to "No rule to make target 's'.  Stop." (due to a bug around $(MAKEFLAGS)) in --quiet builds.
-	+$(MAKE) $(QFLAG) --no-print-directory --no-silent ARCH='$(KERNEL_ARCH)' $(OVERRIDE_PATHS) $(CROSS_COMPILE) -C '$(KERNEL_ROOT)' M='$(MODULE_TOP)' $(KBUILD_EXTRA_FLAGS) CC_FLAGS_FTRACE=
+	+$(MAKE) $(QFLAG) $(NO_SILENT) --no-print-directory ARCH='$(KERNEL_ARCH)' $(OVERRIDE_PATHS) $(CROSS_COMPILE) -C '$(KERNEL_ROOT)' M='$(MODULE_TOP)' $(KBUILD_EXTRA_FLAGS) CC_FLAGS_FTRACE=
 	# if the above make didn't build a fresh libwolfssl.ko, then the module is already up to date and we leave it untouched, assuring stability for purposes of module-update-fips-hash.
 	@if [[ ! "$@" -nt "$$RELOC_TMP" ]]; then echo '  Module already up-to-date.'; exit 0; fi
 	@SECTION_MAP=$$(mktemp)
@@ -330,12 +336,11 @@ ifeq "$(ENABLED_LINUXKM_PIE)" "yes"
 	@export SECTION_MAP
 	@$(READELF) --wide --sections --symbols "$@" | $(GENERATE_SECTION_MAP)
 	@$(READELF) --wide --relocs "$@" | $(GENERATE_RELOC_TAB) >| '$(MODULE_TOP)/linuxkm/wc_linuxkm_pie_reloc_tab.c'
-	+$(MAKE) $(QFLAG) --no-print-directory --no-silent ARCH='$(KERNEL_ARCH)' $(OVERRIDE_PATHS) $(CROSS_COMPILE) -C '$(KERNEL_ROOT)' M='$(MODULE_TOP)' $(KBUILD_EXTRA_FLAGS) CC_FLAGS_FTRACE=
+	+$(MAKE) $(QFLAG) --no-print-directory $(NO_SILENT) ARCH='$(KERNEL_ARCH)' $(OVERRIDE_PATHS) $(CROSS_COMPILE) -C '$(KERNEL_ROOT)' M='$(MODULE_TOP)' $(KBUILD_EXTRA_FLAGS) CC_FLAGS_FTRACE=
 	@$(READELF) --wide --relocs "$@" | $(GENERATE_RELOC_TAB) >| "$$RELOC_TMP"
 	@if diff '$(MODULE_TOP)/linuxkm/wc_linuxkm_pie_reloc_tab.c' "$$RELOC_TMP"; then echo " Relocation table is stable."; else echo "PIE failed: relocation table is unstable." 1>&2; exit 1; fi
 else
-	# --no-silent works around make bug that otherwise leads to "No rule to make target 's'.  Stop." (due to a bug around $(MAKEFLAGS)) in --quiet builds.
-	+$(MAKE) $(QFLAG) --no-print-directory --no-silent ARCH='$(KERNEL_ARCH)' $(OVERRIDE_PATHS) $(CROSS_COMPILE) -C '$(KERNEL_ROOT)' M='$(MODULE_TOP)' $(KBUILD_EXTRA_FLAGS)
+	+$(MAKE) $(QFLAG) --no-print-directory $(NO_SILENT) ARCH='$(KERNEL_ARCH)' $(OVERRIDE_PATHS) $(CROSS_COMPILE) -C '$(KERNEL_ROOT)' M='$(MODULE_TOP)' $(KBUILD_EXTRA_FLAGS)
 endif
 
 $(MODULE_TOP)/$(LIBWOLFSSL_NAME).ko: $(LIBWOLFSSL_NAME).ko
@@ -346,19 +351,20 @@ module-update-fips-hash: $(LIBWOLFSSL_NAME).ko
 	@if test -z '$(FIPS_HASH)'; then echo '	 $$FIPS_HASH is unset' >&2; exit 1; fi
 	@if [[ ! '$(FIPS_HASH)' =~ [0-9a-fA-F]{64} ]]; then echo '  $$FIPS_HASH is malformed' >&2; exit 1; fi
 	@readarray -t rodata_segment < <($(READELF) --wide --sections "$<" | \
-	    sed -E -n 's/^[[:space:]]*\[[[:space:]]*([0-9]+)\][[:space:]]+\.rodata_wolfcrypt[[:space:]]+PROGBITS[[:space:]]+[0-9a-fA-F]+[[:space:]]+([0-9a-fA-F]+)[[:space:]].*$$/\1\n\2/p'); \
-	if [[ $${#rodata_segment[@]} != 2 ]]; then echo '  unexpected rodata_segment.' >&2; exit 1; fi; \
+	    sed -E -n 's/^[[:space:]]*\[[[:space:]]*([0-9]+)\][[:space:]]+\.rodata_wolfcrypt[[:space:]]+PROGBITS[[:space:]]+[0-9a-fA-F]+[[:space:]]+([0-9a-fA-F]+)[[:space:]].*$$/\1\n\2/p')
+	if [[ $${#rodata_segment[@]} != 2 ]]; then echo '  unexpected rodata_segment.' >&2; exit 1; fi
 	readarray -t verifyCore_attrs < <($(READELF) --wide --symbols "$<" | \
 	    sed -E -n 's/^[[:space:]]*[0-9]+: ([0-9a-fA-F]+)[[:space:]]+([0-9]+)[[:space:]]+OBJECT[[:space:]]+[A-Z]+[[:space:]]+[A-Z]+[[:space:]]+'"$${rodata_segment[0]}"'[[:space:]]+verifyCore$$/\1\n\2/p'); \
-	if [[ $${#verifyCore_attrs[@]} != 2 ]]; then echo '  unexpected verifyCore_attrs.' >&2; exit 1; fi; \
-	if [[ "$${verifyCore_attrs[1]}" != "65" ]]; then echo "	 verifyCore has unexpected length $${verifyCore_attrs[1]}." >&2; exit 1; fi; \
-	verifyCore_offset=$$((0x$${rodata_segment[1]} + 0x$${verifyCore_attrs[0]})); \
-	current_verifyCore=$$(dd bs=1 if="$<" skip=$$verifyCore_offset count=64 status=none); \
-	if [[ ! "$$current_verifyCore" =~ [0-9a-fA-F]{64} ]]; then echo "  verifyCore at offset $$verifyCore_offset has unexpected value." >&2; exit 1; fi; \
-	if [[ '$(FIPS_HASH)' == "$$current_verifyCore" ]]; then echo '	Supplied FIPS_HASH matches existing verifyCore -- no update needed.'; exit 0; fi; \
-	echo -n '$(FIPS_HASH)' | dd bs=1 conv=notrunc of="$<" seek=$$verifyCore_offset count=64 status=none && \
+	if [[ $${#verifyCore_attrs[@]} != 2 ]]; then echo '  unexpected verifyCore_attrs.' >&2; exit 1; fi
+	verifyCore_size=$$(($${verifyCore_attrs[1]} - 1))
+	if [[ "$$verifyCore_size" != "64" && "$$verifyCore_size" != "128" ]]; then echo "	 verifyCore has unexpected length $${verifyCore_size}." >&2; exit 1; fi
+	verifyCore_offset=$$((0x$${rodata_segment[1]} + 0x$${verifyCore_attrs[0]}))
+	current_verifyCore=$$(dd bs=1 if="$<" skip=$$verifyCore_offset count=$$verifyCore_size status=none)
+	if [[ ! "$$current_verifyCore" =~ [0-9a-fA-F]{64} ]]; then echo "  verifyCore at offset $$verifyCore_offset has unexpected value." >&2; exit 1; fi
+	if [[ '$(FIPS_HASH)' == "$$current_verifyCore" ]]; then echo '	Supplied FIPS_HASH matches existing verifyCore -- no update needed.'; exit 0; fi
+	echo -n '$(FIPS_HASH)' | dd bs=1 conv=notrunc of="$<" seek=$$verifyCore_offset count=$$verifyCore_size status=none && \
 	echo "	FIPS verifyCore updated successfully." && \
-            if [[ -f '$(LIBWOLFSSL_NAME).ko.signed' ]]; then $(MAKE) $(QFLAG) --no-print-directory --no-silent -C . '$(LIBWOLFSSL_NAME).ko.signed'; fi
+            if [[ -f '$(LIBWOLFSSL_NAME).ko.signed' ]]; then $(MAKE) $(QFLAG) --no-print-directory $(NO_SILENT) -C . '$(LIBWOLFSSL_NAME).ko.signed'; fi
 
 
 # linuxkm-fips-hash implements offline (no-load) FIPS hash calculation and graft-in.
@@ -421,7 +427,7 @@ linuxkm-fips-hash: $(MODULE_TOP)/libwolfssl-user-build/src/.libs/libwolfssl.so l
 module-with-matching-fips-hash: $(LIBWOLFSSL_NAME).ko linuxkm-fips-hash
 	@set -e
 	@./linuxkm-fips-hash-wrapper.sh "$<" $(QFLAG) $(VFLAG)
-	+$(MAKE) $(QFLAG) --no-print-directory --no-silent -C . '$(LIBWOLFSSL_NAME).ko.signed'
+	+$(MAKE) $(QFLAG) --no-print-directory $(NO_SILENT) -C . '$(LIBWOLFSSL_NAME).ko.signed'
 
 .PHONY: module-with-matching-fips-hash-no-sign
 module-with-matching-fips-hash-no-sign: $(LIBWOLFSSL_NAME).ko linuxkm-fips-hash
@@ -472,13 +478,13 @@ endif
 
 .PHONY: install modules_install
 install modules_install:
-	+$(MAKE) $(QFLAG) --no-silent -C $(KERNEL_ROOT) M=$(MODULE_TOP) src=$(SRC_TOP) INSTALL_MOD_DIR=wolfssl modules_install
+	+$(MAKE) $(QFLAG) $(NO_SILENT) -C $(KERNEL_ROOT) M=$(MODULE_TOP) src=$(SRC_TOP) INSTALL_MOD_DIR=wolfssl modules_install
 
 .PHONY: clean
 # note, must supply $(MODULE_TOP) as the src value for clean so that Kbuild is included, else
 # the top Makefile (which is not for the kernel build) would be included here.
 clean:
-	+$(MAKE) $(QFLAG) --no-silent -C $(KERNEL_ROOT) M=$(MODULE_TOP) src=$(MODULE_TOP) clean
+	+$(MAKE) $(QFLAG) $(NO_SILENT) -C $(KERNEL_ROOT) M=$(MODULE_TOP) src=$(MODULE_TOP) clean
 	$(RM) -rf '$(MODULE_TOP)/linuxkm'
 	$(RM) -rf '$(MODULE_TOP)/wolfcrypt'
 	$(RM) -rf '$(MODULE_TOP)/src'

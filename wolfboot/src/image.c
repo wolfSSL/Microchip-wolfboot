@@ -48,6 +48,59 @@
 /* Globals */
 static uint8_t digest[WOLFBOOT_SHA_DIGEST_SIZE] XALIGNED(4);
 
+#ifdef WOLFBOOT_ARMORED
+
+/* Accumulator seed. Low byte clear so byte differences are never masked. */
+#define CT_SENTINEL 0xA5C3F000U
+
+/**
+ * Constant-time buffer comparison, hardened against instruction skips.
+ * Returns 0 when equal, non-zero otherwise.
+ */
+int NOINLINEFUNCTION image_CT_compare(
+    const uint8_t *expected, const uint8_t *actual, uint32_t len)
+{
+    volatile uint32_t diff = CT_SENTINEL;
+    volatile uint32_t witness = 0U;
+    volatile uint32_t count = 0U;
+    volatile uint32_t i = 0U;
+    volatile uint32_t budget = len;
+    volatile uint32_t res = 0U;
+    uint32_t expected_witness;
+    uint32_t len_is_zero;
+
+    /* Two counters bound the loop, so either one can end it. */
+    for (i = 0; (i < len) && (budget != 0U); i++) {
+        diff |= (uint32_t)(expected[i] ^ actual[i]);
+        witness += i + 1U;
+        count++;
+        budget--;
+    }
+
+    /* 64-bit product: the triangular number overflows 32 bits at
+     * len >= 65536, which would poison the self-check below. */
+    expected_witness = (uint32_t)(((uint64_t)len * ((uint64_t)len + 1U)) / 2U);
+    len_is_zero = 1U ^ ((len | (0U - len)) >> 31);
+
+    /* Folded twice, branch-free. */
+    res  = (diff ^ CT_SENTINEL);
+    res |= (witness ^ expected_witness);
+    res |= (count ^ len);
+    res |= (i ^ len);
+    res |= len_is_zero;
+    res |= (diff ^ CT_SENTINEL);
+    res |= (witness ^ expected_witness);
+    res |= (count ^ len);
+    res |= (i ^ len);
+    res |= len_is_zero;
+
+    return (int)res;
+}
+
+#undef CT_SENTINEL
+
+#else
+
 int NOINLINEFUNCTION image_CT_compare(
     const uint8_t *expected, const uint8_t *actual, uint32_t len)
 {
@@ -60,6 +113,8 @@ int NOINLINEFUNCTION image_CT_compare(
 
     return (diff != 0U) ? 1 : 0;
 }
+
+#endif /* WOLFBOOT_ARMORED */
 
 /**
  * Fault-hardened equality check around image_CT_compare(): the constant-time
@@ -74,9 +129,7 @@ int NOINLINEFUNCTION wolfBoot_hardened_CT_compare(
     volatile int r1 = image_CT_compare(expected, actual, len);
     volatile int r2 = image_CT_compare(expected, actual, len);
     /* Combine both results without branching: non-zero if either independent
-     * comparison reported a mismatch. This preserves image_CT_compare()'s 0/1
-     * return semantics and avoids data-dependent control flow, while a single
-     * fault can still subvert at most one of the two calls. */
+     * comparison reported a mismatch. */
     return (r1 | r2);
 }
 
@@ -221,8 +274,17 @@ static void wolfBoot_verify_signature_ecc(uint8_t key_slot,
         struct wolfBoot_image *img, uint8_t *sig)
 {
     int ret, verify_res = 0;
+#if defined(__TMS320C28XX__) || defined(WOLFBOOT_ARCH_C2000)
+    /* C28x: the ecc_key struct is large relative to the 16-bit-SP low-RAM stack
+     * (WOLFSSL_NO_MALLOC keeps SP-256 verify temporaries on the stack too), so
+     * keep it in .bss to avoid overflowing the stack into adjacent RAM during
+     * verify.  wolfBoot verifies images sequentially and wc_ecc_init_ex/
+     * wc_ecc_free bracket each use, so a single shared instance is safe.  The
+     * mp_ints r/s are small and stay on the stack, freshly mp_init'd per call. */
+    static ecc_key ecc;
+#else
     ecc_key ecc;
-    mp_int  r, s;
+#endif
 #if !defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) && \
     !defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
     uint8_t* pubkey    = keystore_get_buffer(key_slot);
@@ -256,7 +318,7 @@ static void wolfBoot_verify_signature_ecc(uint8_t key_slot,
           defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
 
         uint8_t tmpSigBuf[ECC_MAX_SIG_SIZE] = {0};
-        size_t  tmpSigSz                    = sizeof(tmpSigBuf);
+        word32  tmpSigSz                    = sizeof(tmpSigBuf);
 
     #if defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) || \
         (defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER) && \
@@ -294,6 +356,7 @@ static void wolfBoot_verify_signature_ecc(uint8_t key_slot,
         #endif
     #endif /* !WOLFBOOT_CERT_CHAIN_VERIFY */
         if (ret != 0) {
+            wc_ecc_free(&ecc);
             return;
         }
     #else
@@ -303,21 +366,19 @@ static void wolfBoot_verify_signature_ecc(uint8_t key_slot,
         ret = wc_ecc_import_unsigned(&ecc, pubkey, pubkey + point_sz, NULL,
                                      ECC_KEY_TYPE);
         if (ret != 0) {
+            wc_ecc_free(&ecc);
             return;
         }
 
     #endif /* WOLFBOOT_ENABLE_WOLFHSM_CLIENT || (SERVER && CERT_CHAIN) */
         /* wc_ecc_verify_hash_ex() doesn't trigger a crypto callback, so we need
            to use wc_ecc_verify_hash instead. Unfortunately, that requires
-           converting the signature to intermediate DER format first */
-        mp_init(&r);
-        mp_init(&s);
-        mp_read_unsigned_bin(&r, sig, point_sz);
-        mp_read_unsigned_bin(&s, sig + point_sz, point_sz);
-        uint32_t rSz = mp_unsigned_bin_size(&r);
-        uint32_t sSz = mp_unsigned_bin_size(&s);
-        ret          = wc_ecc_rs_raw_to_sig(sig, rSz, &sig[point_sz], sSz,
-                                            (byte*)&tmpSigBuf, (word32*)&tmpSigSz);
+           converting the signature to intermediate DER format first. Both
+           fields are passed at full width: the raw signature is fixed-width
+           and left-zero-padded, and the conversion strips the padding. */
+        ret = wc_ecc_rs_raw_to_sig(sig, (word32)point_sz, &sig[point_sz],
+                                   (word32)point_sz,
+                                   (byte*)&tmpSigBuf, &tmpSigSz);
         /* Verify the (temporary) DER representation of the signature */
         if (ret == 0) {
             VERIFY_FN(img, &verify_res, wc_ecc_verify_hash, tmpSigBuf, tmpSigSz,
@@ -335,6 +396,8 @@ static void wolfBoot_verify_signature_ecc(uint8_t key_slot,
         }
     #endif
     #else
+        mp_int r, s;
+
         /* Import public key */
         ret = wc_ecc_import_unsigned(&ecc, pubkey, pubkey + point_sz, NULL,
             ECC_KEY_TYPE);
@@ -346,6 +409,9 @@ static void wolfBoot_verify_signature_ecc(uint8_t key_slot,
             mp_read_unsigned_bin(&s, sig + point_sz, point_sz);
             VERIFY_FN(img, &verify_res, wc_ecc_verify_hash_ex, &r, &s,
                 img->sha_hash, WOLFBOOT_SHA_DIGEST_SIZE, &verify_res, &ecc);
+            /* Signature scalars: scrub before the stack frame retires. */
+            mp_clear(&r);
+            mp_clear(&s);
         }
     #endif
     }
@@ -387,28 +453,55 @@ static inline int DecodeAsn1Tag(const uint8_t* input, int inputSz, int* inOutIdx
     }
     return 0;
 }
+/* AlgorithmIdentifier (SEQUENCE + OID) of the DigestInfo for the
+ * configured hash. The recovered payload must match it byte for byte,
+ * with no extra bytes before, inside or after: any free byte in the
+ * message is forgeable with a low-exponent key (Bleichenbacher 2006).
+ */
+#if defined(WOLFBOOT_HASH_SHA256)
+static const uint8_t rsa_digest_info_algoid[] =
+    { 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04,
+      0x02, 0x01, 0x05, 0x00 };
+#elif defined(WOLFBOOT_HASH_SHA384)
+static const uint8_t rsa_digest_info_algoid[] =
+    { 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04,
+      0x02, 0x02, 0x05, 0x00 };
+#elif defined(WOLFBOOT_HASH_SHA3_384)
+static const uint8_t rsa_digest_info_algoid[] =
+    { 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04,
+      0x02, 0x09, 0x05, 0x00 };
+#endif
+
 static int RsaDecodeSignature(uint8_t** pInput, int inputSz)
 {
     uint8_t* input = *pInput;
     int idx = 0;
-    int digest_len = 0, algo_len, tot_len;
+    int digest_len = 0;
+    int tot_len;
 
-    /* sequence - total size */
+    /* sequence - total size, must span the whole payload */
     if (DecodeAsn1Tag(input, inputSz, &idx, &tot_len,
             ASN_SEQUENCE | ASN_CONSTRUCTED) != 0) {
         return -1;
     }
-
-    /* sequence - algoid */
-    if (DecodeAsn1Tag(input, inputSz, &idx, &algo_len,
-            ASN_SEQUENCE | ASN_CONSTRUCTED) != 0) {
+    if (tot_len + 2 != inputSz) {
         return -1;
     }
-    idx += algo_len; /* skip algoid */
 
-    /* digest */
+    /* algorithm identifier, pinned to the configured hash OID */
+    if (idx + (int)sizeof(rsa_digest_info_algoid) > inputSz ||
+            memcmp(input + idx, rsa_digest_info_algoid,
+                sizeof(rsa_digest_info_algoid)) != 0) {
+        return -1;
+    }
+    idx += (int)sizeof(rsa_digest_info_algoid);
+
+    /* digest, must end exactly at the end of the payload */
     if (DecodeAsn1Tag(input, inputSz, &idx, &digest_len,
             ASN_OCTET_STRING) != 0) {
+        return -1;
+    }
+    if (idx + digest_len != inputSz) {
         return -1;
     }
     /* return digest buffer pointer */
@@ -630,6 +723,7 @@ static void wolfBoot_verify_signature_lms(uint8_t key_slot,
         wolfBoot_printf("error: wc_LmsKey_SetParameters(%d, %d, %d)" \
                         " returned %d\n", LMS_LEVELS, LMS_HEIGHT,
                         LMS_WINTERNITZ, ret);
+        wc_LmsKey_Free(&lms);
         return;
     }
 
@@ -642,6 +736,7 @@ static void wolfBoot_verify_signature_lms(uint8_t key_slot,
         /* Something is wrong with the pub key or LMS parameters. */
         wolfBoot_printf("error: wc_LmsKey_ImportPubRaw" \
                         " returned %d\n", ret);
+        wc_LmsKey_Free(&lms);
         return;
     }
 
@@ -703,7 +798,7 @@ static void wolfBoot_verify_signature_xmss(uint8_t key_slot,
     /* Set the public key. */
     ret = wc_XmssKey_ImportPubRaw(&xmss, pubkey, KEYSTORE_PUBKEY_SIZE);
     if (ret != 0) {
-        /* Something is wrong with the pub key or LMS parameters. */
+        /* Something is wrong with the pub key or XMSS parameters. */
         wolfBoot_printf("error: wc_XmssKey_ImportPubRaw" \
                         " returned %d\n", ret);
         return;
@@ -732,6 +827,7 @@ static void wolfBoot_verify_signature_ml_dsa(uint8_t key_slot,
         struct wolfBoot_image *img, uint8_t *sig)
 {
     int         ret = 0;
+    int         key_inited = 0;
     wc_MlDsaKey ml_dsa;
 #if !defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) && \
     !defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
@@ -759,8 +855,9 @@ static void wolfBoot_verify_signature_ml_dsa(uint8_t key_slot,
     if (ret != 0) {
         wolfBoot_printf("error: wc_MlDsaKey_Init returned %d\n", ret);
     }
+    else {
+        key_inited = 1;
 
-    if (ret == 0) {
         /* Set the ML-DSA security level. */
         ret = wc_MlDsaKey_SetParams(&ml_dsa, ML_DSA_LEVEL);
 
@@ -775,32 +872,35 @@ static void wolfBoot_verify_signature_ml_dsa(uint8_t key_slot,
      defined(WOLFBOOT_CERT_CHAIN_VERIFY))
     /* Use the public key ID directly with wolfHSM (no local keystore) */
     (void)key_slot;
+    if (ret == 0) {
 #if defined(WOLFBOOT_CERT_CHAIN_VERIFY)
-    /* If using certificate chain verification and we have a verified leaf key
-     * ID */
-    if (g_leafKeyIdValid) {
-        /* Use the leaf key ID from certificate verification */
-    #if defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT)
-        ret = wh_Client_MlDsaSetKeyId(&ml_dsa, g_certLeafKeyId);
-    #elif defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
-        ret = wh_Server_MlDsaKeyCacheExport(&hsmServerCtx, g_certLeafKeyId,
-                                            &ml_dsa);
-    #endif
-        wolfBoot_printf(
-            "Using leaf cert public key (ID: %08x) for ML-DSA verification\n",
-            (unsigned int)g_certLeafKeyId);
-    }
-    else {
-        /* Default behavior: use the pre-configured public key ID */
-    #if defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT)
-        ret = wh_Client_MlDsaSetKeyId(&ml_dsa, hsmKeyIdPubKey);
-    #endif
-    }
+        /* If using certificate chain verification and we have a verified leaf
+         * key ID */
+        if (g_leafKeyIdValid) {
+            /* Use the leaf key ID from certificate verification */
+        #if defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT)
+            ret = wh_Client_MlDsaSetKeyId(&ml_dsa, g_certLeafKeyId);
+        #elif defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
+            ret = wh_Server_MlDsaKeyCacheExport(&hsmServerCtx, g_certLeafKeyId,
+                                                &ml_dsa);
+        #endif
+            wolfBoot_printf(
+                "Using leaf cert public key (ID: %08x) for ML-DSA "
+                "verification\n",
+                (unsigned int)g_certLeafKeyId);
+        }
+        else {
+            /* Default behavior: use the pre-configured public key ID */
+        #if defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT)
+            ret = wh_Client_MlDsaSetKeyId(&ml_dsa, hsmKeyIdPubKey);
+        #endif
+        }
 #else
-    ret = wh_Client_MlDsaSetKeyId(&ml_dsa, hsmKeyIdPubKey);
+        ret = wh_Client_MlDsaSetKeyId(&ml_dsa, hsmKeyIdPubKey);
 #endif
-    if (ret != 0) {
-        wolfBoot_printf("error: ML-DSA set key ID returned %d\n", ret);
+        if (ret != 0) {
+            wolfBoot_printf("error: ML-DSA set key ID returned %d\n", ret);
+        }
     }
 #else
     /* Make sure pub key matches parameters and import it */
@@ -897,7 +997,9 @@ static void wolfBoot_verify_signature_ml_dsa(uint8_t key_slot,
     }
 #endif /* WOLFBOOT_CERT_CHAIN_VERIFY && WOLFHSM */
 
-    wc_MlDsaKey_Free(&ml_dsa);
+    if (key_inited) {
+        wc_MlDsaKey_Free(&ml_dsa);
+    }
 }
 
 #endif /* WOLFBOOT_SIGN_ML_DSA */
@@ -947,16 +1049,40 @@ static uint8_t ext_hash_block[WOLFBOOT_SHA_BLOCK_SIZE] XALIGNED(4);
  */
 static uint8_t *get_sha_block(struct wolfBoot_image *img, uint32_t offset)
 {
-    if (offset > img->fw_size)
+    uint8_t *p;
+#ifdef EXT_FLASH
+    uint32_t read_sz;
+#endif
+
+    if (offset >= img->fw_size)
         return NULL;
 #ifdef EXT_FLASH
     if (PART_IS_EXT(img)) {
-        ext_flash_check_read((uintptr_t)(img->fw_base) + offset, ext_hash_block,
-                WOLFBOOT_SHA_BLOCK_SIZE);
+        /* Read only the bytes that remain in the image: the block
+         * window must not extend past fw_size. */
+        read_sz = WOLFBOOT_SHA_BLOCK_SIZE;
+        if (read_sz > img->fw_size - offset)
+            read_sz = img->fw_size - offset;
+        ext_flash_check_read((uintptr_t)(img->fw_base) + offset,
+                ext_hash_block, read_sz);
         return ext_hash_block;
-    } else
+    }
 #endif
-        return (uint8_t *)(img->fw_base + offset);
+    p = (uint8_t *)(img->fw_base + offset);
+#if defined(MPFS_DDR_INIT)
+    /* PolarFire SoC DDR build: route in-DDR image-body reads through the
+     * non-cached DDR SEG window (0xC0000000 base) so cache fills don't evict
+     * L2 Scratch lines (where wolfBoot's own code/stack live).  PDMA already
+     * L2-flushed the cached writes at disk-load, so the non-cached side reads
+     * the correct DDR contents.  0x8xxxxxxx -> 0xCxxxxxxx.  Applied at this
+     * single point so every image-body hasher (SHA256/384/3-384) behaves
+     * identically; inert for the L2-Scratch QSPI M-mode build (fw_base is not
+     * in the 0x8xxxxxxx window). */
+    if (((uintptr_t)p & 0xF0000000UL) == 0x80000000UL) {
+        p = (uint8_t *)((uintptr_t)p | 0x40000000UL);
+    }
+#endif
+    return p;
 }
 
 #ifdef EXT_FLASH
@@ -984,6 +1110,18 @@ static uint8_t *fetch_hdr_cpy(struct wolfBoot_image *img)
             hdr_cpy_done = 1;
     }
     return hdr_cpy;
+}
+
+/**
+ * @brief Invalidate the cached external image header.
+ *
+ * fetch_hdr_cpy() loads the header of the first image it sees and serves
+ * it to every later get_header() call. Call this before opening a
+ * different image so TLV lookups do not read the stale header.
+ */
+void RAMFUNCTION wolfBoot_invalidate_hdr_cache(void)
+{
+    hdr_cpy_done = 0;
 }
 
 static uint16_t get_header_ext(struct wolfBoot_image *img, uint16_t type,
@@ -1027,7 +1165,7 @@ static int header_sha256(wc_Sha256 *sha256_ctx, struct wolfBoot_image *img)
     stored_sha_len = get_header(img, HDR_SHA256, &stored_sha);
     if (stored_sha_len != WOLFBOOT_SHA_DIGEST_SIZE)
         return -1;
-    end_sha = stored_sha - (2 * sizeof(uint16_t)); /* Subtract 2 Type + 2 Len */
+    end_sha = stored_sha - (2 * WOLFBOOT_HDR_U16_SZ); /* Subtract 2 Type + 2 Len */
 #ifdef WOLFBOOT_IMG_HASH_ONESHOT
     if (end_sha <= p) {
         return -1;
@@ -1064,7 +1202,39 @@ static int image_sha256(struct wolfBoot_image *img, uint8_t *hash)
 
     if (header_sha256(&sha256_ctx, img) != 0)
         return -1;
-#ifdef WOLFBOOT_IMG_HASH_ONESHOT
+#if defined(WOLFBOOT_ARCH_C2000)
+    /* C28x (CHAR_BIT==16): the firmware is stored as native, executable 16-bit
+     * program words, but the host signed an octet stream in which each program
+     * word was serialized low-octet-then-high-octet.  Reproduce that ordering
+     * so the on-target digest matches the host's.  img->fw_size is the octet
+     * count (2 octets per program word); each buf[] cell holds one octet, and
+     * the wide-byte wc_Sha256Update consumes one octet per cell. */
+    {
+        const uint16_t *w = (const uint16_t *)img->fw_base;
+        uint32_t position = 0;
+        uint8_t  buf[64]; /* even; each cell holds one octet */
+        int      n;
+        uint16_t val;
+        if (img->fw_base == NULL) {
+            wc_Sha256Free(&sha256_ctx);
+            return -1;
+        }
+        while (position < img->fw_size) {
+            n = 0;
+            while ((n <= (int)sizeof(buf) - 2) && (position < img->fw_size)) {
+                val = *w++;
+                buf[n++] = (uint8_t)(val & 0xFF);          /* low octet  */
+                position++;
+                if (position < img->fw_size) {
+                    buf[n++] = (uint8_t)((val >> 8) & 0xFF); /* high octet */
+                    position++;
+                }
+            }
+            wc_Sha256Update(&sha256_ctx, buf, n);
+            wolfBoot_watchdog_feed();
+        }
+    }
+#elif defined(WOLFBOOT_IMG_HASH_ONESHOT)
     if (img->fw_base == NULL) {
         wc_Sha256Free(&sha256_ctx);
         return -1;
@@ -1084,6 +1254,7 @@ static int image_sha256(struct wolfBoot_image *img, uint8_t *hash)
                 blksz = img->fw_size - position;
             wc_Sha256Update(&sha256_ctx, p, blksz);
             position += blksz;
+            wolfBoot_watchdog_feed();
         } while (position < img->fw_size);
     }
 #endif
@@ -1135,7 +1306,7 @@ static int header_sha384(wc_Sha384 *sha384_ctx, struct wolfBoot_image *img)
     stored_sha_len = get_header(img, HDR_SHA384, &stored_sha);
     if (stored_sha_len != WOLFBOOT_SHA_DIGEST_SIZE)
         return -1;
-    end_sha = stored_sha - (2 * sizeof(uint16_t)); /* Subtract 2 Type + 2 Len */
+    end_sha = stored_sha - (2 * WOLFBOOT_HDR_U16_SZ); /* Subtract 2 Type + 2 Len */
 #ifdef WOLFBOOT_IMG_HASH_ONESHOT
     if (end_sha <= p) {
         return -1;
@@ -1173,8 +1344,9 @@ static int image_sha384(struct wolfBoot_image *img, uint8_t *hash)
 {
     wc_Sha384 sha384_ctx;
 
-    if (header_sha384(&sha384_ctx, img) != 0)
+    if (header_sha384(&sha384_ctx, img) != 0) {
         return -1;
+    }
 #ifdef WOLFBOOT_IMG_HASH_ONESHOT
     if (img->fw_base == NULL) {
         wc_Sha384Free(&sha384_ctx);
@@ -1193,8 +1365,11 @@ static int image_sha384(struct wolfBoot_image *img, uint8_t *hash)
             blksz = WOLFBOOT_SHA_BLOCK_SIZE;
             if (position + blksz > img->fw_size)
                 blksz = img->fw_size - position;
+            /* p is already routed to the non-cached DDR alias by
+             * get_sha_block() under MPFS_DDR_INIT (see above). */
             wc_Sha384Update(&sha384_ctx, p, blksz);
             position += blksz;
+            wolfBoot_watchdog_feed();
         } while (position < img->fw_size);
     }
 #endif
@@ -1253,7 +1428,7 @@ static int header_sha3_384(wc_Sha3 *sha3_ctx, struct wolfBoot_image *img)
     stored_sha_len = get_header(img, HDR_SHA3_384, &stored_sha);
     if (stored_sha_len != WOLFBOOT_SHA_DIGEST_SIZE)
         return -1;
-    end_sha = stored_sha - (2 * sizeof(uint16_t)); /* Subtract 2 Type + 2 Len */
+    end_sha = stored_sha - (2 * WOLFBOOT_HDR_U16_SZ); /* Subtract 2 Type + 2 Len */
 #ifdef WOLFBOOT_IMG_HASH_ONESHOT
     if (end_sha <= p) {
         return -1;
@@ -1312,6 +1487,7 @@ static int image_sha3_384(struct wolfBoot_image *img, uint8_t *hash)
                 blksz = img->fw_size - position;
             wc_Sha3_384_Update(&sha3_ctx, p, blksz);
             position += blksz;
+            wolfBoot_watchdog_feed();
         } while (position < img->fw_size);
     }
 #endif
@@ -1380,8 +1556,7 @@ static inline uint32_t im2n(uint32_t val)
  */
 uint32_t wolfBoot_image_size(uint8_t *image)
 {
-    uint32_t *size = (uint32_t *)(image + sizeof (uint32_t));
-    return im2n(*size);
+    return im2n(WOLFBOOT_HDR_GET_U32(image + WOLFBOOT_HDR_U32_SZ));
 }
 
 /**
@@ -1399,26 +1574,33 @@ uint32_t wolfBoot_image_size(uint8_t *image)
  */
 int wolfBoot_open_image_address(struct wolfBoot_image *img, uint8_t *image)
 {
-    uint32_t *magic = (uint32_t *)(image);
-    if (*magic != WOLFBOOT_MAGIC) {
+    /* Read the magic an octet at a time: a uint8_t* cannot be cast to
+     * uint32_t* where CHAR_BIT != 8 (C28x). */
+    uint32_t magic = WOLFBOOT_HDR_GET_U32(image);
+#ifdef WOLFBOOT_FIXED_PARTITIONS
+    /* The UPDATE slot may be larger than BOOT (monolithic self-update) */
+    uint32_t part_size = (img->part == PART_UPDATE) ?
+        WOLFBOOT_PARTITION_UPDATE_SIZE : WOLFBOOT_PARTITION_SIZE;
+#endif
+    if (magic != WOLFBOOT_MAGIC) {
         wolfBoot_printf("Partition %d header magic 0x%08x invalid at %p\n",
-            img->part, (unsigned int)*magic, img->hdr);
+            img->part, (unsigned int)magic, img->hdr);
         return -1;
     }
     img->fw_size = wolfBoot_image_size(image);
 
 #ifdef WOLFBOOT_FIXED_PARTITIONS
-    if (img->fw_size > (WOLFBOOT_PARTITION_SIZE - IMAGE_HEADER_SIZE)) {
+    if (img->fw_size > (part_size - IMAGE_HEADER_SIZE)) {
         wolfBoot_printf("Image size %u > max %u\n",
             (unsigned int)img->fw_size,
-            (unsigned int)(WOLFBOOT_PARTITION_SIZE - IMAGE_HEADER_SIZE));
-        img->fw_size = WOLFBOOT_PARTITION_SIZE - IMAGE_HEADER_SIZE;
+            (unsigned int)(part_size - IMAGE_HEADER_SIZE));
+        img->fw_size = part_size - IMAGE_HEADER_SIZE;
         return -1;
     }
     if (!img->hdr_ok) {
         img->hdr = image;
     }
-    img->trailer = img->hdr + WOLFBOOT_PARTITION_SIZE;
+    img->trailer = img->hdr + part_size;
 #else
 #ifdef WOLFBOOT_RAMBOOT_MAX_SIZE
     if (img->fw_size > WOLFBOOT_RAMBOOT_MAX_SIZE) {
@@ -1447,7 +1629,7 @@ int wolfBoot_open_image_address(struct wolfBoot_image *img, uint8_t *image)
     return 0;
 }
 
-#ifdef MMU
+#if defined(MMU) || defined(WOLFBOOT_FDT)
 
 /**
  * @brief Get the size of the Device Tree Blob (DTB).
@@ -1455,19 +1637,113 @@ int wolfBoot_open_image_address(struct wolfBoot_image *img, uint8_t *image)
  * This function retrieves the size of the Device Tree Blob (DTB) from
  * the given DTB address.
  *
- * @param dts_addr The pointer to the Device Tree Blob (DTB) address.
- * @return The size of the DTB in bytes, or -1 if the magic number is invalid.
+ * Fully validates the blob (header layout plus a structural walk) before
+ * reporting its size. Every bound is checked against `capacity`, the
+ * bytes actually readable at dts_addr, not against the size the blob
+ * claims for itself.
+ *
+ * @param dts_addr Device Tree Blob (DTB) address.
+ * @param capacity Bytes available at dts_addr.
+ * @return DTB size in bytes, or a negative FDT_ERR_*.
  */
-int wolfBoot_get_dts_size(void *dts_addr)
+int wolfBoot_get_dts_size(void *dts_addr, uint32_t capacity)
 {
-    int ret = fdt_check_header(dts_addr);
+    fdt_ctx ctx;
+    int ret = fdt_open(&ctx, dts_addr, capacity);
+
     if (ret == 0) {
-        ret = fdt_totalsize(dts_addr);
+        ret = (int)fdt_size(&ctx);
     }
     return ret;
 }
 
-#endif /* MMU */
+/* Hash a raw buffer with the configured image hash (explicit per-algorithm API,
+ * since the generic update_hash macro's SHA3 mapping is wrong). 0 on success. */
+static int wolfBoot_hash_buffer(const void *buf, uint32_t len, uint8_t *out)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    int ret;
+
+#if defined(WOLFBOOT_HASH_SHA256)
+    wc_Sha256 ctx;
+    ret = wc_InitSha256_ex(&ctx, NULL, WOLFBOOT_DEVID_HASH);
+    if (ret == 0) {
+        while (len > 0) {
+            uint32_t sz = (len < WOLFBOOT_SHA_BLOCK_SIZE) ?
+                len : (uint32_t)WOLFBOOT_SHA_BLOCK_SIZE;
+            ret = wc_Sha256Update(&ctx, p, sz);
+            if (ret != 0)
+                break;
+            p   += sz;
+            len -= sz;
+        }
+        if (ret == 0)
+            ret = wc_Sha256Final(&ctx, out);
+        wc_Sha256Free(&ctx);
+    }
+#elif defined(WOLFBOOT_HASH_SHA384)
+    wc_Sha384 ctx;
+    ret = wc_InitSha384_ex(&ctx, NULL, WOLFBOOT_DEVID_HASH);
+    if (ret == 0) {
+        while (len > 0) {
+            uint32_t sz = (len < WOLFBOOT_SHA_BLOCK_SIZE) ?
+                len : (uint32_t)WOLFBOOT_SHA_BLOCK_SIZE;
+            ret = wc_Sha384Update(&ctx, p, sz);
+            if (ret != 0)
+                break;
+            p   += sz;
+            len -= sz;
+        }
+        if (ret == 0)
+            ret = wc_Sha384Final(&ctx, out);
+        wc_Sha384Free(&ctx);
+    }
+#elif defined(WOLFBOOT_HASH_SHA3_384)
+    wc_Sha3 ctx;
+    ret = wc_InitSha3_384(&ctx, NULL, WOLFBOOT_DEVID_HASH);
+    if (ret == 0) {
+        while (len > 0) {
+            uint32_t sz = (len < WOLFBOOT_SHA_BLOCK_SIZE) ?
+                len : (uint32_t)WOLFBOOT_SHA_BLOCK_SIZE;
+            ret = wc_Sha3_384_Update(&ctx, p, sz);
+            if (ret != 0)
+                break;
+            p   += sz;
+            len -= sz;
+        }
+        if (ret == 0)
+            ret = wc_Sha3_384_Final(&ctx, out);
+        wc_Sha3_384_Free(&ctx);
+    }
+#else
+    (void)p;
+    ret = -1;
+#endif
+    return (ret == 0) ? 0 : -1;
+}
+
+/* Verify a raw DTB against a firmware-bound digest (from the image's
+ * HDR_DEVICE_TREE_DIGEST TLV, captured by the caller since the load may reuse
+ * the image struct). Returns 0 on match, -1 on mismatch/bad args/hash error. */
+int wolfBoot_verify_dts_digest(const uint8_t *expected_digest,
+    const void *dts_addr, uint32_t dts_size)
+{
+    uint8_t calc[WOLFBOOT_SHA_DIGEST_SIZE];
+
+    if (expected_digest == NULL || dts_addr == NULL || dts_size == 0)
+        return -1;
+
+    if (wolfBoot_hash_buffer(dts_addr, dts_size, calc) != 0)
+        return -1;
+
+    if (wolfBoot_hardened_CT_compare(expected_digest, calc,
+            WOLFBOOT_SHA_DIGEST_SIZE) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+#endif /* MMU || WOLFBOOT_FDT */
 
 #ifdef WOLFBOOT_FIXED_PARTITIONS
 
@@ -1503,6 +1779,7 @@ int wolfBoot_open_image(struct wolfBoot_image *img, uint8_t part)
     }
 #ifdef MMU
     if (part == PART_DTS_BOOT || part == PART_DTS_UPDATE) {
+        uint32_t dts_sz = 0;
         img->hdr = (part == PART_DTS_BOOT) ?
             (void*)WOLFBOOT_DTS_BOOT_ADDRESS :
             (void*)WOLFBOOT_DTS_UPDATE_ADDRESS;
@@ -1512,9 +1789,19 @@ int wolfBoot_open_image(struct wolfBoot_image *img, uint8_t part)
             image = fetch_hdr_cpy(img);
         else
             image = (uint8_t*)img->hdr;
-        ret = wolfBoot_get_dts_size(image);
-        if (ret < 0)
-            return -1;
+        /* Only the header is readable here: `image` may be
+         * fetch_hdr_cpy()'s IMAGE_HEADER_SIZE copy. The blob is validated
+         * in full when it is loaded. Copy into an aligned local first,
+         * because a memory-mapped partition base is not guaranteed to be
+         * 4-byte aligned and fdt_peek_size() requires that. */
+        {
+            uint8_t hdr[FDT_HEADER_SIZE] XALIGNED(4);
+
+            memcpy(hdr, image, sizeof(hdr));
+            if (fdt_peek_size(hdr, (uint32_t)sizeof(hdr), &dts_sz) != 0)
+                return -1;
+        }
+        ret = (int)dts_sz;
         img->hdr_ok = 1;
         wolfBoot_image_set_fw_base(img, img->hdr);
         img->fw_size = (uint32_t)ret;
@@ -1616,7 +1903,7 @@ int wolfBoot_open_self_address(struct wolfBoot_image* img, uint8_t* hdr,
 
     XMEMSET(img, 0, sizeof(struct wolfBoot_image));
 
-    magic = *((uint32_t*)hdr);
+    magic = WOLFBOOT_HDR_GET_U32(hdr);
     if (magic != WOLFBOOT_MAGIC) {
         return -1;
     }
@@ -1624,10 +1911,25 @@ int wolfBoot_open_self_address(struct wolfBoot_image* img, uint8_t* hdr,
     img->hdr     = hdr;
     img->fw_size = wolfBoot_image_size(hdr);
 #ifdef WOLFBOOT_FIXED_PARTITIONS
+#ifdef WOLFBOOT_SELF_UPDATE_MONOLITHIC
+    /* A monolithic self image spans the bootloader region and the BOOT
+     * partition minus its trailer sector (header persisted separately,
+     * not part of the span) */
+    {
+        uint32_t max_span = (uint32_t)(WOLFBOOT_PARTITION_BOOT_ADDRESS -
+            ARCH_FLASH_OFFSET) + WOLFBOOT_PARTITION_SIZE -
+            WOLFBOOT_SECTOR_SIZE;
+        if (img->fw_size > max_span) {
+            img->fw_size = max_span;
+            return -1;
+        }
+    }
+#else
     if (img->fw_size > (WOLFBOOT_PARTITION_SIZE - IMAGE_HEADER_SIZE)) {
         img->fw_size = WOLFBOOT_PARTITION_SIZE - IMAGE_HEADER_SIZE;
         return -1;
     }
+#endif
 #endif
     wolfBoot_image_set_fw_base(img, image);
     img->part    = PART_SELF;
@@ -1933,7 +2235,6 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
     uint8_t*              exp_digest;
     int32_t               stored_sha_len;
     int                   i;
-    int32_t               entry_out_set = 0;
     uint8_t               elfHdrBuf[sizeof(elfHeaderMaxBuf)];
     uint8_t ph_buf[sizeof(elf64_program_header)]; /* Buffer for current PH */
     uint8_t ph_next_buf[sizeof(elf64_program_header)]; /* Buffer for next PH */
@@ -1957,7 +2258,10 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
     /* Get the elf header from the image into a local buffer. We may overread
      * the buffer depending on architecture */
     memset(elfHdrBuf, 0, sizeof(elfHdrBuf));
-    read_flash_fwimage(&boot, 0, elfHdrBuf, sizeof(elfHeaderMaxBuf));
+    if (read_flash_fwimage(&boot, 0, elfHdrBuf,
+                           sizeof(elfHeaderMaxBuf)) != 0) {
+        return -1;
+    }
     elf_h = elfHdrBuf;
 
     if (elf_open(elf_h, &is_elf32) < 0) {
@@ -1970,10 +2274,7 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
         entry_count      = eh->ph_entry_count;
         entry_off        = eh->ph_offset;
         ph_size          = sizeof(elf32_program_header);
-        if (!entry_out_set) {
-            *entry_out    = eh->entry;
-            entry_out_set = 1;
-        }
+        *entry_out       = eh->entry;
         wolfBoot_printf("ELF: [CHECK] 32-bit, entry=0x%08X, "
                         "ph_offset=0x%08X, ph_count=%u\n",
                         (unsigned int)eh->entry, (unsigned int)entry_off, entry_count);
@@ -1983,10 +2284,7 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
         entry_count      = eh->ph_entry_count;
         entry_off        = eh->ph_offset;
         ph_size          = sizeof(elf64_program_header);
-        if (!entry_out_set) {
-            *entry_out    = eh->entry;
-            entry_out_set = 1;
-        }
+        *entry_out       = eh->entry;
         wolfBoot_printf("ELF: [CHECK] 64-bit, entry=0x%08lx, "
                         "ph_offset=0x%08lx, ph_count=%d\n",
                         (unsigned long)eh->entry, (unsigned long)entry_off, entry_count);
@@ -1997,14 +2295,18 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
 
     /* Hash the elf header and program header in the image, assuming the PHT
      * immediately follows the ELF header */
-    update_hash_flash_fwimg(&ctx, &boot, 0, elf_hdr_sz);
+    if (update_hash_flash_fwimg(&ctx, &boot, 0, elf_hdr_sz) != 0) {
+        return -1;
+    }
 
     current_ph_offset = entry_off;
 
     /* Calculate padding between ELF+PHT header and first segment */
     if (entry_count > 0) {
         uint64_t first_offset;
-        read_flash_fwimage(&boot, current_ph_offset, ph_buf, ph_size);
+        if (read_flash_fwimage(&boot, current_ph_offset, ph_buf, ph_size) != 0) {
+            return -1;
+        }
         if (is_elf32) {
             first_offset = ((elf32_program_header*)ph_buf)->offset;
         }
@@ -2017,7 +2319,10 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
             wolfBoot_printf(
                 "ELF: [CHECK] Adding %d bytes padding before first segment\n",
                 (int32_t)len);
-            update_hash_flash_fwimg(&ctx, &boot, elf_hdr_sz, len); /* Hash actual file content */
+            /* Hash actual file content */
+            if (update_hash_flash_fwimg(&ctx, &boot, elf_hdr_sz, len) != 0) {
+                return -1;
+            }
         }
     }
 
@@ -2030,7 +2335,9 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
         uint64_t next_offset = 0; /* Initialize */
 
         /* read the current program header into a local buffer */
-        read_flash_fwimage(&boot, current_ph_offset, ph_buf, ph_size);
+        if (read_flash_fwimage(&boot, current_ph_offset, ph_buf, ph_size) != 0) {
+            return -1;
+        }
 
         /* Extract common fields based on ELF type */
         if (is_elf32) {
@@ -2050,15 +2357,47 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
 
         /* Handle loadable segments */
         if (type == ELF_PT_LOAD) {
-            uintptr_t load_addr = (uintptr_t)(paddr + BASE_OFF);
+            uint64_t seg_start;
+            uintptr_t load_addr;
+
+            /* Validate the segment before hashing: the flash-address hash
+             * reader consumes a uint32_t length, the file layout must stay
+             * inside the manifest image, and the paddr range must fit the
+             * destination (uintptr_t) address width so the load_addr cast
+             * below cannot wrap. Reject instead of continuing. */
+            if (filesz > UINT32_MAX) {
+                wolfBoot_printf("ELF: [CHECK] ERROR: segment file_size "
+                                "%lu does not fit a 32-bit length\n",
+                                (unsigned long)filesz);
+                return -1;
+            }
+            if (offset > (uint64_t)boot.fw_size ||
+                filesz > (uint64_t)boot.fw_size - offset) {
+                wolfBoot_printf("ELF: [CHECK] ERROR: segment offset %lu + "
+                                "size %lu exceeds image size %u\n",
+                                (unsigned long)offset,
+                                (unsigned long)filesz, boot.fw_size);
+                return -1;
+            }
+            seg_start = paddr + (uint64_t)BASE_OFF;
+            if (seg_start < paddr ||
+                seg_start > (uint64_t)UINTPTR_MAX - filesz) {
+                wolfBoot_printf("ELF: [CHECK] ERROR: segment paddr range "
+                                "overflows\n");
+                return -1;
+            }
+
+            load_addr = (uintptr_t)seg_start;
             /* Feed the loadable parts to the hash function */
             wolfBoot_printf("ELF: [CHECK] Hashing loadable segment: "
                             "paddr = 0x%08lx, loadaddr = 0x%08lx, "
                             "offset = 0x%08lx, size = %lu\n",
                             (unsigned long)paddr, (unsigned long)load_addr,
                             (unsigned long)offset, (unsigned long)filesz);
-            update_hash_flash_addr(&ctx, load_addr, (uint32_t)filesz,
-                                   PART_IS_EXT(&boot));
+            if (update_hash_flash_addr(&ctx, load_addr, (uint32_t)filesz,
+                                       PART_IS_EXT(&boot)) != 0) {
+                return -1;
+            }
         }
         else {
             wolfBoot_printf("ELF: [CHECK] ERROR: non-loadable segment\n");
@@ -2067,8 +2406,10 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
 
         /* Add padding until next program header, if any. */
         if (i < entry_count - 1) {
-            read_flash_fwimage(&boot, current_ph_offset + ph_size, ph_next_buf,
-                               ph_size);
+            if (read_flash_fwimage(&boot, current_ph_offset + ph_size,
+                                   ph_next_buf, ph_size) != 0) {
+                return -1;
+            }
             if (is_elf32) {
                 next_offset = ((elf32_program_header*)ph_next_buf)->offset;
             }
@@ -2082,7 +2423,11 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
                                 "0x%08lx to 0x%08lx)\n",
                                 padding, (unsigned long)(offset + filesz),
                                 (unsigned long)next_offset);
-                update_hash_flash_fwimg(&ctx, &boot, offset + filesz, padding); /* Hash actual file content */
+                /* Hash actual file content */
+                if (update_hash_flash_fwimg(&ctx, &boot, offset + filesz,
+                                            padding) != 0) {
+                    return -1;
+                }
             }
         }
 
@@ -2114,7 +2459,9 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
         wolfBoot_printf("ELF: [CHECK] Hashing %u bytes of trailing data from "
                         "offset 0x%llX\n",
                         len, (unsigned long long)final_offset);
-        update_hash_flash_fwimg(&ctx, &boot, final_offset, len);
+        if (update_hash_flash_fwimg(&ctx, &boot, final_offset, len) != 0) {
+            return -1;
+        }
     }
 
 
@@ -2123,14 +2470,6 @@ int wolfBoot_check_flash_image_elf(uint8_t part, unsigned long* entry_out)
     if (wolfBoot_hardened_CT_compare(exp_digest, calc_digest,
             WOLFBOOT_SHA_DIGEST_SIZE) != 0) {
         wolfBoot_printf("ELF: [CHECK] SHA verification FAILED\n");
-        wolfBoot_printf(
-            "ELF: [CHECK] Expected   %02x%02x%02x%02x%02x%02x%02x%02x\n",
-            exp_digest[0], exp_digest[1], exp_digest[2], exp_digest[3],
-            exp_digest[4], exp_digest[5], exp_digest[6], exp_digest[7]);
-        wolfBoot_printf(
-            "ELF: [CHECK] Calculated %02x%02x%02x%02x%02x%02x%02x%02x\n",
-            calc_digest[0], calc_digest[1], calc_digest[2], calc_digest[3],
-            calc_digest[4], calc_digest[5], calc_digest[6], calc_digest[7]);
         return -2;
     }
     wolfBoot_printf("ELF: [CHECK] Verification successful\n");
@@ -2157,7 +2496,11 @@ int wolfBoot_load_flash_image_elf(int part, unsigned long* entry_out, int ext_fl
     /* Get the elf header from the image into a local buffer. We may overread
      * the buffer depending on architecture */
     memset(elfHdrBuf, 0, sizeof(elfHdrBuf));
-    read_flash_fwimage(&boot, 0, elfHdrBuf, sizeof(elfHeaderMaxBuf));
+    if (read_flash_fwimage(&boot, 0, elfHdrBuf,
+                           sizeof(elfHeaderMaxBuf)) != 0) {
+        wolfBoot_printf("ELF: [STORE] ERROR: could not read ELF header\n");
+        return -1;
+    }
     if (elf_open(elfHdrBuf, &is_elf32) != 0) {
         return -1;
     }
@@ -2188,27 +2531,38 @@ int wolfBoot_load_flash_image_elf(int part, unsigned long* entry_out, int ext_fl
 
     /* Walk the program header table and store each loadable segment */
     for (i = 0; i < entry_count; ++i) {
-        unsigned long paddr, filesz, offset;
-        int           is_loadable;
-        uintptr_t     load_addr;
+        uint64_t paddr, filesz, offset;
+        int      is_loadable;
+        uintptr_t load_addr;
+        uint64_t  seg_start;
 
         /* Read the current program header into a local buffer */
         if (is_elf32) {
             elf32_program_header p32;
-            read_flash_fwimage(&boot, entry_off, &p32, sizeof(p32));
+            if (read_flash_fwimage(&boot, entry_off, &p32,
+                                   sizeof(p32)) != 0) {
+                wolfBoot_printf("ELF: [STORE] ERROR: could not read "
+                                "program header\n");
+                return -1;
+            }
             is_loadable = (p32.type == ELF_PT_LOAD);
-            paddr       = (unsigned long)p32.paddr;
-            offset      = (unsigned long)p32.offset;
-            filesz      = (unsigned long)p32.file_size;
+            paddr       = p32.paddr;
+            offset      = p32.offset;
+            filesz      = p32.file_size;
             ph_size     = sizeof(p32);
         }
         else {
             elf64_program_header p64;
-            read_flash_fwimage(&boot, entry_off, &p64, sizeof(p64));
+            if (read_flash_fwimage(&boot, entry_off, &p64,
+                                   sizeof(p64)) != 0) {
+                wolfBoot_printf("ELF: [STORE] ERROR: could not read "
+                                "program header\n");
+                return -1;
+            }
             is_loadable = (p64.type == ELF_PT_LOAD);
-            paddr       = (unsigned long)p64.paddr;
-            offset      = (unsigned long)p64.offset;
-            filesz      = (unsigned long)p64.file_size;
+            paddr       = p64.paddr;
+            offset      = p64.offset;
+            filesz      = p64.file_size;
             ph_size     = sizeof(p64);
         }
         /* Skip non-loadable segments */
@@ -2217,12 +2571,47 @@ int wolfBoot_load_flash_image_elf(int part, unsigned long* entry_out, int ext_fl
             return -1;
         }
 
-        load_addr = (uintptr_t)(paddr + BASE_OFF);
+        /* Validate the segment before writing: the source must stay
+         * inside the manifest image and the paddr range must fit the
+         * destination (uintptr_t) width so the load_addr cast below
+         * cannot wrap. The scatter destination is the exec region, which
+         * sits outside the boot partition that stores the signed ELF, so
+         * it is not bounded here: the program-header paddr values are
+         * covered by the image signature verified before this restore
+         * path. Reject instead of writing. */
+        if (filesz > UINT32_MAX) {
+            wolfBoot_printf("ELF: [STORE] ERROR: segment file_size "
+                            "%lu does not fit a 32-bit length\n",
+                            (unsigned long)filesz);
+            return -1;
+        }
+        if (offset > (uint64_t)boot.fw_size ||
+            filesz > (uint64_t)boot.fw_size - offset) {
+            wolfBoot_printf("ELF: [STORE] ERROR: segment offset %lu + "
+                            "size %lu exceeds image size %u\n",
+                            (unsigned long)offset,
+                            (unsigned long)filesz, boot.fw_size);
+            return -1;
+        }
+        seg_start = paddr + (uint64_t)BASE_OFF;
+        if (seg_start < paddr ||
+            seg_start > (uint64_t)UINTPTR_MAX - filesz) {
+            wolfBoot_printf("ELF: [STORE] ERROR: segment paddr range "
+                            "overflows\n");
+            return -1;
+        }
+        load_addr = (uintptr_t)seg_start;
+
         wolfBoot_printf("ELF: [STORE] Writing loadable segment: "
                         "loadaddr=0x%08lx, offset=0x%08lx, size=%lu\n",
-                        (unsigned long)load_addr, offset, filesz);
-        copy_flash_buffered((uintptr_t)(image + offset), load_addr, filesz,
-                            ext_flash, ext_flash);
+                        (unsigned long)load_addr, (unsigned long)offset,
+                        (unsigned long)filesz);
+        if (copy_flash_buffered((uintptr_t)(image + offset), load_addr,
+                                filesz, ext_flash, ext_flash) != 0) {
+            wolfBoot_printf("ELF: [STORE] ERROR: could not write "
+                            "loadable segment\n");
+            return -1;
+        }
 
         entry_off += ph_size;
     }
@@ -2319,7 +2708,7 @@ int wolfBoot_verify_authenticity(struct wolfBoot_image *img)
         return -1; /* Invalid hash size for public key hint */
     }
     image_type_size = get_header(img, HDR_IMG_TYPE, &image_type_buf);
-    if (image_type_size != sizeof(uint16_t))
+    if (image_type_size != WOLFBOOT_HDR_U16_SZ)
         return -1;
     image_type = (uint16_t)(image_type_buf[0] + (image_type_buf[1] << 8));
     if ((image_type & HDR_IMG_TYPE_AUTH_MASK) != HDR_IMG_TYPE_AUTH)
@@ -2549,8 +2938,18 @@ uint8_t* wolfBoot_peek_image(struct wolfBoot_image *img, uint32_t offset,
     uint32_t* sz)
 {
     uint8_t* p = get_sha_block(img, offset);
-    if (sz)
-        *sz = WOLFBOOT_SHA_BLOCK_SIZE;
+
+    if (sz) {
+        if (p == NULL) {
+            *sz = 0;
+        }
+        else {
+            *sz = WOLFBOOT_SHA_BLOCK_SIZE;
+            if (*sz > img->fw_size - offset) {
+                *sz = img->fw_size - offset;
+            }
+        }
+    }
     return p;
 }
 

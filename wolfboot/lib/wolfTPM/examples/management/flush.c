@@ -1,8 +1,8 @@
 /* flush.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -91,7 +91,7 @@ int TPM2_Flush_Tool(void* userCtx, int argc, char *argv[])
     else {
         flushCtx.flushHandle = handle;
         printf("Freeing %X object\n", handle);
-        TPM2_FlushContext(&flushCtx);
+        rc = TPM2_FlushContext(&flushCtx);
     }
 
     wolfTPM2_Cleanup(&dev);

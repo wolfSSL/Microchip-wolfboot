@@ -15,6 +15,8 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-chacha-asm.S
  */
 
+#define _WC_BUILDING_ARMV8_32_CHACHA_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -24,6 +26,7 @@
 	.text
 	.align	4
 	.globl	wc_chacha_setiv
+	WC_ASM_ATT_HIDDEN(wc_chacha_setiv)
 	.type	wc_chacha_setiv, %function
 wc_chacha_setiv:
 	push	{r4, lr}
@@ -32,11 +35,6 @@ wc_chacha_setiv:
 	ldr	r12, [r1, #4]
 	ldr	lr, [r1, #8]
 	str	r2, [r0, #48]
-#ifdef BIG_ENDIAN_ORDER
-	rev	r4, r4
-	rev	r12, r12
-	rev	lr, lr
-#endif /* BIG_ENDIAN_ORDER */
 	stm	r3, {r4, r12, lr}
 	pop	{r4, pc}
 	.size	wc_chacha_setiv,.-wc_chacha_setiv
@@ -60,6 +58,7 @@ L_chacha_arm32_constants:
 	.text
 	.align	4
 	.globl	wc_chacha_setkey
+	WC_ASM_ATT_HIDDEN(wc_chacha_setkey)
 	.type	wc_chacha_setkey, %function
 wc_chacha_setkey:
 	push	{r4, r5, lr}
@@ -74,12 +73,6 @@ wc_chacha_setkey:
 	ldr	r5, [r1, #4]
 	ldr	r12, [r1, #8]
 	ldr	lr, [r1, #12]
-#ifdef BIG_ENDIAN_ORDER
-	rev	r4, r4
-	rev	r5, r5
-	rev	r12, r12
-	rev	lr, lr
-#endif /* BIG_ENDIAN_ORDER */
 	stm	r0!, {r4, r5, r12, lr}
 	# Next 16 bytes of key.
 	beq	L_chacha_arm32_setkey_same_key_bytes
@@ -96,6 +89,7 @@ L_chacha_arm32_setkey_same_key_bytes:
 	.text
 	.align	4
 	.globl	wc_chacha_crypt_bytes
+	WC_ASM_ATT_HIDDEN(wc_chacha_crypt_bytes)
 	.type	wc_chacha_crypt_bytes, %function
 wc_chacha_crypt_bytes:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -444,6 +438,7 @@ L_chacha_arm32_crypt_done:
 	.text
 	.align	4
 	.globl	wc_chacha_use_over
+	WC_ASM_ATT_HIDDEN(wc_chacha_use_over)
 	.type	wc_chacha_use_over, %function
 wc_chacha_use_over:
 	push	{r4, r5, r6, r7, r8, r9, lr}
@@ -507,6 +502,7 @@ L_chacha_arm32_over_done:
 	.text
 	.align	4
 	.globl	wc_chacha_crypt_bytes
+	WC_ASM_ATT_HIDDEN(wc_chacha_crypt_bytes)
 	.type	wc_chacha_crypt_bytes, %function
 wc_chacha_crypt_bytes:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -1173,6 +1169,7 @@ L_chacha_setkey_arm32_constant:
 	.text
 	.align	4
 	.globl	wc_chacha_setkey
+	WC_ASM_ATT_HIDDEN(wc_chacha_setkey)
 	.type	wc_chacha_setkey, %function
 wc_chacha_setkey:
 	adr	r3, L_chacha_setkey_arm32_constant
@@ -1181,15 +1178,9 @@ wc_chacha_setkey:
 	# Start with constants
 	vldm	r3, {q0}
 	vld1.8	{q1}, [r1]!
-#ifdef BIG_ENDIAN_ORDER
-	vrev32.16	q1, q1
-#endif /* BIG_ENDIAN_ORDER */
 	vstm	r0!, {q0-q1}
 	beq	L_chacha_setkey_arm32_done
 	vld1.8	{q1}, [r1]
-#ifdef BIG_ENDIAN_ORDER
-	vrev32.16	q1, q1
-#endif /* BIG_ENDIAN_ORDER */
 L_chacha_setkey_arm32_done:
 	vstm	r0, {q1}
 	bx	lr
@@ -1197,6 +1188,7 @@ L_chacha_setkey_arm32_done:
 	.text
 	.align	4
 	.globl	wc_chacha_use_over
+	WC_ASM_ATT_HIDDEN(wc_chacha_use_over)
 	.type	wc_chacha_use_over, %function
 wc_chacha_use_over:
 	push	{lr}
@@ -1236,10 +1228,10 @@ L_chacha_use_over_arm32_done:
 	.size	wc_chacha_use_over,.-wc_chacha_use_over
 #endif /* !WOLFSSL_ARMASM_NO_NEON */
 #endif /* HAVE_CHACHA */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

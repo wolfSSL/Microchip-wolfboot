@@ -9,8 +9,29 @@ include tools/config.mk
 
 ## Initializers
 WOLFBOOT_ROOT?=$(PWD)
+
+# Resolve LIBERO_FPGA_CONFIG_DIR (MPFS DDR config header dir) to an absolute
+# path here, where the working directory is the repo root, and export it.  The
+# test-app is built by a sub-make with CWD=test-app/, so a relative -I added by
+# arch.mk would resolve against test-app/ and miss the directory.  override is
+# required because it is typically a command-line variable.
+ifneq ($(LIBERO_FPGA_CONFIG_DIR),)
+  override LIBERO_FPGA_CONFIG_DIR := $(abspath $(LIBERO_FPGA_CONFIG_DIR))
+  export LIBERO_FPGA_CONFIG_DIR
+endif
+
+WOLFHSM_MICROCHIP_PIC32CZ ?= ..
+override WOLFHSM_MICROCHIP_PIC32CZ := $(abspath $(WOLFHSM_MICROCHIP_PIC32CZ))
+export WOLFHSM_MICROCHIP_PIC32CZ
+
 CFLAGS:=-D"__WOLFBOOT"
+ifeq ($(WOLFBOOT_ALLOW_PART_OVERLAP),1)
+CFLAGS+=-DWOLFBOOT_ALLOW_PART_OVERLAP=1
+endif
+# gcc/clang warning flags; the TI cl2000 driver (ARCH=C2000) rejects them.
+ifneq ($(ARCH),C2000)
 CFLAGS+=-Werror -Wextra -Wno-array-bounds
+endif
 LSCRIPT:=config/target.ld
 LSCRIPT_FLAGS:=
 LDFLAGS:=
@@ -27,7 +48,8 @@ SIGN_ALG=
 OBJCOPY_FLAGS=
 BIG_ENDIAN?=0
 USE_CLANG?=0
-ifeq ($(USE_CLANG),1)
+USE_ARMCLANG?=0
+ifneq ($(filter 1,$(USE_CLANG) $(USE_ARMCLANG)),)
 USE_GCC?=0
 else
 USE_GCC?=1
@@ -55,6 +77,12 @@ ifneq ($(TARGET),library)
     OBJS+=./hal/wolfhal.o
   else
     OBJS+=./hal/$(TARGET).o
+  endif
+  # nRF5340 debug-UART CRLF conversion (host-testable, no nrfx registers)
+  ifneq ($(filter nrf5340%, $(TARGET)),)
+    ifeq ($(DEBUG_UART),1)
+      OBJS+=./hal/nrf5340_uart.o
+    endif
   endif
 endif
 
@@ -179,6 +207,7 @@ WOLFBOOT_LIB_WOLFTPM?=lib/wolfTPM
 WOLFBOOT_LIB_WOLFPKCS11?=lib/wolfPKCS11
 WOLFBOOT_LIB_WOLFPSA?=lib/wolfPSA
 WOLFBOOT_LIB_WOLFHSM?=lib/wolfHSM
+WOLFBOOT_LIB_WOLFCOSE?=lib/wolfCOSE
 
 # Convert to absolute paths using abspath function
 WOLFBOOT_LIB_WOLFSSL:=$(abspath $(WOLFBOOT_LIB_WOLFSSL))
@@ -186,6 +215,7 @@ WOLFBOOT_LIB_WOLFTPM:=$(abspath $(WOLFBOOT_LIB_WOLFTPM))
 WOLFBOOT_LIB_WOLFPKCS11:=$(abspath $(WOLFBOOT_LIB_WOLFPKCS11))
 WOLFBOOT_LIB_WOLFPSA:=$(abspath $(WOLFBOOT_LIB_WOLFPSA))
 WOLFBOOT_LIB_WOLFHSM:=$(abspath $(WOLFBOOT_LIB_WOLFHSM))
+WOLFBOOT_LIB_WOLFCOSE:=$(abspath $(WOLFBOOT_LIB_WOLFCOSE))
 
 # Export variables so they are available to sub-makefiles
 export WOLFBOOT_LIB_WOLFSSL
@@ -193,6 +223,7 @@ export WOLFBOOT_LIB_WOLFTPM
 export WOLFBOOT_LIB_WOLFPKCS11
 export WOLFBOOT_LIB_WOLFPSA
 export WOLFBOOT_LIB_WOLFHSM
+export WOLFBOOT_LIB_WOLFCOSE
 
 ## Architecture/CPU configuration
 include arch.mk
@@ -205,11 +236,16 @@ ifeq ($(WOLFHAL),1)
     $(error BOARD=$(BOARD) has no hal/boards/$(BOARD)/board.mk)
   endif
   # wolfHAL backend: hal/wolfhal.o replaces hal/$(TARGET).o above. The
-  # board's board.c provides hal_init/hal_prepare_boot and the wolfHAL
+  # board's wolfHAL_board.c provides hal_init/hal_prepare_boot and the wolfHAL
   # device handles; board.mk pulls in chip drivers.
-  OBJS+=./hal/boards/$(BOARD)/board.o
+  OBJS+=./hal/boards/$(BOARD)/wolfHAL_board.o
   include hal/boards/$(BOARD)/board.mk
 endif
+
+# Set only here, so that host-tool sub-makes which also include options.mk
+# (tools/bin-assemble, tools/bin2hex) skip the checks that only make sense
+# once arch.mk has run. Deliberately not exported.
+WOLFBOOT_TARGET_BUILD=1
 
 # Parse config options
 include options.mk
@@ -223,15 +259,25 @@ $(WOLFHSM_OBJS): CFLAGS += -Wno-error=unused-parameter
 
 CFLAGS+= \
   -I"." -I"include/" -I"$(WOLFBOOT_LIB_WOLFSSL)" \
-  -Wno-array-bounds \
   -D"WOLFSSL_USER_SETTINGS" \
   -D"WOLFTPM_USER_SETTINGS"
+# -Wno-array-bounds is a gcc/clang option; the TI cl2000 driver rejects it.
+ifneq ($(ARCH),C2000)
+CFLAGS+=-Wno-array-bounds
+endif
 CFLAGS+=$(WOLFPSA_CFLAGS)
 
 # Setup default optimizations (for GCC)
 ifeq ($(USE_GCC_HEADLESS),1)
   CFLAGS+=-Wall -Wextra -Wno-main -ffreestanding
-  CFLAGS+=-ffunction-sections -fdata-sections -fomit-frame-pointer
+  ifneq (,$(filter aurix_tc4xx aurix_tc4xx_csrm,$(TARGET)))
+    # No -fdata-sections: tricore-elf-gcc 13 emits bare-named data sections
+    # (.varname, not .bss.varname) that escape the iLLD linker script's
+    # clear/copy tables, leaving statics uninitialized at boot.
+    CFLAGS+=-ffunction-sections -fomit-frame-pointer
+  else
+    CFLAGS+=-ffunction-sections -fdata-sections -fomit-frame-pointer
+  endif
   # Allow unused parameters and functions
   CFLAGS+=-Wno-unused-parameter -Wno-unused-function
   # Error on unused variables
@@ -245,15 +291,53 @@ endif
 ifeq ($(TARGET),ti_hercules)
   LSCRIPT_FLAGS+=--run_linker $(LSCRIPT)
 endif
-ifeq ($(ARCH),AURIX_TC3)
+ifeq ($(ARCH),C2000)
+  # cl2000 enters link mode via -z (in LDFLAGS); the .cmd is a positional arg.
+  LSCRIPT_FLAGS+=$(LSCRIPT)
+endif
+ifeq ($(ARCH),AURIX)
   ifneq ($(USE_GCC_HEADLESS),1)
     LSCRIPT_FLAGS+=-T $(LSCRIPT)
+  endif
+endif
+
+## ARM Compiler for Embedded (USE_ARMCLANG=1): rebuild the link options from
+## scratch and switch the linker script to a scatter file, to support armlink.
+ifeq ($(USE_ARMCLANG),1)
+  CFLAGS+=-D'END_STACK=Image$$$$ARM_LIB_STACK$$$$ZI$$$$Limit'
+  ifeq ($(WOLFCRYPT_TZ),1)
+    # Trap stubs for symbols referenced from wolfSSL code paths that are
+    # dead in this configuration: GNU ld garbage-collects the referencing
+    # sections, but armlink resolves all symbols before unused section
+    # elimination
+    OBJS+=tools/armclang/armclang_stubs.o
+    CFLAGS+=-DARMCLANG_STUBS_DEAD_REFS
+    ifeq ($(WOLFCRYPT_TZ_PKCS11),1)
+      CFLAGS+=-D'_flash_keyvault=Image$$$$KEYVAULT$$$$Base'
+      CFLAGS+=-D'_flash_keyvault_size=Image$$$$KEYVAULT$$$$ZI$$$$Length'
+      CFLAGS+=-D'_start_heap=Image$$$$RAM_HEAP$$$$Base'
+      CFLAGS+=-D'_heap_size=Image$$$$RAM_HEAP$$$$ZI$$$$Length'
+      # ARM libc malloc needs the C-library init that never runs (entry is
+      # isr_reset): provide a heap allocator instead
+      CFLAGS+=-DARMCLANG_STUBS_MALLOC
+    endif
+  endif
+  LDFLAGS:=$(ARMCLANG_LDFLAGS) --map --list=wolfboot.map
+  LSCRIPT:=config/target.sct
+  LSCRIPT_IN:=hal/$(TARGET).sct
+  LSCRIPT_FLAGS:=--scatter=$(LSCRIPT)
+  LD_START_GROUP:=
+  LD_END_GROUP:=
+  SECURE_LDFLAGS:=
+  ifeq ($(TZEN),1)
+    SECURE_LDFLAGS:=--import_cmse_lib_out=./src/wolfboot_tz_nsc.o
   endif
 endif
 
 # Environment variables for sign tool
 SIGN_ENV=IMAGE_HEADER_SIZE=$(IMAGE_HEADER_SIZE) \
 		 WOLFBOOT_PARTITION_SIZE=$(WOLFBOOT_PARTITION_SIZE) \
+		 WOLFBOOT_PARTITION_UPDATE_SIZE=$(WOLFBOOT_PARTITION_UPDATE_SIZE) \
 		 WOLFBOOT_SECTOR_SIZE=$(WOLFBOOT_SECTOR_SIZE) \
 		 NVM_FLASH_WRITEONCE=$(NVM_FLASH_WRITEONCE) \
 		 ML_DSA_LEVEL=$(ML_DSA_LEVEL) \
@@ -265,6 +349,9 @@ SIGN_ENV=IMAGE_HEADER_SIZE=$(IMAGE_HEADER_SIZE) \
 
 
 MAIN_TARGET=factory.bin
+# PE/COFF output format for the wolfboot.efi objcopy rule. Overridden per
+# target in arch.mk (e.g. pei-aarch64-little for aarch64_efi).
+EFI_OBJCOPY_TARGET?=pei-x86-64
 TARGET_H_TEMPLATE:=include/target.h.in
 
 ifeq ($(TZEN),1)
@@ -280,16 +367,43 @@ endif
 
 ifeq ($(TARGET),stm32h5)
 	# Don't build a contiguous image
-    MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+    ifeq ($(WOLFBOOT_SECURE_APP),1)
+        MAIN_TARGET:=wolfboot.bin
+    else
+        MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+    endif
 endif
 
 ifeq ($(TARGET),stm32n6)
 	# Don't build a contiguous image
     MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
 endif
+
+ifeq ($(TARGET),m2354)
+	# Secure and non-secure views are 256MB apart in the address map
+    MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+endif
+
+ifeq ($(TARGET),imx_rt7xx)
+	# Secure and non-secure XSPI0 views are 256MB apart in the address map,
+	# and the secure-app payload is a Secure runtime rather than a test app.
+    ifeq ($(WOLFBOOT_SECURE_APP),1)
+        MAIN_TARGET:=wolfboot.bin
+    else
+        MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+    endif
+endif
 endif # TZEN=1
 
+ifeq ($(TARGET),pic32cz)
+    MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+endif
+
 ifeq ($(TARGET),x86_64_efi)
+    MAIN_TARGET:=wolfboot.efi
+endif
+
+ifeq ($(TARGET),aarch64_efi)
     MAIN_TARGET:=wolfboot.efi
 endif
 
@@ -308,6 +422,36 @@ endif
 
 ifeq ($(TARGET),raspi3)
     MAIN_TARGET:=wolfboot.bin
+endif
+
+# Tegra234 bare-metal BL33 boots from RAM (loaded by an earlier stage), so
+# there is no contiguous flash factory.bin. Build the bootloader plus the
+# signed payload, which the bundling scripts concatenate into the BL33 image.
+ifeq ($(TARGET),tegra234)
+    MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+endif
+
+ifeq ($(TARGET),cm4)
+    MAIN_TARGET:=wolfboot.bin
+endif
+
+# i.MX 8QuadMax runs as the bare-metal BL33 loaded into DRAM by ATF, so there
+# is no contiguous flash factory.bin. Build the bootloader plus the signed
+# payload, which the packaging script assembles into the BL33 image.
+ifeq ($(TARGET),imx8qm)
+    MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+endif
+
+# i.MX95 M7 runs from ITCM (loaded by the Linux remoteproc driver); the payload
+# lives in DDR at 0x80100000, so there is no contiguous flash image to assemble.
+ifeq ($(TARGET),imx95_m7)
+    MAIN_TARGET:=wolfboot.bin test-app/image_v1_signed.bin
+endif
+
+ifeq ($(TARGET),f28p55x)
+    # C28x flash is word-addressed; DSLite loads the cl2000 .out (ELF) directly.
+    # No objcopy / no flat .bin.
+    MAIN_TARGET:=wolfboot.elf
 endif
 
 ifeq ($(TARGET),sim)
@@ -379,7 +523,7 @@ wolfboot.efi: wolfboot.elf
 	$(Q)$(OBJCOPY) -j .rodata -j .text -j .sdata -j .data \
 					-j .dynamic -j .dynsym  -j .rel \
 					-j .rela -j .reloc -j .eh_frame \
-					-O pei-x86-64 --subsystem=10 $^ $@
+					-O $(EFI_OBJCOPY_TARGET) --subsystem=10 $^ $@
 	@echo
 	@echo "\t[SIZE]"
 	$(Q)$(SIZE) wolfboot.efi
@@ -398,7 +542,7 @@ endif
 	@echo
 
 test-app/image.bin: wolfboot.elf
-	$(Q)$(MAKE) -C test-app WOLFBOOT_ROOT="$(WOLFBOOT_ROOT)" ELF_FLASH_SCATTER="$(ELF_FLASH_SCATTER)"
+	$(Q)$(MAKE) -C test-app WOLFBOOT_ROOT="$(WOLFBOOT_ROOT)" ELF_FLASH_SCATTER="$(ELF_FLASH_SCATTER)" LIBERO_FPGA_CONFIG_DIR="$(LIBERO_FPGA_CONFIG_DIR)" WOLFHSM_MICROCHIP_PIC32CZ="$(WOLFHSM_MICROCHIP_PIC32CZ)"
 	$(Q)$(SIZE) test-app/image.elf
 
 standalone:
@@ -432,7 +576,7 @@ ifeq ($(USER_PRIVATE_KEY),)
 	$(Q)(test $(SIGN) = NONE) || ($(SIGN_ENV) "$(KEYGEN_TOOL)" $(KEYGEN_OPTIONS) -g wolfboot_signing_private_key.der) || true
 	$(Q)(test $(SIGN) = NONE) && (echo "// SIGN=NONE" >  src/keystore.c) || true
 	$(Q)(test "$(FLASH_OTP_KEYSTORE)" = "1") && (make -C tools/keytools/otp) || true
-	$(Q)(test $(SIGN) = NONE) || (test "$(CERT_CHAIN_VERIFY)" = "") || (test "$(USER_CERT_CHAIN)" != "") || (tools/scripts/sim-gen-dummy-chain.sh --algo $(CERT_CHAIN_GEN_ALGO) --leaf wolfboot_signing_private_key.der)
+	$(Q)(test $(SIGN) = NONE) || (test "$(CERT_CHAIN_VERIFY)" = "") || (test "$(USER_CERT_CHAIN)" != "") || (tools/scripts/sim-gen-dummy-chain.sh --leaf-algo $(CERT_CHAIN_GEN_LEAF_ALGO) --ca-algo $(CERT_CHAIN_GEN_CA_ALGO) --ca-hash $(CERT_CHAIN_GEN_CA_HASH) --leaf wolfboot_signing_private_key.der)
 else
 	@echo "Using user-provided private key: $(USER_PRIVATE_KEY)"
 endif
@@ -485,23 +629,34 @@ endif
 ifeq ($(WOLFHSM_SERVER),1)
     _DO_WH_NVMTOOL:=1
 endif
-# Disable NVM image generation if user-provided keys without explicit USER_NVM_INIT
-# (providing USER_NVM_INIT allows users to supply keys and still generate a custom NVM image)
+# Some wolfHSM ports do not provision keys from a pre-built NVM image.
+# Their HAL installs the verification key into the server key cache at boot.
+# Set WOLFHSM_NVM_IMAGE=0 for those targets.
+WOLFHSM_NVM_IMAGE?=1
+ifeq ($(WOLFHSM_NVM_IMAGE),0)
+    _DO_WH_NVMTOOL:=
+endif
+# Disable NVM image generation for user-provided keys unless
+# USER_NVM_INIT is set.
 ifeq ($(_USER_PROVIDED_KEYS),1)
   ifeq ($(USER_NVM_INIT),)
     _DO_WH_NVMTOOL:=
   endif
 endif
 ifeq ($(_DO_WH_NVMTOOL),1)
+WH_NVM_TOOL_FLAGS ?= --invert-erased-byte
+WH_NVM_HEX_ALIGN ?= 8
+
 whnvmtool:
 	@echo "Building wolfHSM NVM tool"
 	@$(MAKE) -C $(WOLFBOOT_LIB_WOLFHSM)/tools/whnvmtool
 
 nvm-image: $(PRIVATE_KEY) whnvmtool
 	@echo "Generating wolfHSM NVM image"
-	$(Q)$(WOLFBOOT_LIB_WOLFHSM)/tools/whnvmtool/whnvmtool --image=$(WH_NVM_BIN) --size=$(WH_NVM_PART_SIZE) --invert-erased-byte $(NVM_CONFIG)
-	@echo "Converting NVM image to Intel HEX format"
-	$(Q)$(OBJCOPY) -I binary -O ihex --change-address $(WH_NVM_BASE_ADDRESS) $(WH_NVM_BIN) $(WH_NVM_HEX)
+	$(Q)rm -f $(WH_NVM_BIN) $(WH_NVM_HEX)
+	$(Q)$(WOLFBOOT_LIB_WOLFHSM)/tools/whnvmtool/whnvmtool --image=$(WH_NVM_BIN) --size=$(WH_NVM_PART_SIZE) \
+		--hex=$(WH_NVM_HEX) --hex-base=$(WH_NVM_BASE_ADDRESS) --hex-align=$(WH_NVM_HEX_ALIGN) \
+		$(WH_NVM_TOOL_FLAGS) $(NVM_CONFIG)
 	@echo "NVM images generated: $(WH_NVM_BIN) and $(WH_NVM_HEX)"
 endif
 
@@ -525,7 +680,7 @@ else
 endif
 
 test-app/image.elf: wolfboot.elf
-	$(Q)$(MAKE) -C test-app WOLFBOOT_ROOT="$(WOLFBOOT_ROOT)" ELF_FLASH_SCATTER="$(ELF_FLASH_SCATTER)" image.elf
+	$(Q)$(MAKE) -C test-app WOLFBOOT_ROOT="$(WOLFBOOT_ROOT)" ELF_FLASH_SCATTER="$(ELF_FLASH_SCATTER)" LIBERO_FPGA_CONFIG_DIR="$(LIBERO_FPGA_CONFIG_DIR)" WOLFHSM_MICROCHIP_PIC32CZ="$(WOLFHSM_MICROCHIP_PIC32CZ)" image.elf
 	$(Q)$(SIZE) test-app/image.elf
 
 ifeq ($(ELF_FLASH_SCATTER),1)
@@ -602,12 +757,14 @@ $(LSCRIPT): $(LSCRIPT_IN) FORCE
 		sed -e "s/@WOLFBOOT_STAGE1_FLASH_ADDR@/$(WOLFBOOT_STAGE1_FLASH_ADDR)/g" | \
 		sed -e "s/@WOLFBOOT_STAGE1_BASE_ADDR@/$(WOLFBOOT_STAGE1_BASE_ADDR)/g" | \
 		sed -e "s/@WOLFBOOT_LOAD_BASE@/$(WOLFBOOT_LOAD_BASE)/g" | \
+		sed -e "s/@WOLFBOOT_DMA_BUFFER_ADDRESS@/$(WOLFBOOT_DMA_BUFFER_ADDRESS)/g" | \
 		sed -e "s/@BOOTLOADER_START@/$(BOOTLOADER_START)/g" | \
 		sed -e "s/@IMAGE_HEADER_SIZE@/$(IMAGE_HEADER_SIZE)/g" | \
 		sed -e "s/@WOLFBOOT_LOAD_ADDRESS@/$(WOLFBOOT_LOAD_ADDRESS)/g" | \
 		sed -e "s/@FSP_S_LOAD_BASE@/$(FSP_S_LOAD_BASE)/g" | \
 		sed -e "s/@WOLFBOOT_L2LIM_SIZE@/$(WOLFBOOT_L2LIM_SIZE)/g" | \
 		sed -e "s/@L2SRAM_ADDR@/$(L2SRAM_ADDR)/g" | \
+		sed -e "s/@STACK_SIZE_PER_HART@/$(STACK_SIZE_PER_HART)/g" | \
 		sed -e 's/@WOLFHAL_FLASH_EXCLUDE_TEXT@/$(WOLFHAL_FLASH_EXCLUDE_TEXT)/g' | \
 		sed -e 's/@WOLFHAL_FLASH_EXCLUDE_RODATA@/$(WOLFHAL_FLASH_EXCLUDE_RODATA)/g' | \
 		sed -e 's/@WOLFHAL_FLASH_RAM_SECTIONS@/$(WOLFHAL_FLASH_RAM_SECTIONS)/g' \
@@ -644,8 +801,9 @@ src/flash_otp_keystore.o: $(PRIVATE_KEY) src/flash_otp_keystore.c
 keys: $(PRIVATE_KEY)
 
 clean:
-	$(Q)rm -f src/*.o hal/*.o hal/spi/*.o test-app/*.o src/x86/*.o
+	$(Q)rm -f src/*.o hal/*.o hal/spi/*.o hal/uart/*.o test-app/*.o src/x86/*.o
 	$(Q)rm -f src/wolfboot_tz_nsc.o
+	$(Q)rm -f *.asm  # TI cl2000 (ARCH=C2000) intermediate listings in repo root
 	$(Q)rm -f $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/*.o $(WOLFBOOT_LIB_WOLFTPM)/src/*.o $(WOLFBOOT_LIB_WOLFTPM)/src/fwtpm/*.o $(WOLFBOOT_LIB_WOLFTPM)/hal/*.o $(WOLFBOOT_LIB_WOLFTPM)/examples/pcr/*.o
 	$(Q)rm -f $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/Renesas/*.o
 	$(Q)rm -f wolfboot.bin wolfboot.elf wolfboot.map test-update.rom wolfboot.hex wolfboot.srec factory.srec
@@ -656,6 +814,7 @@ clean:
 	$(Q)rm -f $(WH_NVM_BIN) $(WH_NVM_HEX)
 	$(Q)rm -f test-lib
 	$(Q)rm -f lib-fs
+	$(Q)rm -f libwolfboot.a
 	$(Q)$(MAKE) -C test-app clean V=$(V)
 	$(Q)$(MAKE) -C tools/check_config -s clean
 	$(Q)$(MAKE) -C stage1 -s clean
@@ -685,6 +844,7 @@ distclean: clean keysclean utilsclean
 include/target.h: $(TARGET_H_TEMPLATE) FORCE
 	$(Q)cat $(TARGET_H_TEMPLATE) | \
 	sed -e "s/@WOLFBOOT_PARTITION_SIZE@/$(WOLFBOOT_PARTITION_SIZE)/g" | \
+	sed -e "s|@WOLFBOOT_PARTITION_UPDATE_SIZE_DEFINE@|$(if $(strip $(WOLFBOOT_PARTITION_UPDATE_SIZE)),#define WOLFBOOT_PARTITION_UPDATE_SIZE    $(WOLFBOOT_PARTITION_UPDATE_SIZE),/* WOLFBOOT_PARTITION_UPDATE_SIZE not set */)|g" | \
 	sed -e "s/@WOLFBOOT_SECTOR_SIZE@/$(WOLFBOOT_SECTOR_SIZE)/g" | \
 	sed -e "s/@WOLFBOOT_NSC_ADDRESS@/$(WOLFBOOT_NSC_ADDRESS)/g" | \
 	sed -e "s/@WOLFBOOT_NSC_SIZE@/$(WOLFBOOT_NSC_SIZE)/g" | \
@@ -799,71 +959,130 @@ pico-sdk-info: FORCE
 # recipe echoes the effective target/sign so a default build is visible; pass
 # them explicitly to get an SBOM that reflects your actual configuration.
 #
-# Extracts the configuration-specific source list from OBJS (which is fully
-# assembled by this point — core wolfBoot + wolfcrypt + HAL sources are all
-# included), captures the build's -D configuration macros via $(HOSTCC) -dM -E
-# on the host, and calls gen-sbom to emit CycloneDX and SPDX output files.
+# This is the plain-Make / arch.mk entry point.  It also covers every build
+# that is really the Makefile with a vendor SDK bolted on via source/include
+# paths (MCUXpresso, STM32Cube, PSoC6, Freedom-E-SDK, Vorago) and the IDE
+# targets that also have an arch.mk path (TI Hercules, Renesas RX, Zynq).  It
+# extracts the configuration-specific source list from OBJS (fully assembled by
+# this point: core wolfBoot + wolfcrypt + HAL) and passes it, together with the
+# build CFLAGS, to the vendored wolfGlass driver under tools/sbom/.
 #
-# wolfcrypt sources are compiled directly into the wolfBoot image and are
-# therefore listed as wolfBoot's own sources, not as a separate component.
+# wolfcrypt sources are compiled directly into the wolfBoot image.  They stay
+# in the source-set hash, and are also declared as a nested wolfcrypt
+# component (PURL / provenance). Matching uses the wolfssl CPE. Do not emit
+# a wolfcrypt CPE: NVD files crypto CVEs against wolfssl, not wolfcrypt.
 #
 # Optional make variables:
 #   HOSTCC                 Host C compiler for macro capture (default: cc)
-#   GEN_SBOM               Path to wolfssl scripts/gen-sbom
-#                          (default: $(WOLFBOOT_LIB_WOLFSSL)/scripts/gen-sbom)
+#   SBOM_GEN               Path to gen-sbom
+#                          (default: tools/sbom/gen-sbom via driver discovery)
 #   CRA_PYTHON             Python interpreter (default: python3)
 
 HOSTCC?=cc
 WOLFBOOT_VERSION:=$(shell sed -n \
     's/.*LIBWOLFBOOT_VERSION_STRING[[:space:]]*"\([^"]*\)".*/\1/p' \
     include/wolfboot/version.h)
-GEN_SBOM?=$(WOLFBOOT_LIB_WOLFSSL)/scripts/gen-sbom
-SBOM_CDX_OUT:=wolfboot-$(WOLFBOOT_VERSION).cdx.json
-SBOM_SPDX_OUT:=wolfboot-$(WOLFBOOT_VERSION).spdx.json
-SBOM_PYTHON?=$(or $(CRA_PYTHON),python3)
+SBOM_ROOT:=$(WOLFBOOT_ROOT)
+SBOM_NAME:=wolfboot
+# src/keystore.c carries the public keys that authorise a firmware update.  The
+# build generates it from the signing key, so a fresh tree does not hold it yet.
+# It is still a compiled source, and a bootloader SBOM that omits its own trust
+# anchor describes the wrong image, so name it and depend on it below.
+SBOM_GENERATED_SRCS=$(filter ./src/keystore.c src/keystore.c,\
+  $(patsubst %.o,%.c,$(OBJS)))
+# $(wildcard) cannot build this list.  GNU make 3.81 caches directory contents,
+# so a source generated during the same run stays invisible for the rest of it;
+# $(shell) re-reads the filesystem instead.  The generated sources go in
+# unconditionally because sbom.mk expands this list through $(call) while
+# reading the makefile, which is before any recipe can create them.  The driver
+# opens the file afterwards, by which time the guard has made it exist.
+SBOM_SRCS=$(sort $(SBOM_GENERATED_SRCS) $(shell for o in $(OBJS); do \
+    for e in c S; do s="$${o%.o}.$$e"; [ -f "$$s" ] && printf '%s ' "$$s"; done; \
+  done))
+# A source that is absent must not be dropped quietly.  Filtering the list to
+# what happens to be on disk shrinks the document with no diagnostic anywhere:
+# a sim-tpm build without lib/wolfTPM checked out loses all eight tpm2*.c
+# sources, emits nothing, and still validates.  An object that maps to no
+# source is the signal, so compare the two lists and stop.
+SBOM_SRCS_MISSING=$(filter-out $(basename $(SBOM_SRCS)),$(basename $(OBJS)))
+SBOM_CFLAGS=$(CFLAGS)
+# wolfBoot's wolfCrypt configuration is derived, not literal: include/user_settings.h
+# turns WOLFBOOT_SIGN_ECC256 into HAVE_ECC, HAVE_ECC256, ECC_TIMING_RESISTANT and
+# the rest. Capturing CFLAGS alone would record the -D set and none of what it
+# selects, so the SBOM would report a bootloader with no signature algorithm.
+SBOM_SETTINGS_H:=$(WOLFBOOT_LIB_WOLFSSL)/wolfssl/wolfcrypt/settings.h
+SBOM_INCLUDE_DIRS:=$(WOLFBOOT_ROOT)/include $(WOLFBOOT_LIB_WOLFSSL)
+# user_settings.h includes the generated target.h, so it must exist before the
+# capture runs. It also carries the flash layout the SBOM records.
+SBOM_PREREQS:=include/target.h sbom-check-sources
+# Coat: wolfssl (matching CPE) + nested wolfcrypt (PURL / provenance).
+# Sources remain in the merkle hash; the wolfssl CPE is what NVD matches.
+SBOM_DEP_WOLFSSL?=yes
+SBOM_DEP_WOLFCRYPT?=yes
+SBOM_WOLFSSL_VERSION?=$(shell sed -n \
+    's/.*LIBWOLFSSL_VERSION_STRING[[:space:]]*"\([^"]*\)".*/\1/p' \
+    $(WOLFBOOT_LIB_WOLFSSL)/wolfssl/version.h 2>/dev/null | head -1)
+SBOM_VERSION=$(WOLFBOOT_VERSION)
+SBOM_LICENSE_FILE=$(WOLFBOOT_ROOT)/LICENSE
+# wolfBoot is a bootloader flashed as an image, not a library linked into one.
+SBOM_COMPONENT_TYPE?=firmware
+# LICENSE is the verbatim GPLv3, which says nothing about how wolfBoot licenses
+# under it, so inference falls back to GPL-3.0-only and understates the grant.
+# Every GPL-headered source says "either version 3 ... or (at your option) any
+# later version".
+SBOM_LICENSE_OVERRIDE?=GPL-3.0-or-later
+# One version of wolfBoot has about 100 configurations, and each one is a
+# different image with a different source set.  Name the document after the
+# configuration so a second target does not overwrite the first.  gen-sbom
+# folds the build configuration into the serialNumber and the SPDX
+# documentNamespace too, so the documents stay distinct inside a scanner and
+# not only on disk.
+SBOM_CONFIG_TAG:=$(TARGET)$(if $(SIGN),-$(SIGN))$(if $(HASH),-$(HASH))
+SBOM_CDX_OUT:=wolfboot-$(SBOM_CONFIG_TAG)-$(WOLFBOOT_VERSION).cdx.json
+SBOM_SPDX_OUT:=wolfboot-$(SBOM_CONFIG_TAG)-$(WOLFBOOT_VERSION).spdx.json
+SBOM_GEN?=
 
-sbom:
-	@if [ -z "$(WOLFBOOT_VERSION)" ]; then \
-	    echo "ERROR: could not read LIBWOLFBOOT_VERSION_STRING from include/wolfboot/version.h" >&2; \
-	    echo "       (check the file exists and its version format is intact)." >&2; \
-	    exit 1; \
+# Guards both SBOM targets: see SBOM_SRCS_MISSING above.  SBOM_ALLOW_MISSING=1
+# accepts the partial document, and still lists what is absent.
+sbom-check-sources: $(SBOM_GENERATED_SRCS)
+	$(Q)if [ -n "$(strip $(SBOM_SRCS_MISSING))" ]; then \
+	    echo "sbom: $(words $(SBOM_SRCS_MISSING)) object(s) map to no source on disk:" >&2; \
+	    for o in $(SBOM_SRCS_MISSING); do echo "  $$o.c (or .S)" >&2; done; \
+	    if [ "$(SBOM_ALLOW_MISSING)" = "1" ]; then \
+	        echo "sbom: SBOM_ALLOW_MISSING=1 set; the SBOM will describe fewer" >&2; \
+	        echo "sbom: sources than the image really holds." >&2; \
+	    else \
+	        echo "sbom: the SBOM would under-report the image.  A submodule is" >&2; \
+	        echo "sbom: absent (git submodule update --init), a vendor SDK lives" >&2; \
+	        echo "sbom: outside the tree, or the build generates that source and" >&2; \
+	        echo "sbom: has not run yet.  Set SBOM_ALLOW_MISSING=1 to accept it." >&2; \
+	        exit 1; \
+	    fi; \
 	fi
-	@if [ ! -f "$(GEN_SBOM)" ]; then \
-	    echo "ERROR: gen-sbom not found at '$(GEN_SBOM)'." >&2; \
-	    echo "       Initialize the submodule: git submodule update --init lib/wolfssl" >&2; \
-	    echo "       or point GEN_SBOM at a wolfssl tree: make sbom GEN_SBOM=/path/to/wolfssl/scripts/gen-sbom" >&2; \
-	    exit 1; \
-	fi
-	@echo "wolfBoot SBOM: version=$(WOLFBOOT_VERSION) target=$(TARGET) sign=$(SIGN)"
-	@echo "  Outputs: $(SBOM_CDX_OUT)  $(SBOM_SPDX_OUT)"
-	$(eval _SBOM_SRCS := $(wildcard $(patsubst %.o,%.c,$(OBJS))) $(wildcard $(patsubst %.o,%.S,$(OBJS))))
-	@if [ -z "$(_SBOM_SRCS)" ]; then \
-	    echo "ERROR: no source files found in OBJS — check that TARGET and SIGN are correct." >&2; \
-	    exit 1; \
-	fi
-	@set -e; \
-	_dh=$$(mktemp /tmp/wolfboot-sbom-defines.XXXXXX); \
-	_sf=$$(mktemp /tmp/wolfboot-sbom-srcs.XXXXXX); \
-	trap 'rm -f "$$_dh" "$$_sf"' EXIT; \
-	_defs=""; \
-	for _t in $(CFLAGS); do \
-	    case "$$_t" in -D*) _defs="$$_defs $$_t" ;; esac; \
-	done; \
-	$(HOSTCC) -dM -E -DWOLFSSL_USER_SETTINGS $$_defs \
-	    -x c /dev/null >"$$_dh" 2>/dev/null || \
-	    { echo "ERROR: '$(HOSTCC) -dM -E' failed; install a host C compiler or set HOSTCC." >&2; exit 1; }; \
-	printf '%s\n' $(_SBOM_SRCS) >"$$_sf"; \
-	$(SBOM_PYTHON) "$(GEN_SBOM)" \
-	    --name wolfboot \
-	    --version "$(WOLFBOOT_VERSION)" \
-	    --supplier "wolfSSL Inc." \
-	    --license-file "$(WOLFBOOT_ROOT)/LICENSE" \
-	    --options-h "$$_dh" \
-	    --srcs-file "$$_sf" \
-	    --cdx-out "$(SBOM_CDX_OUT)" \
-	    --spdx-out "$(SBOM_SPDX_OUT)"
-	@echo "SBOM written: $(SBOM_CDX_OUT)  $(SBOM_SPDX_OUT)"
+
+include tools/sbom/build/sbom.mk
+
+## Per-HAL SBOM
+# Emits a standalone SBOM whose component is the HAL layer for the selected
+# TARGET (hal/hal.c, hal/$(TARGET).c, and any target flash/uart/board drivers),
+# separate from the full bootloader SBOM.  Uses the same build config (CFLAGS)
+# so the captured macros match the real build.  Run once per TARGET.
+SBOM_HAL_NAME:=wolfboot-hal-$(TARGET)
+SBOM_HAL_SRCS=$(filter hal/%,$(patsubst ./%,%,$(wildcard $(patsubst %.o,%.c,$(OBJS)) $(patsubst %.o,%.S,$(OBJS)))))
+SBOM_HAL_CFLAGS=$(CFLAGS)
+SBOM_HAL_SETTINGS_H:=$(SBOM_SETTINGS_H)
+SBOM_HAL_INCLUDE_DIRS:=$(SBOM_INCLUDE_DIRS)
+SBOM_HAL_PREREQS:=$(SBOM_PREREQS)
+SBOM_HAL_VERSION:=$(WOLFBOOT_VERSION)
+SBOM_HAL_LICENSE_FILE:=$(WOLFBOOT_ROOT)/LICENSE
+# Same sources, same grant: without this the HAL SBOM would infer
+# GPL-3.0-only and contradict the bootloader SBOM built from the same tree.
+SBOM_HAL_LICENSE_OVERRIDE:=$(SBOM_LICENSE_OVERRIDE)
+SBOM_HAL_CDX_OUT:=wolfboot-hal-$(TARGET)-$(WOLFBOOT_VERSION).cdx.json
+SBOM_HAL_SPDX_OUT:=wolfboot-hal-$(TARGET)-$(WOLFBOOT_VERSION).spdx.json
+SBOM_HAL_GEN:=$(SBOM_GEN)
+$(eval $(call wolfglass_sbom_rule,sbom-hal,SBOM_HAL_))
 
 FORCE:
 
-.PHONY: FORCE clean keytool_check squashelf_check sbom
+.PHONY: FORCE clean keytool_check squashelf_check sbom sbom-hal sbom-check-sources

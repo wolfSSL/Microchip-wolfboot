@@ -29,6 +29,9 @@
 #define FLASH_SIZE          (256 * 1024)
 #define FLASH_PAGESIZE      64
 #define FLASH_N_PAGES       4096
+/* NVMCMD_ERASE (0x02) is the NVMCTRL row erase: one command erases a
+ * 256-byte row (4 pages), so erase loops stride by the row size. */
+#define FLASH_ROW_SIZE      (4 * FLASH_PAGESIZE)
 
 #define WDT_CTRL *((volatile uint8_t *)(0x40001000))
 #define WDT_EN (1 << 1)
@@ -161,9 +164,9 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
     NVMCTRLA_REG  = (NVMCMD_PBC | NVMCMD_KEY);
     while (i < len) {
         if ((len - i > 3) && ((((address + i) & 0x03) == 0)  && ((((uint32_t)data) + i) & 0x03) == 0)) {
-            dst = (uint32_t *)address;
-            src = (uint32_t *)data;
-            dst[i >> 2] = src[i >> 2];
+            dst = (uint32_t *)(address + i);
+            src = (uint32_t *)(data + i);
+            *dst = *src;
             i+=4;
         } else {
             uint32_t val;
@@ -200,8 +203,9 @@ int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
     while (len > 0) {
         NVMCTRL_ADDR = (address >> 1); /* This register holds the address of a 16-bit row */
         NVMCTRLA_REG = NVMCMD_ERASE | NVMCMD_KEY;
-        while(!(NVMCTRL_INTFLAG & NVMCTRL_INTFLAG_NVMREADY))
-        len -= FLASH_PAGESIZE;
+        while (!(NVMCTRL_INTFLAG & NVMCTRL_INTFLAG_NVMREADY)) { }
+        address += FLASH_ROW_SIZE;
+        len -= FLASH_ROW_SIZE;
     }
     return 0;
 }

@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 #ifdef WHAL_CFG_PIC32CZ_UART_SINGLE_INSTANCE
-#include "board.h"  /* provides whal_Pic32cz_Uart_Dev singleton */
+#include "wolfHAL_board.h"  /* provides whal_Pic32cz_Uart_Dev singleton */
 #endif
 #include <wolfHAL/uart/pic32cz_uart.h>
 #include <wolfHAL/uart/uart.h>
@@ -349,8 +349,7 @@ whal_Error whal_Pic32cz_Uart_Send(whal_Uart *uartDev, const void *data, size_t d
             return err;
 
         /* Write data to transmit register */
-        whal_Reg_Update(base, USART_DATA_REG,
-                        USART_DATA_Msk,
+        whal_Reg_Write(base, USART_DATA_REG,
                         whal_SetBits(USART_DATA_Msk, USART_DATA_Pos, buf[i]));
     }
 
@@ -361,10 +360,9 @@ whal_Error whal_Pic32cz_Uart_Send(whal_Uart *uartDev, const void *data, size_t d
     if (err)
         return err;
 
-    /* Clear TXC flag by writing 1 */
-    whal_Reg_Update(base, USART_INTFLAG_REG,
-                    USART_INTFLAG_TXC_Msk,
-                    whal_SetBits(USART_INTFLAG_TXC_Msk, USART_INTFLAG_TXC_Pos, 1));
+    /* Clear TXC flag by writing 1 (W1C: write only this bit, 0 elsewhere) */
+    whal_Reg_Write(base, USART_INTFLAG_REG,
+                   whal_SetBits(USART_INTFLAG_TXC_Msk, USART_INTFLAG_TXC_Pos, 1));
 
     return WHAL_SUCCESS;
 }

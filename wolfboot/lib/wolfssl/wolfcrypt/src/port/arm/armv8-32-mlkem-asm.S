@@ -15,6 +15,9 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-mlkem-asm.S
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_32_MLKEM_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -54,6 +57,7 @@ L_mlkem_arm32_ntt_zetas:
 	.text
 	.align	4
 	.globl	mlkem_arm32_ntt
+	WC_ASM_ATT_HIDDEN(mlkem_arm32_ntt)
 	.type	mlkem_arm32_ntt, %function
 mlkem_arm32_ntt:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -3075,6 +3079,7 @@ L_mlkem_invntt_zetas_inv:
 	.text
 	.align	4
 	.globl	mlkem_arm32_invntt
+	WC_ASM_ATT_HIDDEN(mlkem_arm32_invntt)
 	.type	mlkem_arm32_invntt, %function
 mlkem_arm32_invntt:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -7490,6 +7495,7 @@ L_mlkem_basemul_mont_zetas:
 	.text
 	.align	4
 	.globl	mlkem_arm32_basemul_mont
+	WC_ASM_ATT_HIDDEN(mlkem_arm32_basemul_mont)
 	.type	mlkem_arm32_basemul_mont, %function
 mlkem_arm32_basemul_mont:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -7768,6 +7774,7 @@ L_mlkem_basemul_mont_loop:
 	.text
 	.align	4
 	.globl	mlkem_arm32_basemul_mont_add
+	WC_ASM_ATT_HIDDEN(mlkem_arm32_basemul_mont_add)
 	.type	mlkem_arm32_basemul_mont_add, %function
 mlkem_arm32_basemul_mont_add:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -8080,6 +8087,7 @@ L_mlkem_arm32_basemul_mont_add_loop:
 	.text
 	.align	4
 	.globl	mlkem_arm32_csubq
+	WC_ASM_ATT_HIDDEN(mlkem_arm32_csubq)
 	.type	mlkem_arm32_csubq, %function
 mlkem_arm32_csubq:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -8251,6 +8259,7 @@ L_mlkem_arm32_csubq_loop:
 	.text
 	.align	4
 	.globl	mlkem_arm32_rej_uniform
+	WC_ASM_ATT_HIDDEN(mlkem_arm32_rej_uniform)
 	.type	mlkem_arm32_rej_uniform, %function
 mlkem_arm32_rej_uniform:
 	push	{r4, r5, r6, r7, r8, lr}
@@ -8498,10 +8507,10 @@ L_mlkem_arm32_rej_uniform_done:
 	pop	{r4, r5, r6, r7, r8, pc}
 	.size	mlkem_arm32_rej_uniform,.-mlkem_arm32_rej_uniform
 #endif /* WOLFSSL_HAVE_MLKEM */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

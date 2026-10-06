@@ -1,8 +1,8 @@
 /* tpm2_types.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -12,7 +12,12 @@
 #ifndef __TPM2_TYPES_H__
 #define __TPM2_TYPES_H__
 
+/* Freestanding targets with no hosted C library define WOLFTPM_NO_STD_HEADERS
+ * and provide the fixed-width integer types (and the mem/str functions used via
+ * the X* wrappers) through user_settings.h instead of the standard headers. */
+#ifndef WOLFTPM_NO_STD_HEADERS
 #include <stdint.h>
+#endif
 
 #ifdef WOLFTPM_USER_SETTINGS
     #include "user_settings.h"
@@ -203,7 +208,12 @@ typedef int64_t  INT64;
         #include <wolfssl/ssl.h> /* for wolfSSL_ERR_reason_error_string */
     #endif
 
-    #ifdef DEBUG_WOLFTPM
+    /* coexist-enabled wolfSSL only exposes WC_AES_BLOCK_SIZE; alias classic name */
+    #if defined(WC_NO_COMPAT_AES_BLOCK_SIZE) && !defined(AES_BLOCK_SIZE)
+        #define AES_BLOCK_SIZE WC_AES_BLOCK_SIZE
+    #endif
+
+    #if defined(DEBUG_WOLFTPM) && !defined(WOLFTPM_NO_STD_HEADERS)
         #include <stdio.h>
     #endif
 
@@ -239,9 +249,11 @@ typedef int64_t  INT64;
     #endif
 #else
 
+    #ifndef WOLFTPM_NO_STD_HEADERS
     #include <stdio.h>
     #include <stdlib.h>
     #include <string.h>
+    #endif
 
     typedef uint8_t  byte;
     typedef uint16_t word16;
@@ -256,6 +268,15 @@ typedef int64_t  INT64;
     #define BAD_FUNC_ARG          -173  /* Bad function argument provided */
     #define NOT_COMPILED_IN       -174  /* Feature not compiled in */
     #define LENGTH_ONLY_E         -202  /* Returning output length only */
+
+    /* wolfCrypt is not compiled in, so wolfssl/wolfcrypt/memory.h is not
+     * available. Mirror the upstream volatile byte wipe so callers can
+     * still zero secrets without the compiler eliding the store. */
+    static inline void wc_ForceZero(void* mem, size_t len)
+    {
+        volatile byte* z = (volatile byte*)mem;
+        while (len--) *z++ = 0;
+    }
 
     #define ENCODING_TYPE_PEM  CTC_FILETYPE_PEM
     #define ENCODING_TYPE_ASN1 CTC_FILETYPE_ASN1
@@ -359,7 +380,9 @@ typedef int64_t  INT64;
 #endif
 
 #ifndef WOLFTPM_CUSTOM_TYPES
+    #ifndef WOLFTPM_NO_STD_HEADERS
     #include <stdlib.h>
+    #endif
 
     #define XSTRTOUL(s,e,b)   strtoul((s),(e),(b))
     #define XATOI(s)          atoi((s))
@@ -449,6 +472,17 @@ typedef int64_t  INT64;
     #ifndef TPM2_SPI_MAX_HZ
         /* Max: 43MHz */
         #define TPM2_SPI_MAX_HZ TPM2_SPI_MAX_HZ_NUVOTON
+    #endif
+#elif defined(WOLFTPM_SEALSQ)
+    /* SealSQ QVault TPM */
+    /* Requires wait state support */
+    #ifndef WOLFTPM_CHECK_WAIT_STATE
+        #define WOLFTPM_CHECK_WAIT_STATE
+    #endif
+    #define TPM2_SPI_MAX_HZ_SEALSQ 33000000
+    #ifndef TPM2_SPI_MAX_HZ
+        /* Max: 33MHz */
+        #define TPM2_SPI_MAX_HZ TPM2_SPI_MAX_HZ_SEALSQ
     #endif
 #else
     /* Infineon OPTIGA SLB9670/SLB9672/SLB9673 */
@@ -567,12 +601,13 @@ typedef int64_t  INT64;
  * keep the raw TPM response code; opt in at runtime with TPM2_SetCommandRetries
  * or at build time with -DWOLFTPM_MAX_RETRIES=N. Define WOLFTPM_NO_RETRY to
  * compile the handling out entirely. */
-#ifdef WOLFTPM_NO_RETRY
-    #undef  WOLFTPM_MAX_RETRIES
-    #define WOLFTPM_MAX_RETRIES 0
-#endif
 #ifndef WOLFTPM_MAX_RETRIES
 #define WOLFTPM_MAX_RETRIES 0
+#endif
+/* WOLFTPM_MAX_RETRIES is always defined by here, so the check below stays
+ * -Wundef-clean even when WOLFTPM_NO_RETRY is set without WOLFTPM_MAX_RETRIES. */
+#if defined(WOLFTPM_NO_RETRY) && (WOLFTPM_MAX_RETRIES > 0)
+    #error "WOLFTPM_NO_RETRY conflicts with WOLFTPM_MAX_RETRIES > 0"
 #endif
 
 #ifndef MAX_SYM_BLOCK_SIZE
@@ -688,6 +723,11 @@ typedef int64_t  INT64;
 #endif
 #ifndef NUM_LOCALITIES
 #define NUM_LOCALITIES 1
+#endif
+#ifndef WOLFTPM_LOCALITY_MAX
+/* Highest TPM locality index (localities 0-4 per TPM 2.0); not NUM_LOCALITIES,
+ * which is the platform locality count. */
+#define WOLFTPM_LOCALITY_MAX 4
 #endif
 #ifndef MAX_HANDLE_NUM
 #define MAX_HANDLE_NUM 3
@@ -1049,7 +1089,9 @@ typedef int64_t  INT64;
 #ifdef INTEL_INTRINSICS
     /* for non visual studio probably need no long version, 32 bit only
      * i.e., _rotl and _rotr */
+    #ifndef WOLFTPM_NO_STD_HEADERS
     #include <stdlib.h>      /* get intrinsic definitions */
+    #endif
     #pragma intrinsic(_lrotl, _lrotr)
     static inline word32 rotlFixed(word32 x, word32 y) {
         return y ? _lrotl(x, y) : x;

@@ -36,10 +36,10 @@ IFNDEF WOLFSSL_SP_NO_2048
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_from_bin_bswap PROC
@@ -124,10 +124,10 @@ IFNDEF NO_MOVBE_SUPPORT
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the movbe instruction which is an optional instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_from_bin_movbe PROC
@@ -201,8 +201,8 @@ ENDIF
 ;  * Fixed length number of bytes written: 256
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_to_bin_bswap_32 PROC
@@ -310,8 +310,8 @@ IFNDEF NO_MOVBE_SUPPORT
 ;  * Fixed length number of bytes written: 256
 ;  * Uses the movbe instruction which is optional.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_to_bin_movbe_32 PROC
@@ -385,9 +385,9 @@ _TEXT ENDS
 ENDIF
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_16 PROC
@@ -2029,9 +2029,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply.
-;  * b   Second number to multiply.
+;  * @param [out] r  Result of multiplication.
+;  * @param [in]  a  First number to multiply.
+;  * @param [in]  b  Second number to multiply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_avx2_16 PROC
@@ -3669,22 +3669,38 @@ sp_2048_mul_avx2_16 PROC
         cmp	rbp, r8
         jne	L_end_2048_mul_avx2_16
 L_start_2048_mul_avx2_16:
-        vmovdqu	xmm0, OWORD PTR [rbx]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+16]
-        vmovups	OWORD PTR [r8+16], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+32]
-        vmovups	OWORD PTR [r8+32], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+48]
-        vmovups	OWORD PTR [r8+48], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+64]
-        vmovups	OWORD PTR [r8+64], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+80]
-        vmovups	OWORD PTR [r8+80], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+96]
-        vmovups	OWORD PTR [r8+96], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+112]
-        vmovups	OWORD PTR [r8+112], xmm0
+        mov	rax, QWORD PTR [rbx]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbx+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbx+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbx+24]
+        mov	QWORD PTR [r8+24], rax
+        mov	rax, QWORD PTR [rbx+32]
+        mov	QWORD PTR [r8+32], rax
+        mov	rax, QWORD PTR [rbx+40]
+        mov	QWORD PTR [r8+40], rax
+        mov	rax, QWORD PTR [rbx+48]
+        mov	QWORD PTR [r8+48], rax
+        mov	rax, QWORD PTR [rbx+56]
+        mov	QWORD PTR [r8+56], rax
+        mov	rax, QWORD PTR [rbx+64]
+        mov	QWORD PTR [r8+64], rax
+        mov	rax, QWORD PTR [rbx+72]
+        mov	QWORD PTR [r8+72], rax
+        mov	rax, QWORD PTR [rbx+80]
+        mov	QWORD PTR [r8+80], rax
+        mov	rax, QWORD PTR [rbx+88]
+        mov	QWORD PTR [r8+88], rax
+        mov	rax, QWORD PTR [rbx+96]
+        mov	QWORD PTR [r8+96], rax
+        mov	rax, QWORD PTR [rbx+104]
+        mov	QWORD PTR [r8+104], rax
+        mov	rax, QWORD PTR [rbx+112]
+        mov	QWORD PTR [r8+112], rax
+        mov	rax, QWORD PTR [rbx+120]
+        mov	QWORD PTR [r8+120], rax
 L_end_2048_mul_avx2_16:
         add	rsp, 128
         pop	rdi
@@ -3700,9 +3716,9 @@ _TEXT ENDS
 ENDIF
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_add_16 PROC
@@ -3762,8 +3778,8 @@ sp_2048_add_16 ENDP
 _TEXT ENDS
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_sub_in_place_32 PROC
@@ -3869,9 +3885,9 @@ sp_2048_sub_in_place_32 ENDP
 _TEXT ENDS
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_add_32 PROC
@@ -3979,9 +3995,9 @@ sp_2048_add_32 ENDP
 _TEXT ENDS
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_32 PROC
@@ -4106,17 +4122,23 @@ sp_2048_mul_32 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_mul_16
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+784]
         mov	rdx, QWORD PTR [rsp+776]
         lea	rcx, QWORD PTR [rsp+256]
         add	r8, 128
         add	rdx, 128
+        sub	rsp, 32
         call	sp_2048_mul_16
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+784]
         mov	rdx, QWORD PTR [rsp+776]
         mov	rcx, QWORD PTR [rsp+768]
+        sub	rsp, 32
         call	sp_2048_mul_16
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+784]
         mov	rdx, QWORD PTR [rsp+776]
@@ -4685,9 +4707,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_avx2_32 PROC
@@ -4812,17 +4834,23 @@ sp_2048_mul_avx2_32 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_mul_avx2_16
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+784]
         mov	rdx, QWORD PTR [rsp+776]
         lea	rcx, QWORD PTR [rsp+256]
         add	r8, 128
         add	rdx, 128
+        sub	rsp, 32
         call	sp_2048_mul_avx2_16
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+784]
         mov	rdx, QWORD PTR [rsp+776]
         mov	rcx, QWORD PTR [rsp+768]
+        sub	rsp, 32
         call	sp_2048_mul_avx2_16
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+784]
         mov	rdx, QWORD PTR [rsp+776]
@@ -5343,8 +5371,8 @@ _TEXT ENDS
 ENDIF
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_sqr_16 PROC
@@ -6432,8 +6460,8 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_sqr_avx2_16 PROC
@@ -6447,7 +6475,7 @@ sp_2048_sqr_avx2_16 PROC
         push	rbx
         mov	r8, rcx
         mov	r9, rdx
-        sub	rsp, 128
+        sub	rsp, 136
         cmp	r9, r8
         mov	rbp, rsp
         cmovne	rbp, r8
@@ -7457,20 +7485,32 @@ sp_2048_sqr_avx2_16 PROC
         sub	r8, 128
         cmp	r9, r8
         jne	L_end_2048_sqr_avx2_16
-        vmovdqu	xmm0, OWORD PTR [rbp]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+16]
-        vmovups	OWORD PTR [r8+16], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+32]
-        vmovups	OWORD PTR [r8+32], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+48]
-        vmovups	OWORD PTR [r8+48], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+64]
-        vmovups	OWORD PTR [r8+64], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+80]
-        vmovups	OWORD PTR [r8+80], xmm0
+        mov	rax, QWORD PTR [rbp]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbp+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbp+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbp+24]
+        mov	QWORD PTR [r8+24], rax
+        mov	rax, QWORD PTR [rbp+32]
+        mov	QWORD PTR [r8+32], rax
+        mov	rax, QWORD PTR [rbp+40]
+        mov	QWORD PTR [r8+40], rax
+        mov	rax, QWORD PTR [rbp+48]
+        mov	QWORD PTR [r8+48], rax
+        mov	rax, QWORD PTR [rbp+56]
+        mov	QWORD PTR [r8+56], rax
+        mov	rax, QWORD PTR [rbp+64]
+        mov	QWORD PTR [r8+64], rax
+        mov	rax, QWORD PTR [rbp+72]
+        mov	QWORD PTR [r8+72], rax
+        mov	rax, QWORD PTR [rbp+80]
+        mov	QWORD PTR [r8+80], rax
+        mov	rax, QWORD PTR [rbp+88]
+        mov	QWORD PTR [r8+88], rax
 L_end_2048_sqr_avx2_16:
-        add	rsp, 128
+        add	rsp, 136
         pop	rbx
         pop	rsi
         pop	rdi
@@ -7487,15 +7527,15 @@ ENDIF
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_sqr_32 PROC
-        sub	rsp, 272
+        sub	rsp, 280
         mov	QWORD PTR [rsp+256], rcx
         mov	QWORD PTR [rsp+264], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+128]
         mov	rax, QWORD PTR [rdx]
@@ -7631,15 +7671,21 @@ sp_2048_sqr_32 PROC
         mov	QWORD PTR [r10+120], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_sqr_16
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
         add	rdx, 128
         add	rcx, 256
+        sub	rsp, 32
         call	sp_2048_sqr_16
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
+        sub	rsp, 32
         call	sp_2048_sqr_16
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
@@ -7647,7 +7693,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+256]
         lea	r10, QWORD PTR [rsp+128]
         add	rdx, 384
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-128]
         sub	r8, QWORD PTR [rdx+-128]
         mov	rax, QWORD PTR [r10+-120]
@@ -7996,7 +8042,7 @@ ENDIF
         mov	QWORD PTR [rcx+120], rax
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
-        add	rsp, 272
+        add	rsp, 280
         ret
 sp_2048_sqr_32 ENDP
 _TEXT ENDS
@@ -8005,15 +8051,15 @@ IFDEF HAVE_INTEL_AVX2
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_sqr_avx2_32 PROC
-        sub	rsp, 272
+        sub	rsp, 280
         mov	QWORD PTR [rsp+256], rcx
         mov	QWORD PTR [rsp+264], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+128]
         mov	rax, QWORD PTR [rdx]
@@ -8149,15 +8195,21 @@ sp_2048_sqr_avx2_32 PROC
         mov	QWORD PTR [r10+120], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_sqr_avx2_16
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
         add	rdx, 128
         add	rcx, 256
+        sub	rsp, 32
         call	sp_2048_sqr_avx2_16
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
+        sub	rsp, 32
         call	sp_2048_sqr_avx2_16
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
@@ -8165,7 +8217,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+256]
         lea	r10, QWORD PTR [rsp+128]
         add	rdx, 384
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-128]
         sub	r8, QWORD PTR [rdx+-128]
         mov	rax, QWORD PTR [r10+-120]
@@ -8514,15 +8566,15 @@ ENDIF
         mov	QWORD PTR [rcx+120], rax
         mov	rdx, QWORD PTR [rsp+264]
         mov	rcx, QWORD PTR [rsp+256]
-        add	rsp, 272
+        add	rsp, 280
         ret
 sp_2048_sqr_avx2_32 ENDP
 _TEXT ENDS
 ENDIF
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_sub_in_place_16 PROC
@@ -8580,9 +8632,9 @@ sp_2048_sub_in_place_16 ENDP
 _TEXT ENDS
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_d_32 PROC
@@ -8849,14 +8901,15 @@ _TEXT ENDS
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cond_sub_16 PROC
-        sub	rsp, 128
+        sub	rsp, 136
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r9
@@ -8970,15 +9023,16 @@ sp_2048_cond_sub_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	rax, rax
-        add	rsp, 128
+        add	rsp, 136
         ret
 sp_2048_cond_sub_16 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 2048 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mont_reduce_16 PROC
@@ -9169,9 +9223,10 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
-        mov	rcx, rcx
         sub	rcx, 128
+        sub	rsp, 40
         call	sp_2048_cond_sub_16
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -9185,10 +9240,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cond_sub_avx2_16 PROC
@@ -9281,9 +9337,9 @@ _TEXT ENDS
 ENDIF
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_d_16 PROC
@@ -9422,9 +9478,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_d_avx2_16 PROC
@@ -9537,10 +9593,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_2048_word_asm_16 PROC
@@ -9554,10 +9611,11 @@ _TEXT ENDS
 ENDIF
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cmp_16 PROC
@@ -9702,9 +9760,10 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 2048 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mont_reduce_avx2_16 PROC
@@ -9726,7 +9785,6 @@ sp_2048_mont_reduce_avx2_16 PROC
         mov	rdi, QWORD PTR [r9+16]
         mov	rsi, QWORD PTR [r9+24]
         add	r9, 64
-        xor	rbp, rbp
 L_2048_mont_reduce_avx2_16_loop:
         ; mu = a[i] * mp
         mov	rdx, r14
@@ -10034,18 +10092,18 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 _TEXT SEGMENT READONLY PARA
 sp_2048_get_from_table_avx2_16 PROC
-        sub	rsp, 128
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
-        vmovdqu	OWORD PTR [rsp+96], xmm12
-        vmovdqu	OWORD PTR [rsp+112], xmm13
+        sub	rsp, 136
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
+        vmovdqu	OWORD PTR [rsp+104], xmm12
+        vmovdqu	OWORD PTR [rsp+120], xmm13
         mov	rax, 1
-        movd	xmm10, r8
-        movd	xmm11, rax
+        vmovq	xmm10, r8
+        vmovq	xmm11, rax
         vpxor	ymm13, ymm13, ymm13
         vpermd	ymm10, ymm13, ymm10
         vpermd	ymm11, ymm13, ymm11
@@ -10572,15 +10630,15 @@ sp_2048_get_from_table_avx2_16 PROC
         vmovdqu	YMMWORD PTR [rcx+64], ymm6
         vmovdqu	YMMWORD PTR [rcx+96], ymm7
         ; END: 0-15
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        vmovdqu	xmm12, OWORD PTR [rsp+96]
-        vmovdqu	xmm13, OWORD PTR [rsp+112]
-        add	rsp, 128
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        vmovdqu	xmm12, OWORD PTR [rsp+104]
+        vmovdqu	xmm13, OWORD PTR [rsp+120]
+        add	rsp, 136
         ret
 sp_2048_get_from_table_avx2_16 ENDP
 _TEXT ENDS
@@ -10588,14 +10646,15 @@ ENDIF
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cond_sub_32 PROC
-        sub	rsp, 256
+        sub	rsp, 264
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r9
@@ -10821,15 +10880,16 @@ sp_2048_cond_sub_32 PROC
         mov	QWORD PTR [rcx+240], r10
         mov	QWORD PTR [rcx+248], r11
         sbb	rax, rax
-        add	rsp, 256
+        add	rsp, 264
         ret
 sp_2048_cond_sub_32 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 2048 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mont_reduce_32 PROC
@@ -11180,9 +11240,10 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
-        mov	rcx, rcx
         sub	rcx, 256
+        sub	rsp, 40
         call	sp_2048_cond_sub_32
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -11194,9 +11255,9 @@ sp_2048_mont_reduce_32 ENDP
 _TEXT ENDS
 ; /* Sub b from a into r. (r = a - b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_sub_32 PROC
@@ -11303,9 +11364,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mul_d_avx2_32 PROC
@@ -11514,10 +11575,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_2048_word_asm_32 PROC
@@ -11533,10 +11595,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cond_sub_avx2_32 PROC
@@ -11709,10 +11772,11 @@ _TEXT ENDS
 ENDIF
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cmp_32 PROC
@@ -11985,9 +12049,10 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 2048 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_mont_reduce_avx2_32 PROC
@@ -12009,7 +12074,6 @@ sp_2048_mont_reduce_avx2_32 PROC
         mov	rdi, QWORD PTR [r9+16]
         mov	rsi, QWORD PTR [r9+24]
         add	r9, 128
-        xor	rbp, rbp
 L_2048_mont_reduce_avx2_32_loop:
         ; mu = a[i] * mp
         mov	rdx, r14
@@ -12392,18 +12456,18 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 _TEXT SEGMENT READONLY PARA
 sp_2048_get_from_table_avx2_32 PROC
-        sub	rsp, 128
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
-        vmovdqu	OWORD PTR [rsp+96], xmm12
-        vmovdqu	OWORD PTR [rsp+112], xmm13
+        sub	rsp, 136
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
+        vmovdqu	OWORD PTR [rsp+104], xmm12
+        vmovdqu	OWORD PTR [rsp+120], xmm13
         mov	rax, 1
-        movd	xmm10, r8
-        movd	xmm11, rax
+        vmovq	xmm10, r8
+        vmovq	xmm11, rax
         vpxor	ymm13, ymm13, ymm13
         vpermd	ymm10, ymm13, ymm10
         vpermd	ymm11, ymm13, ymm11
@@ -14542,15 +14606,15 @@ sp_2048_get_from_table_avx2_32 PROC
         vmovdqu	YMMWORD PTR [rcx+64], ymm6
         vmovdqu	YMMWORD PTR [rcx+96], ymm7
         ; END: 16-31
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        vmovdqu	xmm12, OWORD PTR [rsp+96]
-        vmovdqu	xmm13, OWORD PTR [rsp+112]
-        add	rsp, 128
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        vmovdqu	xmm12, OWORD PTR [rsp+104]
+        vmovdqu	xmm13, OWORD PTR [rsp+120]
+        add	rsp, 136
         ret
 sp_2048_get_from_table_avx2_32 ENDP
 _TEXT ENDS
@@ -14558,14 +14622,15 @@ ENDIF
 ; /* Conditionally add a and b using the mask m.
 ;  * m is -1 to add and 0 when not.
 ;  *
-;  * r  A single precision number representing conditional add result.
-;  * a  A single precision number to add with.
-;  * b  A single precision number to add.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing conditional add
+;  *                 result.
+;  * @param [in]  a  A single precision number to add with.
+;  * @param [in]  b  A single precision number to add.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cond_add_16 PROC
-        sub	rsp, 128
+        sub	rsp, 136
         mov	rax, 0
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
@@ -14680,7 +14745,7 @@ sp_2048_cond_add_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         adc	rax, 0
-        add	rsp, 128
+        add	rsp, 136
         ret
 sp_2048_cond_add_16 ENDP
 _TEXT ENDS
@@ -14688,10 +14753,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally add a and b using the mask m.
 ;  * m is -1 to add and 0 when not.
 ;  *
-;  * r  A single precision number representing conditional add result.
-;  * a  A single precision number to add with.
-;  * b  A single precision number to add.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing conditional add
+;  *                 result.
+;  * @param [in]  a  A single precision number to add with.
+;  * @param [in]  b  A single precision number to add.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_cond_add_avx2_16 PROC
@@ -14785,9 +14851,9 @@ _TEXT ENDS
 ENDIF
 ; /* Shift number left by n bit. (r = a << n)
 ;  *
-;  * r  Result of left shift by n.
-;  * a  Number to shift.
-;  * n  Amoutnt o shift.
+;  * @param [out] r  Result of left shift by n.
+;  * @param [in]  a  Number to shift.
+;  * @param [in]  n  Amoutnt o shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_2048_lshift_32 PROC
@@ -14795,7 +14861,7 @@ sp_2048_lshift_32 PROC
         push	r13
         mov	rax, rcx
         mov	cl, r8b
-        mov	r12, 0
+        xor	r12, r12
         mov	r13, QWORD PTR [rdx+216]
         mov	r8, QWORD PTR [rdx+224]
         mov	r9, QWORD PTR [rdx+232]
@@ -14906,10 +14972,10 @@ IFNDEF WOLFSSL_SP_NO_3072
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_from_bin_bswap PROC
@@ -14994,10 +15060,10 @@ IFNDEF NO_MOVBE_SUPPORT
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the movbe instruction which is an optional instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_from_bin_movbe PROC
@@ -15071,8 +15137,8 @@ ENDIF
 ;  * Fixed length number of bytes written: 384
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_to_bin_bswap_48 PROC
@@ -15228,8 +15294,8 @@ IFNDEF NO_MOVBE_SUPPORT
 ;  * Fixed length number of bytes written: 384
 ;  * Uses the movbe instruction which is optional.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_to_bin_movbe_48 PROC
@@ -15335,9 +15401,9 @@ _TEXT ENDS
 ENDIF
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_12 PROC
@@ -16283,9 +16349,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply.
-;  * b   Second number to multiply.
+;  * @param [out] r  Result of multiplication.
+;  * @param [in]  a  First number to multiply.
+;  * @param [in]  b  Second number to multiply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_avx2_12 PROC
@@ -17229,18 +17295,30 @@ sp_3072_mul_avx2_12 PROC
         cmp	rbp, r8
         jne	L_end_3072_mul_avx2_12
 L_start_3072_mul_avx2_12:
-        vmovdqu	xmm0, OWORD PTR [rbx]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+16]
-        vmovups	OWORD PTR [r8+16], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+32]
-        vmovups	OWORD PTR [r8+32], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+48]
-        vmovups	OWORD PTR [r8+48], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+64]
-        vmovups	OWORD PTR [r8+64], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+80]
-        vmovups	OWORD PTR [r8+80], xmm0
+        mov	rax, QWORD PTR [rbx]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbx+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbx+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbx+24]
+        mov	QWORD PTR [r8+24], rax
+        mov	rax, QWORD PTR [rbx+32]
+        mov	QWORD PTR [r8+32], rax
+        mov	rax, QWORD PTR [rbx+40]
+        mov	QWORD PTR [r8+40], rax
+        mov	rax, QWORD PTR [rbx+48]
+        mov	QWORD PTR [r8+48], rax
+        mov	rax, QWORD PTR [rbx+56]
+        mov	QWORD PTR [r8+56], rax
+        mov	rax, QWORD PTR [rbx+64]
+        mov	QWORD PTR [r8+64], rax
+        mov	rax, QWORD PTR [rbx+72]
+        mov	QWORD PTR [r8+72], rax
+        mov	rax, QWORD PTR [rbx+80]
+        mov	QWORD PTR [r8+80], rax
+        mov	rax, QWORD PTR [rbx+88]
+        mov	QWORD PTR [r8+88], rax
 L_end_3072_mul_avx2_12:
         add	rsp, 96
         pop	r14
@@ -17254,9 +17332,9 @@ _TEXT ENDS
 ENDIF
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_add_12 PROC
@@ -17304,8 +17382,8 @@ sp_3072_add_12 ENDP
 _TEXT ENDS
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sub_in_place_24 PROC
@@ -17387,9 +17465,9 @@ sp_3072_sub_in_place_24 ENDP
 _TEXT ENDS
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_add_24 PROC
@@ -17473,9 +17551,9 @@ sp_3072_add_24 ENDP
 _TEXT ENDS
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_24 PROC
@@ -17576,17 +17654,23 @@ sp_3072_mul_24 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_mul_12
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+592]
         mov	rdx, QWORD PTR [rsp+584]
         lea	rcx, QWORD PTR [rsp+192]
         add	r8, 96
         add	rdx, 96
+        sub	rsp, 32
         call	sp_3072_mul_12
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+592]
         mov	rdx, QWORD PTR [rsp+584]
         mov	rcx, QWORD PTR [rsp+576]
+        sub	rsp, 32
         call	sp_3072_mul_12
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+592]
         mov	rdx, QWORD PTR [rsp+584]
@@ -18023,9 +18107,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_avx2_24 PROC
@@ -18126,17 +18210,23 @@ sp_3072_mul_avx2_24 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_mul_avx2_12
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+592]
         mov	rdx, QWORD PTR [rsp+584]
         lea	rcx, QWORD PTR [rsp+192]
         add	r8, 96
         add	rdx, 96
+        sub	rsp, 32
         call	sp_3072_mul_avx2_12
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+592]
         mov	rdx, QWORD PTR [rsp+584]
         mov	rcx, QWORD PTR [rsp+576]
+        sub	rsp, 32
         call	sp_3072_mul_avx2_12
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+592]
         mov	rdx, QWORD PTR [rsp+584]
@@ -18537,8 +18627,8 @@ _TEXT ENDS
 ENDIF
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sub_in_place_48 PROC
@@ -18692,9 +18782,9 @@ sp_3072_sub_in_place_48 ENDP
 _TEXT ENDS
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_add_48 PROC
@@ -18850,9 +18940,9 @@ sp_3072_add_48 ENDP
 _TEXT ENDS
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_48 PROC
@@ -19025,17 +19115,23 @@ sp_3072_mul_48 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_mul_24
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1168]
         mov	rdx, QWORD PTR [rsp+1160]
         lea	rcx, QWORD PTR [rsp+384]
         add	r8, 192
         add	rdx, 192
+        sub	rsp, 32
         call	sp_3072_mul_24
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1168]
         mov	rdx, QWORD PTR [rsp+1160]
         mov	rcx, QWORD PTR [rsp+1152]
+        sub	rsp, 32
         call	sp_3072_mul_24
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+1168]
         mov	rdx, QWORD PTR [rsp+1160]
@@ -19868,9 +19964,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_avx2_48 PROC
@@ -20043,17 +20139,23 @@ sp_3072_mul_avx2_48 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_mul_avx2_24
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1168]
         mov	rdx, QWORD PTR [rsp+1160]
         lea	rcx, QWORD PTR [rsp+384]
         add	r8, 192
         add	rdx, 192
+        sub	rsp, 32
         call	sp_3072_mul_avx2_24
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1168]
         mov	rdx, QWORD PTR [rsp+1160]
         mov	rcx, QWORD PTR [rsp+1152]
+        sub	rsp, 32
         call	sp_3072_mul_avx2_24
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+1168]
         mov	rdx, QWORD PTR [rsp+1160]
@@ -20814,8 +20916,8 @@ _TEXT ENDS
 ENDIF
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sqr_12 PROC
@@ -21483,8 +21585,8 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sqr_avx2_12 PROC
@@ -21498,7 +21600,7 @@ sp_3072_sqr_avx2_12 PROC
         push	rbx
         mov	r8, rcx
         mov	r9, rdx
-        sub	rsp, 96
+        sub	rsp, 104
         cmp	r9, r8
         mov	rbp, rsp
         cmovne	rbp, r8
@@ -22101,16 +22203,22 @@ sp_3072_sqr_avx2_12 PROC
         sub	r8, 96
         cmp	r9, r8
         jne	L_end_3072_sqr_avx2_12
-        vmovdqu	xmm0, OWORD PTR [rbp]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+16]
-        vmovups	OWORD PTR [r8+16], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+32]
-        vmovups	OWORD PTR [r8+32], xmm0
+        mov	rax, QWORD PTR [rbp]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbp+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbp+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbp+24]
+        mov	QWORD PTR [r8+24], rax
+        mov	rax, QWORD PTR [rbp+32]
+        mov	QWORD PTR [r8+32], rax
+        mov	rax, QWORD PTR [rbp+40]
+        mov	QWORD PTR [r8+40], rax
         mov	rax, QWORD PTR [rbp+48]
         mov	QWORD PTR [r8+48], rax
 L_end_3072_sqr_avx2_12:
-        add	rsp, 96
+        add	rsp, 104
         pop	rbx
         pop	rsi
         pop	rdi
@@ -22127,15 +22235,15 @@ ENDIF
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sqr_24 PROC
-        sub	rsp, 208
+        sub	rsp, 216
         mov	QWORD PTR [rsp+192], rcx
         mov	QWORD PTR [rsp+200], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+96]
         mov	rax, QWORD PTR [rdx]
@@ -22239,15 +22347,21 @@ sp_3072_sqr_24 PROC
         mov	QWORD PTR [r10+88], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_sqr_12
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
         add	rdx, 96
         add	rcx, 192
+        sub	rsp, 32
         call	sp_3072_sqr_12
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
+        sub	rsp, 32
         call	sp_3072_sqr_12
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
@@ -22255,7 +22369,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+192]
         lea	r10, QWORD PTR [rsp+96]
         add	rdx, 288
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-96]
         sub	r8, QWORD PTR [rdx+-96]
         mov	rax, QWORD PTR [r10+-88]
@@ -22520,7 +22634,7 @@ ENDIF
         mov	QWORD PTR [rcx+88], rax
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
-        add	rsp, 208
+        add	rsp, 216
         ret
 sp_3072_sqr_24 ENDP
 _TEXT ENDS
@@ -22529,15 +22643,15 @@ IFDEF HAVE_INTEL_AVX2
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sqr_avx2_24 PROC
-        sub	rsp, 208
+        sub	rsp, 216
         mov	QWORD PTR [rsp+192], rcx
         mov	QWORD PTR [rsp+200], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+96]
         mov	rax, QWORD PTR [rdx]
@@ -22641,15 +22755,21 @@ sp_3072_sqr_avx2_24 PROC
         mov	QWORD PTR [r10+88], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_sqr_avx2_12
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
         add	rdx, 96
         add	rcx, 192
+        sub	rsp, 32
         call	sp_3072_sqr_avx2_12
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
+        sub	rsp, 32
         call	sp_3072_sqr_avx2_12
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
@@ -22657,7 +22777,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+192]
         lea	r10, QWORD PTR [rsp+96]
         add	rdx, 288
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-96]
         sub	r8, QWORD PTR [rdx+-96]
         mov	rax, QWORD PTR [r10+-88]
@@ -22922,7 +23042,7 @@ ENDIF
         mov	QWORD PTR [rcx+88], rax
         mov	rdx, QWORD PTR [rsp+200]
         mov	rcx, QWORD PTR [rsp+192]
-        add	rsp, 208
+        add	rsp, 216
         ret
 sp_3072_sqr_avx2_24 ENDP
 _TEXT ENDS
@@ -22931,15 +23051,15 @@ ENDIF
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sqr_48 PROC
-        sub	rsp, 400
+        sub	rsp, 408
         mov	QWORD PTR [rsp+384], rcx
         mov	QWORD PTR [rsp+392], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+192]
         mov	rax, QWORD PTR [rdx]
@@ -23139,15 +23259,21 @@ sp_3072_sqr_48 PROC
         mov	QWORD PTR [r10+184], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_sqr_24
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
         add	rdx, 192
         add	rcx, 384
+        sub	rsp, 32
         call	sp_3072_sqr_24
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
+        sub	rsp, 32
         call	sp_3072_sqr_24
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
@@ -23155,7 +23281,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+384]
         lea	r10, QWORD PTR [rsp+192]
         add	rdx, 576
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-192]
         sub	r8, QWORD PTR [rdx+-192]
         mov	rax, QWORD PTR [r10+-184]
@@ -23672,7 +23798,7 @@ ENDIF
         mov	QWORD PTR [rcx+184], rax
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
-        add	rsp, 400
+        add	rsp, 408
         ret
 sp_3072_sqr_48 ENDP
 _TEXT ENDS
@@ -23681,15 +23807,15 @@ IFDEF HAVE_INTEL_AVX2
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sqr_avx2_48 PROC
-        sub	rsp, 400
+        sub	rsp, 408
         mov	QWORD PTR [rsp+384], rcx
         mov	QWORD PTR [rsp+392], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+192]
         mov	rax, QWORD PTR [rdx]
@@ -23889,15 +24015,21 @@ sp_3072_sqr_avx2_48 PROC
         mov	QWORD PTR [r10+184], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_3072_sqr_avx2_24
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
         add	rdx, 192
         add	rcx, 384
+        sub	rsp, 32
         call	sp_3072_sqr_avx2_24
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
+        sub	rsp, 32
         call	sp_3072_sqr_avx2_24
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
@@ -23905,7 +24037,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+384]
         lea	r10, QWORD PTR [rsp+192]
         add	rdx, 576
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-192]
         sub	r8, QWORD PTR [rdx+-192]
         mov	rax, QWORD PTR [r10+-184]
@@ -24422,16 +24554,16 @@ ENDIF
         mov	QWORD PTR [rcx+184], rax
         mov	rdx, QWORD PTR [rsp+392]
         mov	rcx, QWORD PTR [rsp+384]
-        add	rsp, 400
+        add	rsp, 408
         ret
 sp_3072_sqr_avx2_48 ENDP
 _TEXT ENDS
 ENDIF
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_d_48 PROC
@@ -24826,14 +24958,15 @@ _TEXT ENDS
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cond_sub_24 PROC
-        sub	rsp, 192
+        sub	rsp, 200
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r9
@@ -25003,15 +25136,16 @@ sp_3072_cond_sub_24 PROC
         mov	QWORD PTR [rcx+176], r10
         mov	QWORD PTR [rcx+184], r11
         sbb	rax, rax
-        add	rsp, 192
+        add	rsp, 200
         ret
 sp_3072_cond_sub_24 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 3072 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mont_reduce_24 PROC
@@ -25282,9 +25416,10 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
-        mov	rcx, rcx
         sub	rcx, 192
+        sub	rsp, 40
         call	sp_3072_cond_sub_24
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -25298,10 +25433,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cond_sub_avx2_24 PROC
@@ -25434,9 +25570,9 @@ _TEXT ENDS
 ENDIF
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_d_24 PROC
@@ -25639,9 +25775,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_d_avx2_24 PROC
@@ -25802,10 +25938,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_3072_word_asm_24 PROC
@@ -25819,10 +25956,11 @@ _TEXT ENDS
 ENDIF
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cmp_24 PROC
@@ -26031,9 +26169,10 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 3072 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mont_reduce_avx2_24 PROC
@@ -26055,7 +26194,6 @@ sp_3072_mont_reduce_avx2_24 PROC
         mov	rdi, QWORD PTR [r9+16]
         mov	rsi, QWORD PTR [r9+24]
         add	r9, 96
-        xor	rbp, rbp
 L_3072_mont_reduce_avx2_24_loop:
         ; mu = a[i] * mp
         mov	rdx, r14
@@ -26350,18 +26488,18 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 _TEXT SEGMENT READONLY PARA
 sp_3072_get_from_table_avx2_24 PROC
-        sub	rsp, 128
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
-        vmovdqu	OWORD PTR [rsp+96], xmm12
-        vmovdqu	OWORD PTR [rsp+112], xmm13
+        sub	rsp, 136
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
+        vmovdqu	OWORD PTR [rsp+104], xmm12
+        vmovdqu	OWORD PTR [rsp+120], xmm13
         mov	rax, 1
-        movd	xmm10, r8
-        movd	xmm11, rax
+        vmovq	xmm10, r8
+        vmovq	xmm11, rax
         vpxor	ymm13, ymm13, ymm13
         vpermd	ymm10, ymm13, ymm10
         vpermd	ymm11, ymm13, ymm11
@@ -27248,15 +27386,15 @@ sp_3072_get_from_table_avx2_24 PROC
         vmovdqu	YMMWORD PTR [rcx], ymm4
         vmovdqu	YMMWORD PTR [rcx+32], ymm5
         ; END: 16-23
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        vmovdqu	xmm12, OWORD PTR [rsp+96]
-        vmovdqu	xmm13, OWORD PTR [rsp+112]
-        add	rsp, 128
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        vmovdqu	xmm12, OWORD PTR [rsp+104]
+        vmovdqu	xmm13, OWORD PTR [rsp+120]
+        add	rsp, 136
         ret
 sp_3072_get_from_table_avx2_24 ENDP
 _TEXT ENDS
@@ -27264,14 +27402,15 @@ ENDIF
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cond_sub_48 PROC
-        sub	rsp, 384
+        sub	rsp, 392
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r9
@@ -27609,15 +27748,16 @@ sp_3072_cond_sub_48 PROC
         mov	QWORD PTR [rcx+368], r10
         mov	QWORD PTR [rcx+376], r11
         sbb	rax, rax
-        add	rsp, 384
+        add	rsp, 392
         ret
 sp_3072_cond_sub_48 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 3072 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mont_reduce_48 PROC
@@ -28128,9 +28268,10 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
-        mov	rcx, rcx
         sub	rcx, 384
+        sub	rsp, 40
         call	sp_3072_cond_sub_48
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -28142,9 +28283,9 @@ sp_3072_mont_reduce_48 ENDP
 _TEXT ENDS
 ; /* Sub b from a into r. (r = a - b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_sub_48 PROC
@@ -28299,9 +28440,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mul_d_avx2_48 PROC
@@ -28606,10 +28747,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_3072_word_asm_48 PROC
@@ -28625,10 +28767,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cond_sub_avx2_48 PROC
@@ -28881,10 +29024,11 @@ _TEXT ENDS
 ENDIF
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cmp_48 PROC
@@ -29285,9 +29429,10 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 3072 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_mont_reduce_avx2_48 PROC
@@ -29309,7 +29454,6 @@ sp_3072_mont_reduce_avx2_48 PROC
         mov	rdi, QWORD PTR [r9+16]
         mov	rsi, QWORD PTR [r9+24]
         add	r9, 192
-        xor	rbp, rbp
 L_3072_mont_reduce_avx2_48_loop:
         ; mu = a[i] * mp
         mov	rdx, r14
@@ -29868,18 +30012,18 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 _TEXT SEGMENT READONLY PARA
 sp_3072_get_from_table_avx2_48 PROC
-        sub	rsp, 128
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
-        vmovdqu	OWORD PTR [rsp+96], xmm12
-        vmovdqu	OWORD PTR [rsp+112], xmm13
+        sub	rsp, 136
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
+        vmovdqu	OWORD PTR [rsp+104], xmm12
+        vmovdqu	OWORD PTR [rsp+120], xmm13
         mov	rax, 1
-        movd	xmm10, r8
-        movd	xmm11, rax
+        vmovq	xmm10, r8
+        vmovq	xmm11, rax
         vpxor	ymm13, ymm13, ymm13
         vpermd	ymm10, ymm13, ymm10
         vpermd	ymm11, ymm13, ymm11
@@ -30718,15 +30862,15 @@ sp_3072_get_from_table_avx2_48 PROC
         vmovdqu	YMMWORD PTR [rcx+64], ymm6
         vmovdqu	YMMWORD PTR [rcx+96], ymm7
         ; END: 32-47
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        vmovdqu	xmm12, OWORD PTR [rsp+96]
-        vmovdqu	xmm13, OWORD PTR [rsp+112]
-        add	rsp, 128
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        vmovdqu	xmm12, OWORD PTR [rsp+104]
+        vmovdqu	xmm13, OWORD PTR [rsp+120]
+        add	rsp, 136
         ret
 sp_3072_get_from_table_avx2_48 ENDP
 _TEXT ENDS
@@ -30734,14 +30878,15 @@ ENDIF
 ; /* Conditionally add a and b using the mask m.
 ;  * m is -1 to add and 0 when not.
 ;  *
-;  * r  A single precision number representing conditional add result.
-;  * a  A single precision number to add with.
-;  * b  A single precision number to add.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing conditional add
+;  *                 result.
+;  * @param [in]  a  A single precision number to add with.
+;  * @param [in]  b  A single precision number to add.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cond_add_24 PROC
-        sub	rsp, 192
+        sub	rsp, 200
         mov	rax, 0
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
@@ -30912,7 +31057,7 @@ sp_3072_cond_add_24 PROC
         mov	QWORD PTR [rcx+176], r10
         mov	QWORD PTR [rcx+184], r11
         adc	rax, 0
-        add	rsp, 192
+        add	rsp, 200
         ret
 sp_3072_cond_add_24 ENDP
 _TEXT ENDS
@@ -30920,10 +31065,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally add a and b using the mask m.
 ;  * m is -1 to add and 0 when not.
 ;  *
-;  * r  A single precision number representing conditional add result.
-;  * a  A single precision number to add with.
-;  * b  A single precision number to add.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing conditional add
+;  *                 result.
+;  * @param [in]  a  A single precision number to add with.
+;  * @param [in]  b  A single precision number to add.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_cond_add_avx2_24 PROC
@@ -31057,9 +31203,9 @@ _TEXT ENDS
 ENDIF
 ; /* Shift number left by n bit. (r = a << n)
 ;  *
-;  * r  Result of left shift by n.
-;  * a  Number to shift.
-;  * n  Amoutnt o shift.
+;  * @param [out] r  Result of left shift by n.
+;  * @param [in]  a  Number to shift.
+;  * @param [in]  n  Amoutnt o shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_3072_lshift_48 PROC
@@ -31067,7 +31213,7 @@ sp_3072_lshift_48 PROC
         push	r13
         mov	rax, rcx
         mov	cl, r8b
-        mov	r12, 0
+        xor	r12, r12
         mov	r13, QWORD PTR [rdx+344]
         mov	r8, QWORD PTR [rdx+352]
         mov	r9, QWORD PTR [rdx+360]
@@ -31226,10 +31372,10 @@ IFDEF WOLFSSL_SP_4096
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_from_bin_bswap PROC
@@ -31314,10 +31460,10 @@ IFNDEF NO_MOVBE_SUPPORT
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the movbe instruction which is an optional instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_from_bin_movbe PROC
@@ -31391,8 +31537,8 @@ ENDIF
 ;  * Fixed length number of bytes written: 512
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_to_bin_bswap_64 PROC
@@ -31596,8 +31742,8 @@ IFNDEF NO_MOVBE_SUPPORT
 ;  * Fixed length number of bytes written: 512
 ;  * Uses the movbe instruction which is optional.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_to_bin_movbe_64 PROC
@@ -31735,8 +31881,8 @@ _TEXT ENDS
 ENDIF
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_sub_in_place_64 PROC
@@ -31938,9 +32084,9 @@ sp_4096_sub_in_place_64 ENDP
 _TEXT ENDS
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_add_64 PROC
@@ -32144,9 +32290,9 @@ sp_4096_add_64 ENDP
 _TEXT ENDS
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_mul_64 PROC
@@ -32367,17 +32513,23 @@ sp_4096_mul_64 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_mul_32
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1552]
         mov	rdx, QWORD PTR [rsp+1544]
         lea	rcx, QWORD PTR [rsp+512]
         add	r8, 256
         add	rdx, 256
+        sub	rsp, 32
         call	sp_2048_mul_32
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1552]
         mov	rdx, QWORD PTR [rsp+1544]
         mov	rcx, QWORD PTR [rsp+1536]
+        sub	rsp, 32
         call	sp_2048_mul_32
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+1552]
         mov	rdx, QWORD PTR [rsp+1544]
@@ -33474,9 +33626,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_mul_avx2_64 PROC
@@ -33697,17 +33849,23 @@ sp_4096_mul_avx2_64 PROC
         mov	r8, r13
         mov	rdx, r12
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_mul_avx2_32
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1552]
         mov	rdx, QWORD PTR [rsp+1544]
         lea	rcx, QWORD PTR [rsp+512]
         add	r8, 256
         add	rdx, 256
+        sub	rsp, 32
         call	sp_2048_mul_avx2_32
+        add	rsp, 32
         mov	r8, QWORD PTR [rsp+1552]
         mov	rdx, QWORD PTR [rsp+1544]
         mov	rcx, QWORD PTR [rsp+1536]
+        sub	rsp, 32
         call	sp_2048_mul_avx2_32
+        add	rsp, 32
 IFDEF _WIN64
         mov	r8, QWORD PTR [rsp+1552]
         mov	rdx, QWORD PTR [rsp+1544]
@@ -34710,15 +34868,15 @@ ENDIF
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_sqr_64 PROC
-        sub	rsp, 528
+        sub	rsp, 536
         mov	QWORD PTR [rsp+512], rcx
         mov	QWORD PTR [rsp+520], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+256]
         mov	rax, QWORD PTR [rdx]
@@ -34982,15 +35140,21 @@ sp_4096_sqr_64 PROC
         mov	QWORD PTR [r10+248], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_sqr_32
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
         add	rdx, 256
         add	rcx, 512
+        sub	rsp, 32
         call	sp_2048_sqr_32
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
+        sub	rsp, 32
         call	sp_2048_sqr_32
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
@@ -34998,7 +35162,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+512]
         lea	r10, QWORD PTR [rsp+256]
         add	rdx, 768
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-256]
         sub	r8, QWORD PTR [rdx+-256]
         mov	rax, QWORD PTR [r10+-248]
@@ -35683,7 +35847,7 @@ ENDIF
         mov	QWORD PTR [rcx+248], rax
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
-        add	rsp, 528
+        add	rsp, 536
         ret
 sp_4096_sqr_64 ENDP
 _TEXT ENDS
@@ -35692,15 +35856,15 @@ IFDEF HAVE_INTEL_AVX2
 ;  *
 ;  * Karatsuba: ah^2, al^2, (al - ah)^2
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_sqr_avx2_64 PROC
-        sub	rsp, 528
+        sub	rsp, 536
         mov	QWORD PTR [rsp+512], rcx
         mov	QWORD PTR [rsp+520], rdx
-        mov	r9, 0
+        xor	r9, r9
         mov	r10, rsp
         lea	r11, QWORD PTR [rdx+256]
         mov	rax, QWORD PTR [rdx]
@@ -35964,15 +36128,21 @@ sp_4096_sqr_avx2_64 PROC
         mov	QWORD PTR [r10+248], r8
         mov	rdx, r10
         mov	rcx, rsp
+        sub	rsp, 32
         call	sp_2048_sqr_avx2_32
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
         add	rdx, 256
         add	rcx, 512
+        sub	rsp, 32
         call	sp_2048_sqr_avx2_32
+        add	rsp, 32
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
+        sub	rsp, 32
         call	sp_2048_sqr_avx2_32
+        add	rsp, 32
 IFDEF _WIN64
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
@@ -35980,7 +36150,7 @@ ENDIF
         mov	rdx, QWORD PTR [rsp+512]
         lea	r10, QWORD PTR [rsp+256]
         add	rdx, 768
-        mov	r9, 0
+        xor	r9, r9
         mov	r8, QWORD PTR [r10+-256]
         sub	r8, QWORD PTR [rdx+-256]
         mov	rax, QWORD PTR [r10+-248]
@@ -36665,16 +36835,16 @@ ENDIF
         mov	QWORD PTR [rcx+248], rax
         mov	rdx, QWORD PTR [rsp+520]
         mov	rcx, QWORD PTR [rsp+512]
-        add	rsp, 528
+        add	rsp, 536
         ret
 sp_4096_sqr_avx2_64 ENDP
 _TEXT ENDS
 ENDIF
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_mul_d_64 PROC
@@ -37197,14 +37367,15 @@ _TEXT ENDS
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_cond_sub_64 PROC
-        sub	rsp, 512
+        sub	rsp, 520
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r9
@@ -37654,15 +37825,16 @@ sp_4096_cond_sub_64 PROC
         mov	QWORD PTR [rcx+496], r10
         mov	QWORD PTR [rcx+504], r11
         sbb	rax, rax
-        add	rsp, 512
+        add	rsp, 520
         ret
 sp_4096_cond_sub_64 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 4096 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_mont_reduce_64 PROC
@@ -38333,9 +38505,10 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
-        mov	rcx, rcx
         sub	rcx, 512
+        sub	rsp, 40
         call	sp_4096_cond_sub_64
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -38347,9 +38520,9 @@ sp_4096_mont_reduce_64 ENDP
 _TEXT ENDS
 ; /* Sub b from a into r. (r = a - b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_sub_64 PROC
@@ -38552,9 +38725,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_mul_d_avx2_64 PROC
@@ -38955,10 +39128,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_4096_word_asm_64 PROC
@@ -38974,10 +39148,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_cond_sub_avx2_64 PROC
@@ -39310,10 +39485,11 @@ _TEXT ENDS
 ENDIF
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_cmp_64 PROC
@@ -39842,9 +40018,10 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 4096 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_mont_reduce_avx2_64 PROC
@@ -39866,7 +40043,6 @@ sp_4096_mont_reduce_avx2_64 PROC
         mov	rdi, QWORD PTR [r9+16]
         mov	rsi, QWORD PTR [r9+24]
         add	r9, 256
-        xor	rbp, rbp
 L_4096_mont_reduce_avx2_64_loop:
         ; mu = a[i] * mp
         mov	rdx, r14
@@ -40601,18 +40777,18 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 _TEXT SEGMENT READONLY PARA
 sp_4096_get_from_table_avx2_64 PROC
-        sub	rsp, 128
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
-        vmovdqu	OWORD PTR [rsp+96], xmm12
-        vmovdqu	OWORD PTR [rsp+112], xmm13
+        sub	rsp, 136
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
+        vmovdqu	OWORD PTR [rsp+104], xmm12
+        vmovdqu	OWORD PTR [rsp+120], xmm13
         mov	rax, 1
-        movd	xmm10, r8
-        movd	xmm11, rax
+        vmovq	xmm10, r8
+        vmovq	xmm11, rax
         vpxor	ymm13, ymm13, ymm13
         vpermd	ymm10, ymm13, ymm10
         vpermd	ymm11, ymm13, ymm11
@@ -41735,15 +41911,15 @@ sp_4096_get_from_table_avx2_64 PROC
         vmovdqu	YMMWORD PTR [rcx+64], ymm6
         vmovdqu	YMMWORD PTR [rcx+96], ymm7
         ; END: 48-63
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        vmovdqu	xmm12, OWORD PTR [rsp+96]
-        vmovdqu	xmm13, OWORD PTR [rsp+112]
-        add	rsp, 128
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        vmovdqu	xmm12, OWORD PTR [rsp+104]
+        vmovdqu	xmm13, OWORD PTR [rsp+120]
+        add	rsp, 136
         ret
 sp_4096_get_from_table_avx2_64 ENDP
 _TEXT ENDS
@@ -41751,14 +41927,15 @@ ENDIF
 ; /* Conditionally add a and b using the mask m.
 ;  * m is -1 to add and 0 when not.
 ;  *
-;  * r  A single precision number representing conditional add result.
-;  * a  A single precision number to add with.
-;  * b  A single precision number to add.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing conditional add
+;  *                 result.
+;  * @param [in]  a  A single precision number to add with.
+;  * @param [in]  b  A single precision number to add.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_cond_add_32 PROC
-        sub	rsp, 256
+        sub	rsp, 264
         mov	rax, 0
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
@@ -41985,7 +42162,7 @@ sp_4096_cond_add_32 PROC
         mov	QWORD PTR [rcx+240], r10
         mov	QWORD PTR [rcx+248], r11
         adc	rax, 0
-        add	rsp, 256
+        add	rsp, 264
         ret
 sp_4096_cond_add_32 ENDP
 _TEXT ENDS
@@ -41993,10 +42170,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally add a and b using the mask m.
 ;  * m is -1 to add and 0 when not.
 ;  *
-;  * r  A single precision number representing conditional add result.
-;  * a  A single precision number to add with.
-;  * b  A single precision number to add.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing conditional add
+;  *                 result.
+;  * @param [in]  a  A single precision number to add with.
+;  * @param [in]  b  A single precision number to add.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_cond_add_avx2_32 PROC
@@ -42170,9 +42348,9 @@ _TEXT ENDS
 ENDIF
 ; /* Shift number left by n bit. (r = a << n)
 ;  *
-;  * r  Result of left shift by n.
-;  * a  Number to shift.
-;  * n  Amoutnt o shift.
+;  * @param [out] r  Result of left shift by n.
+;  * @param [in]  a  Number to shift.
+;  * @param [in]  n  Amoutnt o shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_4096_lshift_64 PROC
@@ -42180,7 +42358,7 @@ sp_4096_lshift_64 PROC
         push	r13
         mov	rax, rcx
         mov	cl, r8b
-        mov	r12, 0
+        xor	r12, r12
         mov	r13, QWORD PTR [rdx+472]
         mov	r8, QWORD PTR [rdx+480]
         mov	r9, QWORD PTR [rdx+488]
@@ -42385,9 +42563,9 @@ ENDIF
 IFNDEF WOLFSSL_SP_NO_256
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mul_4 PROC
@@ -42517,9 +42695,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply.
-;  * b   Second number to multiply.
+;  * @param [out] r  Result of multiplication.
+;  * @param [in]  a  First number to multiply.
+;  * @param [in]  b  Second number to multiply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mul_avx2_4 PROC
@@ -42627,8 +42805,8 @@ _TEXT ENDS
 ENDIF
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_sqr_4 PROC
@@ -42744,8 +42922,8 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r   Result of squaring.
-;  * a   Number to square in Montgomery form.
+;  * @param [out] r  Result of squaring.
+;  * @param [in]  a  Number to square in Montgomery form.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_sqr_avx2_4 PROC
@@ -42835,9 +43013,9 @@ _TEXT ENDS
 ENDIF
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_add_4 PROC
@@ -42862,9 +43040,9 @@ sp_256_add_4 ENDP
 _TEXT ENDS
 ; /* Sub b from a into r. (r = a - b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_sub_4 PROC
@@ -42890,9 +43068,9 @@ _TEXT ENDS
 ; /* Conditionally copy a into r using the mask m.
 ;  * m is -1 to copy and 0 when not.
 ;  *
-;  * r  A single precision number to copy over.
-;  * a  A single precision number to copy.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number to copy over.
+;  * @param [in]  a  A single precision number to copy.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_cond_copy_4 PROC
@@ -42918,11 +43096,11 @@ _TEXT ENDS
 ; /* Multiply two Montgomery form numbers mod the modulus (prime).
 ;  * (r = a * b mod m)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply in Montgomery form.
-;  * b   Second number to multiply in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of multiplication.
+;  * @param [in]  a   First number to multiply in Montgomery form.
+;  * @param [in]  b   Second number to multiply in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_mul_4 PROC
@@ -43115,10 +43293,10 @@ sp_256_mont_mul_4 ENDP
 _TEXT ENDS
 ; /* Square the Montgomery form number mod the modulus (prime). (r = a * a mod m)
 ;  *
-;  * r   Result of squaring.
-;  * a   Number to square in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of squaring.
+;  * @param [in]  a   Number to square in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_sqr_4 PROC
@@ -43177,15 +43355,11 @@ sp_256_mont_sqr_4 PROC
         ;  A[0] * A[0]
         mov	rax, QWORD PTR [r8]
         mul	rax
-        mov	rax, rax
-        mov	rdx, rdx
         mov	r10, rax
         mov	rbx, rdx
         ;  A[1] * A[1]
         mov	rax, QWORD PTR [r8+8]
         mul	rax
-        mov	rax, rax
-        mov	rdx, rdx
         add	r11, rbx
         adc	r12, rax
         adc	rdx, 0
@@ -43193,8 +43367,6 @@ sp_256_mont_sqr_4 PROC
         ;  A[2] * A[2]
         mov	rax, QWORD PTR [r8+16]
         mul	rax
-        mov	rax, rax
-        mov	rdx, rdx
         add	r13, rbx
         adc	r14, rax
         adc	rdx, 0
@@ -43202,8 +43374,6 @@ sp_256_mont_sqr_4 PROC
         ;  A[3] * A[3]
         mov	rax, QWORD PTR [r8+24]
         mul	rax
-        mov	rax, rax
-        mov	rdx, rdx
         add	r15, rbx
         adc	rdi, rax
         adc	rsi, rdx
@@ -43290,10 +43460,11 @@ sp_256_mont_sqr_4 ENDP
 _TEXT ENDS
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_cmp_4 PROC
@@ -43342,10 +43513,11 @@ _TEXT ENDS
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_cond_sub_4 PROC
@@ -43387,9 +43559,10 @@ sp_256_cond_sub_4 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 256 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_reduce_4 PROC
@@ -43492,9 +43665,10 @@ sp_256_mont_reduce_4 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 256 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_reduce_order_4 PROC
@@ -43593,10 +43767,10 @@ sp_256_mont_reduce_order_4 ENDP
 _TEXT ENDS
 ; /* Add two Montgomery form numbers (r = a + b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_add_4 PROC
@@ -43636,9 +43810,9 @@ sp_256_mont_add_4 ENDP
 _TEXT ENDS
 ; /* Double a Montgomery form number (r = a + a % m).
 ;  *
-;  * r   Result of doubling.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of doubling.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_dbl_4 PROC
@@ -43679,9 +43853,9 @@ sp_256_mont_dbl_4 ENDP
 _TEXT ENDS
 ; /* Triple a Montgomery form number (r = a + a + a % m).
 ;  *
-;  * r   Result of Tripling.
-;  * a   Number to triple in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of Tripling.
+;  * @param [in]  a  Number to triple in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_tpl_4 PROC
@@ -43715,7 +43889,7 @@ sp_256_mont_tpl_4 PROC
         mov	r12, 18446744069414584321
         adc	r9, QWORD PTR [rdx+16]
         adc	r10, QWORD PTR [rdx+24]
-        sbb	r13, 0
+        sbb	r13, r13
         mov	r11d, r13d
         and	r12, r13
         sub	rax, r13
@@ -43740,10 +43914,10 @@ sp_256_mont_tpl_4 ENDP
 _TEXT ENDS
 ; /* Subtract two Montgomery form numbers (r = a - b % m).
 ;  *
-;  * r   Result of subtration.
-;  * a   Number to subtract from in Montgomery form.
-;  * b   Number to subtract with in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of subtration.
+;  * @param [in]  a  Number to subtract from in Montgomery form.
+;  * @param [in]  b  Number to subtract with in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_sub_4 PROC
@@ -43783,9 +43957,9 @@ sp_256_mont_sub_4 ENDP
 _TEXT ENDS
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_div2_4 PROC
@@ -43822,10 +43996,10 @@ sp_256_mont_div2_4 ENDP
 _TEXT ENDS
 ; /* Two Montgomery numbers, subtract double second from first (r = a - 2.b % m).
 ;  *
-;  * r   Result of subtration.
-;  * a   Number to subtract from in Montgomery form.
-;  * b   Number to double and subtract with in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of subtration.
+;  * @param [in]  a  Number to subtract from in Montgomery form.
+;  * @param [in]  b  Number to double and subtract with in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_rsb_sub_dbl_4 PROC
@@ -43867,7 +44041,7 @@ sp_256_mont_rsb_sub_dbl_4 PROC
         mov	rsi, 18446744069414584321
         sbb	r10, r14
         sbb	r11, r15
-        sbb	rdx, 0
+        sbb	rdx, rdx
         mov	edi, edx
         and	rsi, rdx
         add	rax, rdx
@@ -43924,23 +44098,23 @@ _TEXT ENDS
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible point that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of point to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of point to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_get_point_33_4 PROC
-        sub	rsp, 160
-        movdqu	OWORD PTR [rsp], xmm6
-        movdqu	OWORD PTR [rsp+16], xmm7
-        movdqu	OWORD PTR [rsp+32], xmm8
-        movdqu	OWORD PTR [rsp+48], xmm9
-        movdqu	OWORD PTR [rsp+64], xmm10
-        movdqu	OWORD PTR [rsp+80], xmm11
-        movdqu	OWORD PTR [rsp+96], xmm12
-        movdqu	OWORD PTR [rsp+112], xmm13
-        movdqu	OWORD PTR [rsp+128], xmm14
-        movdqu	OWORD PTR [rsp+144], xmm15
+        sub	rsp, 168
+        movdqu	OWORD PTR [rsp+8], xmm6
+        movdqu	OWORD PTR [rsp+24], xmm7
+        movdqu	OWORD PTR [rsp+40], xmm8
+        movdqu	OWORD PTR [rsp+56], xmm9
+        movdqu	OWORD PTR [rsp+72], xmm10
+        movdqu	OWORD PTR [rsp+88], xmm11
+        movdqu	OWORD PTR [rsp+104], xmm12
+        movdqu	OWORD PTR [rsp+120], xmm13
+        movdqu	OWORD PTR [rsp+136], xmm14
+        movdqu	OWORD PTR [rsp+152], xmm15
         mov	rax, 1
         movd	xmm13, r8d
         add	rdx, 200
@@ -43987,38 +44161,38 @@ L_256_get_point_33_4_start_1:
         movdqu	OWORD PTR [rcx+80], xmm3
         movdqu	OWORD PTR [rcx+128], xmm4
         movdqu	OWORD PTR [rcx+144], xmm5
-        movdqu	xmm6, OWORD PTR [rsp]
-        movdqu	xmm7, OWORD PTR [rsp+16]
-        movdqu	xmm8, OWORD PTR [rsp+32]
-        movdqu	xmm9, OWORD PTR [rsp+48]
-        movdqu	xmm10, OWORD PTR [rsp+64]
-        movdqu	xmm11, OWORD PTR [rsp+80]
-        movdqu	xmm12, OWORD PTR [rsp+96]
-        movdqu	xmm13, OWORD PTR [rsp+112]
-        movdqu	xmm14, OWORD PTR [rsp+128]
-        movdqu	xmm15, OWORD PTR [rsp+144]
-        add	rsp, 160
+        movdqu	xmm6, OWORD PTR [rsp+8]
+        movdqu	xmm7, OWORD PTR [rsp+24]
+        movdqu	xmm8, OWORD PTR [rsp+40]
+        movdqu	xmm9, OWORD PTR [rsp+56]
+        movdqu	xmm10, OWORD PTR [rsp+72]
+        movdqu	xmm11, OWORD PTR [rsp+88]
+        movdqu	xmm12, OWORD PTR [rsp+104]
+        movdqu	xmm13, OWORD PTR [rsp+120]
+        movdqu	xmm14, OWORD PTR [rsp+136]
+        movdqu	xmm15, OWORD PTR [rsp+152]
+        add	rsp, 168
         ret
 sp_256_get_point_33_4 ENDP
 _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible point that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of point to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of point to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_get_point_33_avx2_4 PROC
-        sub	rsp, 64
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
+        sub	rsp, 72
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
         mov	rax, 1
-        movd	xmm7, r8d
+        vmovd	xmm7, r8d
         add	rdx, 200
-        movd	xmm9, eax
+        vmovd	xmm9, eax
         mov	rax, 32
         vpxor	ymm8, ymm8, ymm8
         vpermd	ymm7, ymm8, ymm7
@@ -44045,11 +44219,11 @@ L_256_get_point_33_avx2_4_start:
         vmovupd	YMMWORD PTR [rcx], ymm0
         vmovupd	YMMWORD PTR [rcx+64], ymm1
         vmovupd	YMMWORD PTR [rcx+128], ymm2
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        add	rsp, 64
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        add	rsp, 72
         ret
 sp_256_get_point_33_avx2_4 ENDP
 _TEXT ENDS
@@ -44059,11 +44233,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Multiply two Montgomery form numbers mod the modulus (prime).
 ;  * (r = a * b mod m)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply in Montgomery form.
-;  * b   Second number to multiply in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of multiplication.
+;  * @param [in]  a   First number to multiply in Montgomery form.
+;  * @param [in]  b   Second number to multiply in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_mul_avx2_4 PROC
@@ -44235,10 +44409,10 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Square the Montgomery form number mod the modulus (prime). (r = a * a mod m)
 ;  *
-;  * r   Result of squaring.
-;  * a   Number to square in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of squaring.
+;  * @param [in]  a   Number to square in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_sqr_avx2_4 PROC
@@ -44393,10 +44567,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_cond_sub_avx2_4 PROC
@@ -44440,9 +44615,10 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 256 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_reduce_order_avx2_4 PROC
@@ -44599,9 +44775,9 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_div2_avx2_4 PROC
@@ -44640,19 +44816,19 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_get_entry_64_4 PROC
-        sub	rsp, 96
-        movdqu	OWORD PTR [rsp], xmm6
-        movdqu	OWORD PTR [rsp+16], xmm7
-        movdqu	OWORD PTR [rsp+32], xmm8
-        movdqu	OWORD PTR [rsp+48], xmm9
-        movdqu	OWORD PTR [rsp+64], xmm10
-        movdqu	OWORD PTR [rsp+80], xmm11
+        sub	rsp, 104
+        movdqu	OWORD PTR [rsp+8], xmm6
+        movdqu	OWORD PTR [rsp+24], xmm7
+        movdqu	OWORD PTR [rsp+40], xmm8
+        movdqu	OWORD PTR [rsp+56], xmm9
+        movdqu	OWORD PTR [rsp+72], xmm10
+        movdqu	OWORD PTR [rsp+88], xmm11
         ; From entry 1
         mov	rax, 1
         movd	xmm9, r8d
@@ -44690,32 +44866,32 @@ L_256_get_entry_64_4_start_0:
         movdqu	OWORD PTR [rcx+16], xmm1
         movdqu	OWORD PTR [rcx+64], xmm2
         movdqu	OWORD PTR [rcx+80], xmm3
-        movdqu	xmm6, OWORD PTR [rsp]
-        movdqu	xmm7, OWORD PTR [rsp+16]
-        movdqu	xmm8, OWORD PTR [rsp+32]
-        movdqu	xmm9, OWORD PTR [rsp+48]
-        movdqu	xmm10, OWORD PTR [rsp+64]
-        movdqu	xmm11, OWORD PTR [rsp+80]
-        add	rsp, 96
+        movdqu	xmm6, OWORD PTR [rsp+8]
+        movdqu	xmm7, OWORD PTR [rsp+24]
+        movdqu	xmm8, OWORD PTR [rsp+40]
+        movdqu	xmm9, OWORD PTR [rsp+56]
+        movdqu	xmm10, OWORD PTR [rsp+72]
+        movdqu	xmm11, OWORD PTR [rsp+88]
+        add	rsp, 104
         ret
 sp_256_get_entry_64_4 ENDP
 _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_get_entry_64_avx2_4 PROC
-        sub	rsp, 32
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
+        sub	rsp, 40
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
         mov	rax, 1
-        movd	xmm5, r8d
+        vmovd	xmm5, r8d
         add	rdx, 64
-        movd	xmm7, eax
+        vmovd	xmm7, eax
         mov	rax, 64
         vpxor	ymm6, ymm6, ymm6
         vpermd	ymm5, ymm6, ymm5
@@ -44737,9 +44913,9 @@ L_256_get_entry_64_avx2_4_start:
         jnz	L_256_get_entry_64_avx2_4_start
         vmovupd	YMMWORD PTR [rcx], ymm0
         vmovupd	YMMWORD PTR [rcx+64], ymm1
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        add	rsp, 32
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        add	rsp, 40
         ret
 sp_256_get_entry_64_avx2_4 ENDP
 _TEXT ENDS
@@ -44748,19 +44924,19 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_get_entry_65_4 PROC
-        sub	rsp, 96
-        movdqu	OWORD PTR [rsp], xmm6
-        movdqu	OWORD PTR [rsp+16], xmm7
-        movdqu	OWORD PTR [rsp+32], xmm8
-        movdqu	OWORD PTR [rsp+48], xmm9
-        movdqu	OWORD PTR [rsp+64], xmm10
-        movdqu	OWORD PTR [rsp+80], xmm11
+        sub	rsp, 104
+        movdqu	OWORD PTR [rsp+8], xmm6
+        movdqu	OWORD PTR [rsp+24], xmm7
+        movdqu	OWORD PTR [rsp+40], xmm8
+        movdqu	OWORD PTR [rsp+56], xmm9
+        movdqu	OWORD PTR [rsp+72], xmm10
+        movdqu	OWORD PTR [rsp+88], xmm11
         ; From entry 1
         mov	rax, 1
         movd	xmm9, r8d
@@ -44798,32 +44974,32 @@ L_256_get_entry_65_4_start_0:
         movdqu	OWORD PTR [rcx+16], xmm1
         movdqu	OWORD PTR [rcx+64], xmm2
         movdqu	OWORD PTR [rcx+80], xmm3
-        movdqu	xmm6, OWORD PTR [rsp]
-        movdqu	xmm7, OWORD PTR [rsp+16]
-        movdqu	xmm8, OWORD PTR [rsp+32]
-        movdqu	xmm9, OWORD PTR [rsp+48]
-        movdqu	xmm10, OWORD PTR [rsp+64]
-        movdqu	xmm11, OWORD PTR [rsp+80]
-        add	rsp, 96
+        movdqu	xmm6, OWORD PTR [rsp+8]
+        movdqu	xmm7, OWORD PTR [rsp+24]
+        movdqu	xmm8, OWORD PTR [rsp+40]
+        movdqu	xmm9, OWORD PTR [rsp+56]
+        movdqu	xmm10, OWORD PTR [rsp+72]
+        movdqu	xmm11, OWORD PTR [rsp+88]
+        add	rsp, 104
         ret
 sp_256_get_entry_65_4 ENDP
 _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_get_entry_65_avx2_4 PROC
-        sub	rsp, 32
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
+        sub	rsp, 40
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
         mov	rax, 1
-        movd	xmm5, r8d
+        vmovd	xmm5, r8d
         add	rdx, 64
-        movd	xmm7, eax
+        vmovd	xmm7, eax
         mov	rax, 65
         vpxor	ymm6, ymm6, ymm6
         vpermd	ymm5, ymm6, ymm5
@@ -44845,9 +45021,9 @@ L_256_get_entry_65_avx2_4_start:
         jnz	L_256_get_entry_65_avx2_4_start
         vmovupd	YMMWORD PTR [rcx], ymm0
         vmovupd	YMMWORD PTR [rcx+64], ymm1
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        add	rsp, 32
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        add	rsp, 40
         ret
 sp_256_get_entry_65_avx2_4 ENDP
 _TEXT ENDS
@@ -44855,7 +45031,7 @@ ENDIF
 ENDIF
 ; /* Add 1 to a. (a = a + 1)
 ;  *
-;  * a  A single precision integer.
+;  * @param [in, out] a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_add_one_4 PROC
@@ -44869,10 +45045,10 @@ _TEXT ENDS
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_from_bin_bswap PROC
@@ -44957,10 +45133,10 @@ IFNDEF NO_MOVBE_SUPPORT
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the movbe instruction which is an optional instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_from_bin_movbe PROC
@@ -45034,8 +45210,8 @@ ENDIF
 ;  * Fixed length number of bytes written: 32
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_to_bin_bswap_4 PROC
@@ -45059,8 +45235,8 @@ IFNDEF NO_MOVBE_SUPPORT
 ;  * Fixed length number of bytes written: 32
 ;  * Uses the movbe instruction which is optional.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_to_bin_movbe_4 PROC
@@ -45078,8 +45254,8 @@ _TEXT ENDS
 ENDIF
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_sub_in_place_4 PROC
@@ -45097,9 +45273,9 @@ sp_256_sub_in_place_4 ENDP
 _TEXT ENDS
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mul_d_4 PROC
@@ -45142,9 +45318,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mul_d_avx2_4 PROC
@@ -45185,10 +45361,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_256_word_asm_4 PROC
@@ -45204,9 +45381,9 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Multiply two Montgomery form numbers mod the modulus (prime).
 ;  * (r = a * b mod m)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply in Montgomery form.
-;  * b   Second number to multiply in Montgomery form.
+;  * @param [out] r  Result of multiplication.
+;  * @param [in]  a  First number to multiply in Montgomery form.
+;  * @param [in]  b  Second number to multiply in Montgomery form.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_mul_order_avx2_4 PROC
@@ -45424,8 +45601,8 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Square the Montgomery form number mod the modulus (prime). (r = a * a mod m)
 ;  *
-;  * r   Result of squaring.
-;  * a   Number to square in Montgomery form.
+;  * @param [out] r  Result of squaring.
+;  * @param [in]  a  Number to square in Montgomery form.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_256_mont_sqr_order_avx2_4 PROC
@@ -45626,9 +45803,10 @@ _TEXT ENDS
 ENDIF
 ; /* Non-constant time modular inversion.
 ;  *
-;  * @param  [out]  r   Resulting number.
-;  * @param  [in]   a   Number to invert.
-;  * @param  [in]   m   Modulus.
+;  * @param [out] r  Resulting number.
+;  * @param [in]  a  Number to invert.
+;  * @param [in]  m  Modulus.
+;  *
 ;  * @return  MP_OKAY on success.
 ;  */
 _TEXT SEGMENT READONLY PARA
@@ -45639,7 +45817,7 @@ sp_256_mod_inv_4 PROC
         push	r15
         push	rdi
         push	rsi
-        sub	rsp, 513
+        sub	rsp, 520
         mov	r9, QWORD PTR [r8]
         mov	r10, QWORD PTR [r8+8]
         mov	r11, QWORD PTR [r8+16]
@@ -45834,7 +46012,7 @@ L_256_mod_inv_4_store_d:
         mov	QWORD PTR [rcx+16], r15
         mov	QWORD PTR [rcx+24], rdi
 L_256_mod_inv_4_store_end:
-        add	rsp, 513
+        add	rsp, 520
         pop	rsi
         pop	rdi
         pop	r15
@@ -45847,67 +46025,60 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_order DWORD \
-     00632551h,  01e84f3bh,  03bce6fah,  03ffffffh,
-     03ff0000h,  00000000h,  00000000h,  00000000h,
-     0272b0bfh,  02b69c5eh,  03ffffffh,  000003ffh,
-     003fffffh,  00000000h,  00000000h,  00000000h
+L_sp256_mod_inv_avx2_4_order DWORD 00632551h, 01e84f3bh, 03bce6fah, 03ffffffh
+        DWORD 03ff0000h, 00000000h, 00000000h, 00000000h
+        DWORD 0272b0bfh, 02b69c5eh, 03ffffffh, 000003ffh
+        DWORD 003fffffh, 00000000h, 00000000h, 00000000h
 ptr_L_sp256_mod_inv_avx2_4_order QWORD L_sp256_mod_inv_avx2_4_order
 _DATA ENDS
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_one QWORD \
-     0000000000000001h,  0000000000000000h,
-     0000000000000000h,  0000000000000000h
+L_sp256_mod_inv_avx2_4_one QWORD 0000000000000001h, 0000000000000000h
+        QWORD 0000000000000000h, 0000000000000000h
 ptr_L_sp256_mod_inv_avx2_4_one QWORD L_sp256_mod_inv_avx2_4_one
 _DATA ENDS
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_all_one DWORD \
-     00000001h,  00000001h,  00000001h,  00000001h,
-     00000001h,  00000001h,  00000001h,  00000001h
+L_sp256_mod_inv_avx2_4_all_one DWORD 00000001h, 00000001h, 00000001h, 00000001h
+        DWORD 00000001h, 00000001h, 00000001h, 00000001h
 ptr_L_sp256_mod_inv_avx2_4_all_one QWORD L_sp256_mod_inv_avx2_4_all_one
 _DATA ENDS
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_mask01111 DWORD \
-     00000000h,  00000001h,  00000001h,  00000001h,
-     00000001h,  00000000h,  00000000h,  00000000h
+L_sp256_mod_inv_avx2_4_mask01111 DWORD 00000000h, 00000001h, 00000001h, 00000001h
+        DWORD 00000001h, 00000000h, 00000000h, 00000000h
 ptr_L_sp256_mod_inv_avx2_4_mask01111 QWORD L_sp256_mod_inv_avx2_4_mask01111
 _DATA ENDS
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_down_one_dword DWORD \
-     00000001h,  00000002h,  00000003h,  00000004h,
-     00000005h,  00000006h,  00000007h,  00000007h
+L_sp256_mod_inv_avx2_4_down_one_dword DWORD 00000001h, 00000002h, 00000003h, 00000004h
+        DWORD 00000005h, 00000006h, 00000007h, 00000007h
 ptr_L_sp256_mod_inv_avx2_4_down_one_dword QWORD L_sp256_mod_inv_avx2_4_down_one_dword
 _DATA ENDS
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_neg DWORD \
-     00000000h,  00000000h,  00000000h,  00000000h,
-     80000000h,  00000000h,  00000000h,  00000000h
+L_sp256_mod_inv_avx2_4_neg DWORD 00000000h, 00000000h, 00000000h, 00000000h
+        DWORD 80000000h, 00000000h, 00000000h, 00000000h
 ptr_L_sp256_mod_inv_avx2_4_neg QWORD L_sp256_mod_inv_avx2_4_neg
 _DATA ENDS
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_up_one_dword DWORD \
-     00000007h,  00000000h,  00000001h,  00000002h,
-     00000003h,  00000007h,  00000007h,  00000007h
+L_sp256_mod_inv_avx2_4_up_one_dword DWORD 00000007h, 00000000h, 00000001h, 00000002h
+        DWORD 00000003h, 00000007h, 00000007h, 00000007h
 ptr_L_sp256_mod_inv_avx2_4_up_one_dword QWORD L_sp256_mod_inv_avx2_4_up_one_dword
 _DATA ENDS
 _DATA SEGMENT
 ALIGN 16
-L_sp256_mod_inv_avx2_4_mask26 DWORD \
-     03ffffffh,  03ffffffh,  03ffffffh,  03ffffffh,
-     03ffffffh,  00000000h,  00000000h,  00000000h
+L_sp256_mod_inv_avx2_4_mask26 DWORD 03ffffffh, 03ffffffh, 03ffffffh, 03ffffffh
+        DWORD 03ffffffh, 00000000h, 00000000h, 00000000h
 ptr_L_sp256_mod_inv_avx2_4_mask26 QWORD L_sp256_mod_inv_avx2_4_mask26
 _DATA ENDS
 ; /* Non-constant time modular inversion.
 ;  *
-;  * @param  [out]  r   Resulting number.
-;  * @param  [in]   a   Number to invert.
-;  * @param  [in]   m   Modulus.
+;  * @param [out] r  Resulting number.
+;  * @param [in]  a  Number to invert.
+;  * @param [in]  m  Modulus.
+;  *
 ;  * @return  MP_OKAY on success.
 ;  */
 _TEXT SEGMENT READONLY PARA
@@ -46228,9 +46399,9 @@ ENDIF
 IFDEF WOLFSSL_SP_384
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mul_6 PROC
@@ -46492,9 +46663,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply.
-;  * b   Second number to multiply.
+;  * @param [out] r  Result of multiplication.
+;  * @param [in]  a  First number to multiply.
+;  * @param [in]  b  Second number to multiply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mul_avx2_6 PROC
@@ -46506,7 +46677,7 @@ sp_384_mul_avx2_6 PROC
         push	rsi
         push	rbx
         mov	rax, rdx
-        sub	rsp, 40
+        sub	rsp, 48
         xor	rbx, rbx
         mov	rdx, QWORD PTR [rax]
         ; A[0] * B[0]
@@ -46694,7 +46865,7 @@ sp_384_mul_avx2_6 PROC
         mov	QWORD PTR [rcx+16], r13
         mov	QWORD PTR [rcx+24], r14
         mov	QWORD PTR [rcx+32], r15
-        add	rsp, 40
+        add	rsp, 48
         pop	rbx
         pop	rsi
         pop	rdi
@@ -46708,8 +46879,8 @@ _TEXT ENDS
 ENDIF
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_sqr_6 PROC
@@ -46927,8 +47098,8 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r   Result of squaring.
-;  * a   Number to square in Montgomery form.
+;  * @param [out] r  Result of squaring.
+;  * @param [in]  a  Number to square in Montgomery form.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_sqr_avx2_6 PROC
@@ -47084,9 +47255,9 @@ _TEXT ENDS
 ENDIF
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_add_6 PROC
@@ -47121,9 +47292,9 @@ sp_384_add_6 ENDP
 _TEXT ENDS
 ; /* Sub b from a into r. (r = a - b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_sub_6 PROC
@@ -47159,9 +47330,9 @@ _TEXT ENDS
 ; /* Conditionally copy a into r using the mask m.
 ;  * m is -1 to copy and 0 when not.
 ;  *
-;  * r  A single precision number to copy over.
-;  * a  A single precision number to copy.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number to copy over.
+;  * @param [in]  a  A single precision number to copy.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_cond_copy_6 PROC
@@ -47199,14 +47370,15 @@ _TEXT ENDS
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_cond_sub_6 PROC
-        sub	rsp, 48
+        sub	rsp, 56
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r9
@@ -47250,15 +47422,16 @@ sp_384_cond_sub_6 PROC
         mov	QWORD PTR [rcx+32], r10
         mov	QWORD PTR [rcx+40], r11
         sbb	rax, rax
-        add	rsp, 48
+        add	rsp, 56
         ret
 sp_384_cond_sub_6 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 384 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_reduce_6 PROC
@@ -47428,9 +47601,10 @@ sp_384_mont_reduce_6 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 384 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_reduce_order_6 PROC
@@ -47521,9 +47695,10 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
-        mov	rcx, rcx
         sub	rcx, 48
+        sub	rsp, 40
         call	sp_384_cond_sub_6
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -47535,10 +47710,11 @@ sp_384_mont_reduce_order_6 ENDP
 _TEXT ENDS
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_cmp_6 PROC
@@ -47602,10 +47778,10 @@ sp_384_cmp_6 ENDP
 _TEXT ENDS
 ; /* Add two Montgomery form numbers (r = a + b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_add_6 PROC
@@ -47664,9 +47840,9 @@ sp_384_mont_add_6 ENDP
 _TEXT ENDS
 ; /* Double a Montgomery form number (r = a + a % m).
 ;  *
-;  * r   Result of doubling.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of doubling.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_dbl_6 PROC
@@ -47726,9 +47902,9 @@ sp_384_mont_dbl_6 ENDP
 _TEXT ENDS
 ; /* Double a Montgomery form number (r = a + a % m).
 ;  *
-;  * r   Result of doubling.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of doubling.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_tpl_6 PROC
@@ -47816,10 +47992,10 @@ sp_384_mont_tpl_6 ENDP
 _TEXT ENDS
 ; /* Subtract two Montgomery form numbers (r = a - b % m).
 ;  *
-;  * r   Result of subtration.
-;  * a   Number to subtract from in Montgomery form.
-;  * b   Number to subtract with in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of subtration.
+;  * @param [in]  a  Number to subtract from in Montgomery form.
+;  * @param [in]  b  Number to subtract with in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_sub_6 PROC
@@ -47878,15 +48054,15 @@ sp_384_mont_sub_6 ENDP
 _TEXT ENDS
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_div2_6 PROC
         push	r12
         push	r13
-        sub	rsp, 48
+        sub	rsp, 56
         mov	r13, QWORD PTR [rdx]
         xor	r12, r12
         mov	rax, r13
@@ -47940,7 +48116,7 @@ sp_384_mont_div2_6 PROC
         mov	QWORD PTR [rcx+32], rax
         shrd	r9, r12, 1
         mov	QWORD PTR [rcx+40], r9
-        add	rsp, 48
+        add	rsp, 56
         pop	r13
         pop	r12
         ret
@@ -47949,23 +48125,23 @@ _TEXT ENDS
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible point that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of point to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of point to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_get_point_33_6 PROC
-        sub	rsp, 160
-        movdqu	OWORD PTR [rsp], xmm6
-        movdqu	OWORD PTR [rsp+16], xmm7
-        movdqu	OWORD PTR [rsp+32], xmm8
-        movdqu	OWORD PTR [rsp+48], xmm9
-        movdqu	OWORD PTR [rsp+64], xmm10
-        movdqu	OWORD PTR [rsp+80], xmm11
-        movdqu	OWORD PTR [rsp+96], xmm12
-        movdqu	OWORD PTR [rsp+112], xmm13
-        movdqu	OWORD PTR [rsp+128], xmm14
-        movdqu	OWORD PTR [rsp+144], xmm15
+        sub	rsp, 168
+        movdqu	OWORD PTR [rsp+8], xmm6
+        movdqu	OWORD PTR [rsp+24], xmm7
+        movdqu	OWORD PTR [rsp+40], xmm8
+        movdqu	OWORD PTR [rsp+56], xmm9
+        movdqu	OWORD PTR [rsp+72], xmm10
+        movdqu	OWORD PTR [rsp+88], xmm11
+        movdqu	OWORD PTR [rsp+104], xmm12
+        movdqu	OWORD PTR [rsp+120], xmm13
+        movdqu	OWORD PTR [rsp+136], xmm14
+        movdqu	OWORD PTR [rsp+152], xmm15
         mov	rax, 1
         movd	xmm13, r8d
         add	rdx, 296
@@ -48043,44 +48219,44 @@ L_384_get_point_33_6_start_2:
         movdqu	OWORD PTR [rcx+192], xmm0
         movdqu	OWORD PTR [rcx+208], xmm1
         movdqu	OWORD PTR [rcx+224], xmm2
-        movdqu	xmm6, OWORD PTR [rsp]
-        movdqu	xmm7, OWORD PTR [rsp+16]
-        movdqu	xmm8, OWORD PTR [rsp+32]
-        movdqu	xmm9, OWORD PTR [rsp+48]
-        movdqu	xmm10, OWORD PTR [rsp+64]
-        movdqu	xmm11, OWORD PTR [rsp+80]
-        movdqu	xmm12, OWORD PTR [rsp+96]
-        movdqu	xmm13, OWORD PTR [rsp+112]
-        movdqu	xmm14, OWORD PTR [rsp+128]
-        movdqu	xmm15, OWORD PTR [rsp+144]
-        add	rsp, 160
+        movdqu	xmm6, OWORD PTR [rsp+8]
+        movdqu	xmm7, OWORD PTR [rsp+24]
+        movdqu	xmm8, OWORD PTR [rsp+40]
+        movdqu	xmm9, OWORD PTR [rsp+56]
+        movdqu	xmm10, OWORD PTR [rsp+72]
+        movdqu	xmm11, OWORD PTR [rsp+88]
+        movdqu	xmm12, OWORD PTR [rsp+104]
+        movdqu	xmm13, OWORD PTR [rsp+120]
+        movdqu	xmm14, OWORD PTR [rsp+136]
+        movdqu	xmm15, OWORD PTR [rsp+152]
+        add	rsp, 168
         ret
 sp_384_get_point_33_6 ENDP
 _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible point that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of point to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of point to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_get_point_33_avx2_6 PROC
-        sub	rsp, 160
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
-        vmovdqu	OWORD PTR [rsp+96], xmm12
-        vmovdqu	OWORD PTR [rsp+112], xmm13
-        vmovdqu	OWORD PTR [rsp+128], xmm14
-        vmovdqu	OWORD PTR [rsp+144], xmm15
+        sub	rsp, 168
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
+        vmovdqu	OWORD PTR [rsp+104], xmm12
+        vmovdqu	OWORD PTR [rsp+120], xmm13
+        vmovdqu	OWORD PTR [rsp+136], xmm14
+        vmovdqu	OWORD PTR [rsp+152], xmm15
         mov	rax, 1
-        movd	xmm13, r8d
+        vmovd	xmm13, r8d
         add	rdx, 296
-        movd	xmm15, eax
+        vmovd	xmm15, eax
         mov	rax, 32
         vpxor	ymm14, ymm14, ymm14
         vpermd	ymm13, ymm14, ymm13
@@ -48122,17 +48298,17 @@ L_384_get_point_33_avx2_6_start:
         vmovdqu	OWORD PTR [rcx+128], xmm3
         vmovupd	YMMWORD PTR [rcx+192], ymm4
         vmovdqu	OWORD PTR [rcx+224], xmm5
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        vmovdqu	xmm12, OWORD PTR [rsp+96]
-        vmovdqu	xmm13, OWORD PTR [rsp+112]
-        vmovdqu	xmm14, OWORD PTR [rsp+128]
-        vmovdqu	xmm15, OWORD PTR [rsp+144]
-        add	rsp, 160
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        vmovdqu	xmm12, OWORD PTR [rsp+104]
+        vmovdqu	xmm13, OWORD PTR [rsp+120]
+        vmovdqu	xmm14, OWORD PTR [rsp+136]
+        vmovdqu	xmm15, OWORD PTR [rsp+152]
+        add	rsp, 168
         ret
 sp_384_get_point_33_avx2_6 ENDP
 _TEXT ENDS
@@ -48141,9 +48317,10 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 384 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_reduce_order_avx2_6 PROC
@@ -48465,10 +48642,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_cond_sub_avx2_6 PROC
@@ -48512,9 +48690,9 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mont_div2_avx2_6 PROC
@@ -48583,23 +48761,23 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_get_entry_64_6 PROC
-        sub	rsp, 160
-        movdqu	OWORD PTR [rsp], xmm6
-        movdqu	OWORD PTR [rsp+16], xmm7
-        movdqu	OWORD PTR [rsp+32], xmm8
-        movdqu	OWORD PTR [rsp+48], xmm9
-        movdqu	OWORD PTR [rsp+64], xmm10
-        movdqu	OWORD PTR [rsp+80], xmm11
-        movdqu	OWORD PTR [rsp+96], xmm12
-        movdqu	OWORD PTR [rsp+112], xmm13
-        movdqu	OWORD PTR [rsp+128], xmm14
-        movdqu	OWORD PTR [rsp+144], xmm15
+        sub	rsp, 168
+        movdqu	OWORD PTR [rsp+8], xmm6
+        movdqu	OWORD PTR [rsp+24], xmm7
+        movdqu	OWORD PTR [rsp+40], xmm8
+        movdqu	OWORD PTR [rsp+56], xmm9
+        movdqu	OWORD PTR [rsp+72], xmm10
+        movdqu	OWORD PTR [rsp+88], xmm11
+        movdqu	OWORD PTR [rsp+104], xmm12
+        movdqu	OWORD PTR [rsp+120], xmm13
+        movdqu	OWORD PTR [rsp+136], xmm14
+        movdqu	OWORD PTR [rsp+152], xmm15
         ; From entry 1
         mov	rax, 1
         movd	xmm13, r8d
@@ -48647,40 +48825,40 @@ L_384_get_entry_64_6_start_0:
         movdqu	OWORD PTR [rcx+96], xmm3
         movdqu	OWORD PTR [rcx+112], xmm4
         movdqu	OWORD PTR [rcx+128], xmm5
-        movdqu	xmm6, OWORD PTR [rsp]
-        movdqu	xmm7, OWORD PTR [rsp+16]
-        movdqu	xmm8, OWORD PTR [rsp+32]
-        movdqu	xmm9, OWORD PTR [rsp+48]
-        movdqu	xmm10, OWORD PTR [rsp+64]
-        movdqu	xmm11, OWORD PTR [rsp+80]
-        movdqu	xmm12, OWORD PTR [rsp+96]
-        movdqu	xmm13, OWORD PTR [rsp+112]
-        movdqu	xmm14, OWORD PTR [rsp+128]
-        movdqu	xmm15, OWORD PTR [rsp+144]
-        add	rsp, 160
+        movdqu	xmm6, OWORD PTR [rsp+8]
+        movdqu	xmm7, OWORD PTR [rsp+24]
+        movdqu	xmm8, OWORD PTR [rsp+40]
+        movdqu	xmm9, OWORD PTR [rsp+56]
+        movdqu	xmm10, OWORD PTR [rsp+72]
+        movdqu	xmm11, OWORD PTR [rsp+88]
+        movdqu	xmm12, OWORD PTR [rsp+104]
+        movdqu	xmm13, OWORD PTR [rsp+120]
+        movdqu	xmm14, OWORD PTR [rsp+136]
+        movdqu	xmm15, OWORD PTR [rsp+152]
+        add	rsp, 168
         ret
 sp_384_get_entry_64_6 ENDP
 _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_get_entry_64_avx2_6 PROC
-        sub	rsp, 96
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
+        sub	rsp, 104
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
         mov	rax, 1
-        movd	xmm9, r8d
+        vmovd	xmm9, r8d
         add	rdx, 96
-        movd	xmm11, eax
+        vmovd	xmm11, eax
         mov	rax, 64
         vpxor	ymm10, ymm10, ymm10
         vpermd	ymm9, ymm10, ymm9
@@ -48712,13 +48890,13 @@ L_384_get_entry_64_avx2_6_start:
         vmovdqu	OWORD PTR [rcx+32], xmm1
         vmovupd	YMMWORD PTR [rcx+96], ymm2
         vmovdqu	OWORD PTR [rcx+128], xmm3
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        add	rsp, 96
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        add	rsp, 104
         ret
 sp_384_get_entry_64_avx2_6 ENDP
 _TEXT ENDS
@@ -48727,23 +48905,23 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_get_entry_65_6 PROC
-        sub	rsp, 160
-        movdqu	OWORD PTR [rsp], xmm6
-        movdqu	OWORD PTR [rsp+16], xmm7
-        movdqu	OWORD PTR [rsp+32], xmm8
-        movdqu	OWORD PTR [rsp+48], xmm9
-        movdqu	OWORD PTR [rsp+64], xmm10
-        movdqu	OWORD PTR [rsp+80], xmm11
-        movdqu	OWORD PTR [rsp+96], xmm12
-        movdqu	OWORD PTR [rsp+112], xmm13
-        movdqu	OWORD PTR [rsp+128], xmm14
-        movdqu	OWORD PTR [rsp+144], xmm15
+        sub	rsp, 168
+        movdqu	OWORD PTR [rsp+8], xmm6
+        movdqu	OWORD PTR [rsp+24], xmm7
+        movdqu	OWORD PTR [rsp+40], xmm8
+        movdqu	OWORD PTR [rsp+56], xmm9
+        movdqu	OWORD PTR [rsp+72], xmm10
+        movdqu	OWORD PTR [rsp+88], xmm11
+        movdqu	OWORD PTR [rsp+104], xmm12
+        movdqu	OWORD PTR [rsp+120], xmm13
+        movdqu	OWORD PTR [rsp+136], xmm14
+        movdqu	OWORD PTR [rsp+152], xmm15
         ; From entry 1
         mov	rax, 1
         movd	xmm13, r8d
@@ -48791,40 +48969,40 @@ L_384_get_entry_65_6_start_0:
         movdqu	OWORD PTR [rcx+96], xmm3
         movdqu	OWORD PTR [rcx+112], xmm4
         movdqu	OWORD PTR [rcx+128], xmm5
-        movdqu	xmm6, OWORD PTR [rsp]
-        movdqu	xmm7, OWORD PTR [rsp+16]
-        movdqu	xmm8, OWORD PTR [rsp+32]
-        movdqu	xmm9, OWORD PTR [rsp+48]
-        movdqu	xmm10, OWORD PTR [rsp+64]
-        movdqu	xmm11, OWORD PTR [rsp+80]
-        movdqu	xmm12, OWORD PTR [rsp+96]
-        movdqu	xmm13, OWORD PTR [rsp+112]
-        movdqu	xmm14, OWORD PTR [rsp+128]
-        movdqu	xmm15, OWORD PTR [rsp+144]
-        add	rsp, 160
+        movdqu	xmm6, OWORD PTR [rsp+8]
+        movdqu	xmm7, OWORD PTR [rsp+24]
+        movdqu	xmm8, OWORD PTR [rsp+40]
+        movdqu	xmm9, OWORD PTR [rsp+56]
+        movdqu	xmm10, OWORD PTR [rsp+72]
+        movdqu	xmm11, OWORD PTR [rsp+88]
+        movdqu	xmm12, OWORD PTR [rsp+104]
+        movdqu	xmm13, OWORD PTR [rsp+120]
+        movdqu	xmm14, OWORD PTR [rsp+136]
+        movdqu	xmm15, OWORD PTR [rsp+152]
+        add	rsp, 168
         ret
 sp_384_get_entry_65_6 ENDP
 _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_get_entry_65_avx2_6 PROC
-        sub	rsp, 96
-        vmovdqu	OWORD PTR [rsp], xmm6
-        vmovdqu	OWORD PTR [rsp+16], xmm7
-        vmovdqu	OWORD PTR [rsp+32], xmm8
-        vmovdqu	OWORD PTR [rsp+48], xmm9
-        vmovdqu	OWORD PTR [rsp+64], xmm10
-        vmovdqu	OWORD PTR [rsp+80], xmm11
+        sub	rsp, 104
+        vmovdqu	OWORD PTR [rsp+8], xmm6
+        vmovdqu	OWORD PTR [rsp+24], xmm7
+        vmovdqu	OWORD PTR [rsp+40], xmm8
+        vmovdqu	OWORD PTR [rsp+56], xmm9
+        vmovdqu	OWORD PTR [rsp+72], xmm10
+        vmovdqu	OWORD PTR [rsp+88], xmm11
         mov	rax, 1
-        movd	xmm9, r8d
+        vmovd	xmm9, r8d
         add	rdx, 96
-        movd	xmm11, eax
+        vmovd	xmm11, eax
         mov	rax, 65
         vpxor	ymm10, ymm10, ymm10
         vpermd	ymm9, ymm10, ymm9
@@ -48856,13 +49034,13 @@ L_384_get_entry_65_avx2_6_start:
         vmovdqu	OWORD PTR [rcx+32], xmm1
         vmovupd	YMMWORD PTR [rcx+96], ymm2
         vmovdqu	OWORD PTR [rcx+128], xmm3
-        vmovdqu	xmm6, OWORD PTR [rsp]
-        vmovdqu	xmm7, OWORD PTR [rsp+16]
-        vmovdqu	xmm8, OWORD PTR [rsp+32]
-        vmovdqu	xmm9, OWORD PTR [rsp+48]
-        vmovdqu	xmm10, OWORD PTR [rsp+64]
-        vmovdqu	xmm11, OWORD PTR [rsp+80]
-        add	rsp, 96
+        vmovdqu	xmm6, OWORD PTR [rsp+8]
+        vmovdqu	xmm7, OWORD PTR [rsp+24]
+        vmovdqu	xmm8, OWORD PTR [rsp+40]
+        vmovdqu	xmm9, OWORD PTR [rsp+56]
+        vmovdqu	xmm10, OWORD PTR [rsp+72]
+        vmovdqu	xmm11, OWORD PTR [rsp+88]
+        add	rsp, 104
         ret
 sp_384_get_entry_65_avx2_6 ENDP
 _TEXT ENDS
@@ -48870,7 +49048,7 @@ ENDIF
 ENDIF
 ; /* Add 1 to a. (a = a + 1)
 ;  *
-;  * a  A single precision integer.
+;  * @param [in, out] a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_add_one_6 PROC
@@ -48886,10 +49064,10 @@ _TEXT ENDS
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_from_bin_bswap PROC
@@ -48974,10 +49152,10 @@ IFNDEF NO_MOVBE_SUPPORT
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the movbe instruction which is an optional instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_from_bin_movbe PROC
@@ -49051,8 +49229,8 @@ ENDIF
 ;  * Fixed length number of bytes written: 48
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_to_bin_bswap_6 PROC
@@ -49082,8 +49260,8 @@ IFNDEF NO_MOVBE_SUPPORT
 ;  * Fixed length number of bytes written: 48
 ;  * Uses the movbe instruction which is optional.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_to_bin_movbe_6 PROC
@@ -49105,8 +49283,8 @@ _TEXT ENDS
 ENDIF
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_sub_in_place_6 PROC
@@ -49132,9 +49310,9 @@ sp_384_sub_in_place_6 ENDP
 _TEXT ENDS
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mul_d_6 PROC
@@ -49193,9 +49371,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_mul_d_avx2_6 PROC
@@ -49248,10 +49426,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_384_word_asm_6 PROC
@@ -49265,8 +49444,8 @@ _TEXT ENDS
 ENDIF
 ; /* Shift number right by 1 bit. (r = a >> 1)
 ;  *
-;  * r  Result of right shift by 1.
-;  * a  Number to shift.
+;  * @param [out] r  Result of right shift by 1.
+;  * @param [in]  a  Number to shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_rshift1_6 PROC
@@ -49295,9 +49474,9 @@ sp_384_rshift1_6 ENDP
 _TEXT ENDS
 ; /* Divide the number by 2 mod the prime. (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_384_div2_mod_6 PROC
@@ -49415,15 +49594,15 @@ ENDIF
 IFDEF WOLFSSL_SP_521
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mul_9 PROC
         push	r12
         mov	r9, rdx
-        sub	rsp, 72
+        sub	rsp, 80
         ; A[0] * B[0]
         mov	rax, QWORD PTR [r8]
         mul	QWORD PTR [r9]
@@ -49959,7 +50138,7 @@ sp_521_mul_9 PROC
         mov	QWORD PTR [rcx+56], r11
         mov	rax, QWORD PTR [rsp+64]
         mov	QWORD PTR [rcx+64], rax
-        add	rsp, 72
+        add	rsp, 80
         pop	r12
         ret
 sp_521_mul_9 ENDP
@@ -49967,9 +50146,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply.
-;  * b   Second number to multiply.
+;  * @param [out] r  Result of multiplication.
+;  * @param [in]  a  First number to multiply.
+;  * @param [in]  b  Second number to multiply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mul_avx2_9 PROC
@@ -50521,14 +50700,22 @@ sp_521_mul_avx2_9 PROC
         cmp	rbp, r8
         jne	L_end_521_mul_avx2_9
 L_start_521_mul_avx2_9:
-        vmovdqu	xmm0, OWORD PTR [rbx]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+16]
-        vmovups	OWORD PTR [r8+16], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+32]
-        vmovups	OWORD PTR [r8+32], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+48]
-        vmovups	OWORD PTR [r8+48], xmm0
+        mov	rax, QWORD PTR [rbx]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbx+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbx+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbx+24]
+        mov	QWORD PTR [r8+24], rax
+        mov	rax, QWORD PTR [rbx+32]
+        mov	QWORD PTR [r8+32], rax
+        mov	rax, QWORD PTR [rbx+40]
+        mov	QWORD PTR [r8+40], rax
+        mov	rax, QWORD PTR [rbx+48]
+        mov	QWORD PTR [r8+48], rax
+        mov	rax, QWORD PTR [rbx+56]
+        mov	QWORD PTR [r8+56], rax
         mov	rax, QWORD PTR [rbx+64]
         mov	QWORD PTR [r8+64], rax
 L_end_521_mul_avx2_9:
@@ -50545,8 +50732,8 @@ _TEXT ENDS
 ENDIF
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_sqr_9 PROC
@@ -50554,7 +50741,7 @@ sp_521_sqr_9 PROC
         push	r13
         push	r14
         mov	r8, rdx
-        sub	rsp, 72
+        sub	rsp, 80
         ; A[0] * A[0]
         mov	rax, QWORD PTR [r8]
         mul	rax
@@ -50952,7 +51139,7 @@ sp_521_sqr_9 PROC
         mov	QWORD PTR [rcx+56], r13
         mov	rax, QWORD PTR [rsp+64]
         mov	QWORD PTR [rcx+64], rax
-        add	rsp, 72
+        add	rsp, 80
         pop	r14
         pop	r13
         pop	r12
@@ -50962,8 +51149,8 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_sqr_avx2_9 PROC
@@ -51340,10 +51527,14 @@ sp_521_sqr_avx2_9 PROC
         sub	r8, 72
         cmp	r9, r8
         jne	L_end_521_sqr_avx2_9
-        vmovdqu	xmm0, OWORD PTR [rbp]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+16]
-        vmovups	OWORD PTR [r8+16], xmm0
+        mov	rax, QWORD PTR [rbp]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbp+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbp+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbp+24]
+        mov	QWORD PTR [r8+24], rax
 L_end_521_sqr_avx2_9:
         add	rsp, 72
         pop	rbx
@@ -51360,9 +51551,9 @@ _TEXT ENDS
 ENDIF
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_add_9 PROC
@@ -51401,9 +51592,9 @@ sp_521_add_9 ENDP
 _TEXT ENDS
 ; /* Sub b from a into r. (r = a - b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_sub_9 PROC
@@ -51441,9 +51632,9 @@ _TEXT ENDS
 ; /* Conditionally copy a into r using the mask m.
 ;  * m is -1 to copy and 0 when not.
 ;  *
-;  * r  A single precision number to copy over.
-;  * a  A single precision number to copy.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number to copy over.
+;  * @param [in]  a  A single precision number to copy.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_cond_copy_9 PROC
@@ -51491,11 +51682,11 @@ _TEXT ENDS
 ; /* Multiply two Montgomery form numbers mod the modulus (prime).
 ;  * (r = a * b mod m)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply in Montgomery form.
-;  * b   Second number to multiply in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of multiplication.
+;  * @param [in]  a   First number to multiply in Montgomery form.
+;  * @param [in]  b   Second number to multiply in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_mul_9 PROC
@@ -51504,7 +51695,7 @@ sp_521_mont_mul_9 PROC
         push	r14
         push	r15
         mov	r9, rdx
-        sub	rsp, 144
+        sub	rsp, 152
         ; A[0] * B[0]
         mov	rax, QWORD PTR [r8]
         mul	QWORD PTR [r9]
@@ -52072,7 +52263,7 @@ sp_521_mont_mul_9 PROC
         mov	QWORD PTR [rcx+48], r9
         mov	QWORD PTR [rcx+56], r10
         mov	QWORD PTR [rcx+64], r11
-        add	rsp, 144
+        add	rsp, 152
         pop	r15
         pop	r14
         pop	r13
@@ -52082,10 +52273,10 @@ sp_521_mont_mul_9 ENDP
 _TEXT ENDS
 ; /* Square the Montgomery form number mod the modulus (prime). (r = a * a mod m)
 ;  *
-;  * r   Result of squaring.
-;  * a   Number to square in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of squaring.
+;  * @param [in]  a   Number to square in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_sqr_9 PROC
@@ -52094,7 +52285,7 @@ sp_521_mont_sqr_9 PROC
         push	r14
         push	r15
         mov	r8, rdx
-        sub	rsp, 144
+        sub	rsp, 152
         ; A[0] * A[0]
         mov	rax, QWORD PTR [r8]
         mul	rax
@@ -52524,7 +52715,7 @@ sp_521_mont_sqr_9 PROC
         mov	QWORD PTR [rcx+48], r14
         mov	QWORD PTR [rcx+56], r15
         mov	QWORD PTR [rcx+64], r8
-        add	rsp, 144
+        add	rsp, 152
         pop	r15
         pop	r14
         pop	r13
@@ -52534,10 +52725,11 @@ sp_521_mont_sqr_9 ENDP
 _TEXT ENDS
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_cmp_9 PROC
@@ -52626,10 +52818,11 @@ _TEXT ENDS
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_cond_sub_9 PROC
@@ -52704,9 +52897,10 @@ sp_521_cond_sub_9 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 521 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_reduce_9 PROC
@@ -52773,9 +52967,10 @@ sp_521_mont_reduce_9 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 521 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_reduce_order_9 PROC
@@ -52936,7 +53131,9 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
+        sub	rsp, 40
         call	sp_521_cond_sub_9
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -52948,10 +53145,10 @@ sp_521_mont_reduce_order_9 ENDP
 _TEXT ENDS
 ; /* Add two Montgomery form numbers (r = a + b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_add_9 PROC
@@ -53011,9 +53208,9 @@ sp_521_mont_add_9 ENDP
 _TEXT ENDS
 ; /* Double a Montgomery form number (r = a + a % m).
 ;  *
-;  * r   Result of addition.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_dbl_9 PROC
@@ -53071,9 +53268,9 @@ sp_521_mont_dbl_9 ENDP
 _TEXT ENDS
 ; /* Triple a Montgomery form number (r = a + a + a % m).
 ;  *
-;  * r   Result of Tripling.
-;  * a   Number to triple in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of Tripling.
+;  * @param [in]  a  Number to triple in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_tpl_9 PROC
@@ -53140,10 +53337,10 @@ sp_521_mont_tpl_9 ENDP
 _TEXT ENDS
 ; /* Subtract two Montgomery form numbers (r = a - b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_sub_9 PROC
@@ -53204,9 +53401,9 @@ sp_521_mont_sub_9 ENDP
 _TEXT ENDS
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_div2_9 PROC
@@ -53266,9 +53463,9 @@ _TEXT ENDS
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible point that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of point to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of point to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_get_point_33_9 PROC
@@ -53289,7 +53486,11 @@ sp_521_get_point_33_9 PROC
         mov	r14, 1
         mov	rax, 1
         movd	xmm13, r8d
+IFNDEF SP_ALIGN_16
         add	rdx, 440
+ELSE
+        add	rdx, 448
+ENDIF
         movd	xmm15, eax
         mov	rax, 32
         pshufd	xmm15, xmm15, 0
@@ -53320,7 +53521,11 @@ L_521_get_point_33_9_start_1:
         mov	r10, QWORD PTR [rdx+64]
         movdqu	xmm10, OWORD PTR [rdx+144]
         movdqu	xmm11, OWORD PTR [rdx+160]
+IFNDEF SP_ALIGN_16
         add	rdx, 440
+ELSE
+        add	rdx, 448
+ENDIF
         pand	xmm6, xmm12
         pand	xmm7, xmm12
         pand	xmm8, xmm12
@@ -53347,7 +53552,11 @@ L_521_get_point_33_9_start_1:
         mov	r14, 1
         mov	rax, 1
         movd	xmm13, r8d
+IFNDEF SP_ALIGN_16
         sub	rdx, 14080
+ELSE
+        sub	rdx, 14336
+ENDIF
         movd	xmm15, eax
         mov	rax, 32
         pshufd	xmm15, xmm15, 0
@@ -53379,7 +53588,11 @@ L_521_get_point_33_9_start_2:
         movdqu	xmm10, OWORD PTR [rdx+320]
         movdqu	xmm11, OWORD PTR [rdx+336]
         mov	r11, QWORD PTR [rdx+352]
+IFNDEF SP_ALIGN_16
         add	rdx, 440
+ELSE
+        add	rdx, 448
+ENDIF
         pand	xmm6, xmm12
         pand	xmm7, xmm12
         pand	xmm8, xmm12
@@ -53426,9 +53639,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible point that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of point to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of point to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_get_point_33_avx2_9 PROC
@@ -53450,9 +53663,13 @@ sp_521_get_point_33_avx2_9 PROC
         vmovdqu	OWORD PTR [rsp+144], xmm15
         mov	rdi, 1
         mov	rax, 1
-        movd	xmm13, r8d
+        vmovd	xmm13, r8d
+IFNDEF SP_ALIGN_16
         add	rdx, 440
-        movd	xmm15, eax
+ELSE
+        add	rdx, 448
+ENDIF
+        vmovd	xmm15, eax
         mov	rax, 32
         vpxor	ymm14, ymm14, ymm14
         vpermd	ymm13, ymm14, ymm13
@@ -53484,7 +53701,11 @@ L_521_get_point_33_avx2_9_start:
         mov	r13, QWORD PTR [rdx+64]
         mov	r14, QWORD PTR [rdx+208]
         mov	r15, QWORD PTR [rdx+352]
+IFNDEF SP_ALIGN_16
         add	rdx, 440
+ELSE
+        add	rdx, 448
+ENDIF
         vpand	ymm6, ymm6, ymm12
         vpand	ymm7, ymm7, ymm12
         vpand	ymm8, ymm8, ymm12
@@ -53539,11 +53760,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Multiply two Montgomery form numbers mod the modulus (prime).
 ;  * (r = a * b mod m)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply in Montgomery form.
-;  * b   Second number to multiply in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of multiplication.
+;  * @param [in]  a   First number to multiply in Montgomery form.
+;  * @param [in]  b   Second number to multiply in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_mul_avx2_9 PROC
@@ -53556,9 +53777,8 @@ sp_521_mont_mul_avx2_9 PROC
         mov	rbp, r8
         mov	r8, rcx
         mov	r9, rdx
-        sub	rsp, 144
+        sub	rsp, 152
         mov	rbx, rsp
-        add	rsp, 72
         xor	r15, r15
         mov	rdx, QWORD PTR [r9]
         ; A[0] * B[0]
@@ -53599,7 +53819,7 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adcx	r14, r15
         mov	QWORD PTR [rbx+64], r10
-        mov	QWORD PTR [rsp], r11
+        mov	QWORD PTR [rsp+72], r11
         mov	rdx, QWORD PTR [r9+8]
         mov	r11, QWORD PTR [rbx+8]
         mov	r12, QWORD PTR [rbx+16]
@@ -53639,7 +53859,7 @@ sp_521_mont_mul_avx2_9 PROC
         adox	r13, rcx
         mov	QWORD PTR [rbx+48], r12
         mov	r10, QWORD PTR [rbx+64]
-        mov	r11, QWORD PTR [rsp]
+        mov	r11, QWORD PTR [rsp+72]
         ; A[1] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r13, rax
@@ -53659,8 +53879,8 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adox	r14, r15
         adcx	r14, r15
-        mov	QWORD PTR [rsp], r11
-        mov	QWORD PTR [rsp+8], r12
+        mov	QWORD PTR [rsp+72], r11
+        mov	QWORD PTR [rsp+80], r12
         mov	rdx, QWORD PTR [r9+16]
         mov	r12, QWORD PTR [rbx+16]
         mov	r13, QWORD PTR [rbx+24]
@@ -53699,8 +53919,8 @@ sp_521_mont_mul_avx2_9 PROC
         adcx	r13, rax
         adox	r10, rcx
         mov	QWORD PTR [rbx+56], r13
-        mov	r11, QWORD PTR [rsp]
-        mov	r12, QWORD PTR [rsp+8]
+        mov	r11, QWORD PTR [rsp+72]
+        mov	r12, QWORD PTR [rsp+80]
         ; A[2] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r10, rax
@@ -53712,7 +53932,7 @@ sp_521_mont_mul_avx2_9 PROC
         adox	r12, rcx
         ; A[2] * B[8]
         mulx	rcx, rax, QWORD PTR [rbp+64]
-        mov	QWORD PTR [rsp], r11
+        mov	QWORD PTR [rsp+72], r11
         mov	r13, r15
         adcx	r12, rax
         adox	r13, rcx
@@ -53720,8 +53940,8 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adox	r14, r15
         adcx	r14, r15
-        mov	QWORD PTR [rsp+8], r12
-        mov	QWORD PTR [rsp+16], r13
+        mov	QWORD PTR [rsp+80], r12
+        mov	QWORD PTR [rsp+88], r13
         mov	rdx, QWORD PTR [r9+24]
         mov	r13, QWORD PTR [rbx+24]
         mov	r10, QWORD PTR [rbx+32]
@@ -53744,7 +53964,7 @@ sp_521_mont_mul_avx2_9 PROC
         mov	QWORD PTR [rbx+40], r11
         mov	r13, QWORD PTR [rbx+56]
         mov	r10, QWORD PTR [rbx+64]
-        mov	r11, QWORD PTR [rsp]
+        mov	r11, QWORD PTR [rsp+72]
         ; A[3] * B[3]
         mulx	rcx, rax, QWORD PTR [rbp+24]
         adcx	r12, rax
@@ -53760,20 +53980,20 @@ sp_521_mont_mul_avx2_9 PROC
         adcx	r10, rax
         adox	r11, rcx
         mov	QWORD PTR [rbx+64], r10
-        mov	r12, QWORD PTR [rsp+8]
-        mov	r13, QWORD PTR [rsp+16]
+        mov	r12, QWORD PTR [rsp+80]
+        mov	r13, QWORD PTR [rsp+88]
         ; A[3] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r11, rax
         adox	r12, rcx
         ; A[3] * B[7]
         mulx	rcx, rax, QWORD PTR [rbp+56]
-        mov	QWORD PTR [rsp], r11
+        mov	QWORD PTR [rsp+72], r11
         adcx	r12, rax
         adox	r13, rcx
         ; A[3] * B[8]
         mulx	rcx, rax, QWORD PTR [rbp+64]
-        mov	QWORD PTR [rsp+8], r12
+        mov	QWORD PTR [rsp+80], r12
         mov	r10, r15
         adcx	r13, rax
         adox	r10, rcx
@@ -53781,8 +54001,8 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adox	r14, r15
         adcx	r14, r15
-        mov	QWORD PTR [rsp+16], r13
-        mov	QWORD PTR [rsp+24], r10
+        mov	QWORD PTR [rsp+88], r13
+        mov	QWORD PTR [rsp+96], r10
         mov	rdx, QWORD PTR [r9+32]
         mov	r10, QWORD PTR [rbx+32]
         mov	r11, QWORD PTR [rbx+40]
@@ -53804,8 +54024,8 @@ sp_521_mont_mul_avx2_9 PROC
         adox	r13, rcx
         mov	QWORD PTR [rbx+48], r12
         mov	r10, QWORD PTR [rbx+64]
-        mov	r11, QWORD PTR [rsp]
-        mov	r12, QWORD PTR [rsp+8]
+        mov	r11, QWORD PTR [rsp+72]
+        mov	r12, QWORD PTR [rsp+80]
         ; A[4] * B[3]
         mulx	rcx, rax, QWORD PTR [rbp+24]
         adcx	r13, rax
@@ -53820,21 +54040,21 @@ sp_521_mont_mul_avx2_9 PROC
         mov	QWORD PTR [rbx+64], r10
         adcx	r11, rax
         adox	r12, rcx
-        mov	QWORD PTR [rsp], r11
-        mov	r13, QWORD PTR [rsp+16]
-        mov	r10, QWORD PTR [rsp+24]
+        mov	QWORD PTR [rsp+72], r11
+        mov	r13, QWORD PTR [rsp+88]
+        mov	r10, QWORD PTR [rsp+96]
         ; A[4] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r12, rax
         adox	r13, rcx
         ; A[4] * B[7]
         mulx	rcx, rax, QWORD PTR [rbp+56]
-        mov	QWORD PTR [rsp+8], r12
+        mov	QWORD PTR [rsp+80], r12
         adcx	r13, rax
         adox	r10, rcx
         ; A[4] * B[8]
         mulx	rcx, rax, QWORD PTR [rbp+64]
-        mov	QWORD PTR [rsp+16], r13
+        mov	QWORD PTR [rsp+88], r13
         mov	r11, r15
         adcx	r10, rax
         adox	r11, rcx
@@ -53842,8 +54062,8 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adox	r14, r15
         adcx	r14, r15
-        mov	QWORD PTR [rsp+24], r10
-        mov	QWORD PTR [rsp+32], r11
+        mov	QWORD PTR [rsp+96], r10
+        mov	QWORD PTR [rsp+104], r11
         mov	rdx, QWORD PTR [r9+40]
         mov	r11, QWORD PTR [rbx+40]
         mov	r12, QWORD PTR [rbx+48]
@@ -53864,9 +54084,9 @@ sp_521_mont_mul_avx2_9 PROC
         adcx	r13, rax
         adox	r10, rcx
         mov	QWORD PTR [rbx+56], r13
-        mov	r11, QWORD PTR [rsp]
-        mov	r12, QWORD PTR [rsp+8]
-        mov	r13, QWORD PTR [rsp+16]
+        mov	r11, QWORD PTR [rsp+72]
+        mov	r12, QWORD PTR [rsp+80]
+        mov	r13, QWORD PTR [rsp+88]
         ; A[5] * B[3]
         mulx	rcx, rax, QWORD PTR [rbp+24]
         adcx	r10, rax
@@ -53878,24 +54098,24 @@ sp_521_mont_mul_avx2_9 PROC
         adox	r12, rcx
         ; A[5] * B[5]
         mulx	rcx, rax, QWORD PTR [rbp+40]
-        mov	QWORD PTR [rsp], r11
+        mov	QWORD PTR [rsp+72], r11
         adcx	r12, rax
         adox	r13, rcx
-        mov	QWORD PTR [rsp+8], r12
-        mov	r10, QWORD PTR [rsp+24]
-        mov	r11, QWORD PTR [rsp+32]
+        mov	QWORD PTR [rsp+80], r12
+        mov	r10, QWORD PTR [rsp+96]
+        mov	r11, QWORD PTR [rsp+104]
         ; A[5] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r13, rax
         adox	r10, rcx
         ; A[5] * B[7]
         mulx	rcx, rax, QWORD PTR [rbp+56]
-        mov	QWORD PTR [rsp+16], r13
+        mov	QWORD PTR [rsp+88], r13
         adcx	r10, rax
         adox	r11, rcx
         ; A[5] * B[8]
         mulx	rcx, rax, QWORD PTR [rbp+64]
-        mov	QWORD PTR [rsp+24], r10
+        mov	QWORD PTR [rsp+96], r10
         mov	r12, r15
         adcx	r11, rax
         adox	r12, rcx
@@ -53903,13 +54123,13 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adox	r14, r15
         adcx	r14, r15
-        mov	QWORD PTR [rsp+32], r11
-        mov	QWORD PTR [rsp+40], r12
+        mov	QWORD PTR [rsp+104], r11
+        mov	QWORD PTR [rsp+112], r12
         mov	rdx, QWORD PTR [r9+48]
         mov	r12, QWORD PTR [rbx+48]
         mov	r13, QWORD PTR [rbx+56]
         mov	r10, QWORD PTR [rbx+64]
-        mov	r11, QWORD PTR [rsp]
+        mov	r11, QWORD PTR [rsp+72]
         ; A[6] * B[0]
         mulx	rcx, rax, QWORD PTR [rbp]
         adcx	r12, rax
@@ -53925,38 +54145,38 @@ sp_521_mont_mul_avx2_9 PROC
         adcx	r10, rax
         adox	r11, rcx
         mov	QWORD PTR [rbx+64], r10
-        mov	r12, QWORD PTR [rsp+8]
-        mov	r13, QWORD PTR [rsp+16]
-        mov	r10, QWORD PTR [rsp+24]
+        mov	r12, QWORD PTR [rsp+80]
+        mov	r13, QWORD PTR [rsp+88]
+        mov	r10, QWORD PTR [rsp+96]
         ; A[6] * B[3]
         mulx	rcx, rax, QWORD PTR [rbp+24]
         adcx	r11, rax
         adox	r12, rcx
         ; A[6] * B[4]
         mulx	rcx, rax, QWORD PTR [rbp+32]
-        mov	QWORD PTR [rsp], r11
+        mov	QWORD PTR [rsp+72], r11
         adcx	r12, rax
         adox	r13, rcx
         ; A[6] * B[5]
         mulx	rcx, rax, QWORD PTR [rbp+40]
-        mov	QWORD PTR [rsp+8], r12
+        mov	QWORD PTR [rsp+80], r12
         adcx	r13, rax
         adox	r10, rcx
-        mov	QWORD PTR [rsp+16], r13
-        mov	r11, QWORD PTR [rsp+32]
-        mov	r12, QWORD PTR [rsp+40]
+        mov	QWORD PTR [rsp+88], r13
+        mov	r11, QWORD PTR [rsp+104]
+        mov	r12, QWORD PTR [rsp+112]
         ; A[6] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r10, rax
         adox	r11, rcx
         ; A[6] * B[7]
         mulx	rcx, rax, QWORD PTR [rbp+56]
-        mov	QWORD PTR [rsp+24], r10
+        mov	QWORD PTR [rsp+96], r10
         adcx	r11, rax
         adox	r12, rcx
         ; A[6] * B[8]
         mulx	rcx, rax, QWORD PTR [rbp+64]
-        mov	QWORD PTR [rsp+32], r11
+        mov	QWORD PTR [rsp+104], r11
         mov	r13, r15
         adcx	r12, rax
         adox	r13, rcx
@@ -53964,13 +54184,13 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adox	r14, r15
         adcx	r14, r15
-        mov	QWORD PTR [rsp+40], r12
-        mov	QWORD PTR [rsp+48], r13
+        mov	QWORD PTR [rsp+112], r12
+        mov	QWORD PTR [rsp+120], r13
         mov	rdx, QWORD PTR [r9+56]
         mov	r13, QWORD PTR [rbx+56]
         mov	r10, QWORD PTR [rbx+64]
-        mov	r11, QWORD PTR [rsp]
-        mov	r12, QWORD PTR [rsp+8]
+        mov	r11, QWORD PTR [rsp+72]
+        mov	r12, QWORD PTR [rsp+80]
         ; A[7] * B[0]
         mulx	rcx, rax, QWORD PTR [rbp]
         adcx	r13, rax
@@ -53985,39 +54205,39 @@ sp_521_mont_mul_avx2_9 PROC
         mov	QWORD PTR [rbx+64], r10
         adcx	r11, rax
         adox	r12, rcx
-        mov	QWORD PTR [rsp], r11
-        mov	r13, QWORD PTR [rsp+16]
-        mov	r10, QWORD PTR [rsp+24]
-        mov	r11, QWORD PTR [rsp+32]
+        mov	QWORD PTR [rsp+72], r11
+        mov	r13, QWORD PTR [rsp+88]
+        mov	r10, QWORD PTR [rsp+96]
+        mov	r11, QWORD PTR [rsp+104]
         ; A[7] * B[3]
         mulx	rcx, rax, QWORD PTR [rbp+24]
         adcx	r12, rax
         adox	r13, rcx
         ; A[7] * B[4]
         mulx	rcx, rax, QWORD PTR [rbp+32]
-        mov	QWORD PTR [rsp+8], r12
+        mov	QWORD PTR [rsp+80], r12
         adcx	r13, rax
         adox	r10, rcx
         ; A[7] * B[5]
         mulx	rcx, rax, QWORD PTR [rbp+40]
-        mov	QWORD PTR [rsp+16], r13
+        mov	QWORD PTR [rsp+88], r13
         adcx	r10, rax
         adox	r11, rcx
-        mov	QWORD PTR [rsp+24], r10
-        mov	r12, QWORD PTR [rsp+40]
-        mov	r13, QWORD PTR [rsp+48]
+        mov	QWORD PTR [rsp+96], r10
+        mov	r12, QWORD PTR [rsp+112]
+        mov	r13, QWORD PTR [rsp+120]
         ; A[7] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r11, rax
         adox	r12, rcx
         ; A[7] * B[7]
         mulx	rcx, rax, QWORD PTR [rbp+56]
-        mov	QWORD PTR [rsp+32], r11
+        mov	QWORD PTR [rsp+104], r11
         adcx	r12, rax
         adox	r13, rcx
         ; A[7] * B[8]
         mulx	rcx, rax, QWORD PTR [rbp+64]
-        mov	QWORD PTR [rsp+40], r12
+        mov	QWORD PTR [rsp+112], r12
         mov	r10, r15
         adcx	r13, rax
         adox	r10, rcx
@@ -54025,13 +54245,13 @@ sp_521_mont_mul_avx2_9 PROC
         mov	r14, r15
         adox	r14, r15
         adcx	r14, r15
-        mov	QWORD PTR [rsp+48], r13
-        mov	QWORD PTR [rsp+56], r10
+        mov	QWORD PTR [rsp+120], r13
+        mov	QWORD PTR [rsp+128], r10
         mov	rdx, QWORD PTR [r9+64]
         mov	r10, QWORD PTR [rbx+64]
-        mov	r11, QWORD PTR [rsp]
-        mov	r12, QWORD PTR [rsp+8]
-        mov	r13, QWORD PTR [rsp+16]
+        mov	r11, QWORD PTR [rsp+72]
+        mov	r12, QWORD PTR [rsp+80]
+        mov	r13, QWORD PTR [rsp+88]
         ; A[8] * B[0]
         mulx	rcx, rax, QWORD PTR [rbp]
         adcx	r10, rax
@@ -54043,60 +54263,59 @@ sp_521_mont_mul_avx2_9 PROC
         adox	r12, rcx
         ; A[8] * B[2]
         mulx	rcx, rax, QWORD PTR [rbp+16]
-        mov	QWORD PTR [rsp], r11
+        mov	QWORD PTR [rsp+72], r11
         adcx	r12, rax
         adox	r13, rcx
-        mov	QWORD PTR [rsp+8], r12
-        mov	r10, QWORD PTR [rsp+24]
-        mov	r11, QWORD PTR [rsp+32]
-        mov	r12, QWORD PTR [rsp+40]
+        mov	QWORD PTR [rsp+80], r12
+        mov	r10, QWORD PTR [rsp+96]
+        mov	r11, QWORD PTR [rsp+104]
+        mov	r12, QWORD PTR [rsp+112]
         ; A[8] * B[3]
         mulx	rcx, rax, QWORD PTR [rbp+24]
         adcx	r13, rax
         adox	r10, rcx
         ; A[8] * B[4]
         mulx	rcx, rax, QWORD PTR [rbp+32]
-        mov	QWORD PTR [rsp+16], r13
+        mov	QWORD PTR [rsp+88], r13
         adcx	r10, rax
         adox	r11, rcx
         ; A[8] * B[5]
         mulx	rcx, rax, QWORD PTR [rbp+40]
-        mov	QWORD PTR [rsp+24], r10
+        mov	QWORD PTR [rsp+96], r10
         adcx	r11, rax
         adox	r12, rcx
-        mov	QWORD PTR [rsp+32], r11
-        mov	r13, QWORD PTR [rsp+48]
-        mov	r10, QWORD PTR [rsp+56]
+        mov	QWORD PTR [rsp+104], r11
+        mov	r13, QWORD PTR [rsp+120]
+        mov	r10, QWORD PTR [rsp+128]
         ; A[8] * B[6]
         mulx	rcx, rax, QWORD PTR [rbp+48]
         adcx	r12, rax
         adox	r13, rcx
         ; A[8] * B[7]
         mulx	rcx, rax, QWORD PTR [rbp+56]
-        mov	QWORD PTR [rsp+40], r12
+        mov	QWORD PTR [rsp+112], r12
         adcx	r13, rax
         adox	r10, rcx
         ; A[8] * B[8]
         mulx	rcx, rax, QWORD PTR [rbp+64]
-        mov	QWORD PTR [rsp+48], r13
+        mov	QWORD PTR [rsp+120], r13
         mov	r11, r15
         adcx	r10, rax
         adox	r11, rcx
         adcx	r11, r14
-        mov	QWORD PTR [rsp+56], r10
-        mov	QWORD PTR [rsp+64], r11
-        mov	rax, QWORD PTR [rsp+-8]
-        mov	rcx, QWORD PTR [rsp]
-        mov	r10, QWORD PTR [rsp+8]
+        mov	QWORD PTR [rsp+128], r10
+        mov	QWORD PTR [rsp+136], r11
+        mov	rax, QWORD PTR [rsp+64]
+        mov	rcx, QWORD PTR [rsp+72]
+        mov	r10, QWORD PTR [rsp+80]
         mov	r15, rax
         and	r15, 511
-        mov	r11, QWORD PTR [rsp+16]
-        mov	r12, QWORD PTR [rsp+24]
-        mov	r13, QWORD PTR [rsp+32]
-        mov	r14, QWORD PTR [rsp+40]
-        mov	rbx, QWORD PTR [rsp+48]
-        mov	rdx, QWORD PTR [rsp+56]
-        sub	rsp, 72
+        mov	r11, QWORD PTR [rsp+88]
+        mov	r12, QWORD PTR [rsp+96]
+        mov	r13, QWORD PTR [rsp+104]
+        mov	r14, QWORD PTR [rsp+112]
+        mov	rbx, QWORD PTR [rsp+120]
+        mov	rdx, QWORD PTR [rsp+128]
         shrd	rax, rcx, 9
         shrd	rcx, r10, 9
         shrd	r10, r11, 9
@@ -54136,7 +54355,7 @@ sp_521_mont_mul_avx2_9 PROC
         mov	QWORD PTR [r8+48], r14
         mov	QWORD PTR [r8+56], rbx
         mov	QWORD PTR [r8+64], rdx
-        add	rsp, 144
+        add	rsp, 152
         pop	r15
         pop	r14
         pop	r13
@@ -54150,10 +54369,10 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Square the Montgomery form number mod the modulus (prime). (r = a * a mod m)
 ;  *
-;  * r   Result of squaring.
-;  * a   Number to square in Montgomery form.
-;  * m   Modulus (prime).
-;  * mp  Montgomery multiplier.
+;  * @param [out] r   Result of squaring.
+;  * @param [in]  a   Number to square in Montgomery form.
+;  * @param [in]  m   Modulus (prime).
+;  * @param [in]  mp  Montgomery multiplier.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_sqr_avx2_9 PROC
@@ -54167,9 +54386,8 @@ sp_521_mont_sqr_avx2_9 PROC
         push	rbx
         mov	r8, rcx
         mov	r9, rdx
-        sub	rsp, 144
+        sub	rsp, 152
         mov	rbp, rsp
-        add	rsp, 72
         xor	r12, r12
         ; Diagonal 1
         ; Zero into %r9
@@ -54225,13 +54443,13 @@ sp_521_mont_sqr_avx2_9 PROC
         mulx	r11, rax, QWORD PTR [r9+64]
         adcx	r10, rax
         adox	r11, r12
-        mov	QWORD PTR [rsp], r10
+        mov	QWORD PTR [rsp+72], r10
         ;  Carry
         adcx	r11, r12
         mov	r13, r12
         adcx	r13, r12
         adox	r13, r12
-        mov	QWORD PTR [rsp+8], r11
+        mov	QWORD PTR [rsp+80], r11
         ; Diagonal 2
         mov	r11, QWORD PTR [rbp+24]
         ; No load %r12 - %r8
@@ -54264,39 +54482,39 @@ sp_521_mont_sqr_avx2_9 PROC
         adcx	rsi, rax
         adox	rbx, rcx
         ; No store %r15 - %r9
-        mov	r11, QWORD PTR [rsp]
+        mov	r11, QWORD PTR [rsp+72]
         ; A[7] x A[1]
         mulx	rcx, rax, QWORD PTR [r9+56]
         adcx	rbx, rax
         adox	r11, rcx
         ; No store %rbx - %r8
-        mov	r10, QWORD PTR [rsp+8]
+        mov	r10, QWORD PTR [rsp+80]
         ; A[7] x A[2]
         mov	rdx, QWORD PTR [r9+16]
         mulx	rcx, rax, QWORD PTR [r9+56]
         adcx	r11, rax
         adox	r10, rcx
-        mov	QWORD PTR [rsp], r11
+        mov	QWORD PTR [rsp+72], r11
         ; Zero into %r9
         ; A[7] x A[3]
         mov	rdx, QWORD PTR [r9+24]
         mulx	r11, rax, QWORD PTR [r9+56]
         adcx	r10, rax
         adox	r11, r12
-        mov	QWORD PTR [rsp+8], r10
+        mov	QWORD PTR [rsp+80], r10
         ; Zero into %r8
         ; A[7] x A[4]
         mov	rdx, QWORD PTR [r9+32]
         mulx	r10, rax, QWORD PTR [r9+56]
         adcx	r11, rax
         adox	r10, r12
-        mov	QWORD PTR [rsp+16], r11
+        mov	QWORD PTR [rsp+88], r11
         ;  Carry
         adcx	r10, r13
         mov	r13, r12
         adcx	r13, r12
         adox	r13, r12
-        mov	QWORD PTR [rsp+24], r10
+        mov	QWORD PTR [rsp+96], r10
         ; Diagonal 3
         ; No load %r14 - %r9
         ; A[3] x A[2]
@@ -54317,53 +54535,53 @@ sp_521_mont_sqr_avx2_9 PROC
         adcx	rsi, rax
         adox	rbx, rcx
         ; No store %r15 - %r8
-        mov	r10, QWORD PTR [rsp]
+        mov	r10, QWORD PTR [rsp+72]
         ; A[6] x A[2]
         mulx	rcx, rax, QWORD PTR [r9+48]
         adcx	rbx, rax
         adox	r10, rcx
         ; No store %rbx - %r9
-        mov	r11, QWORD PTR [rsp+8]
+        mov	r11, QWORD PTR [rsp+80]
         ; A[6] x A[3]
         mov	rdx, QWORD PTR [r9+24]
         mulx	rcx, rax, QWORD PTR [r9+48]
         adcx	r10, rax
         adox	r11, rcx
-        mov	QWORD PTR [rsp], r10
-        mov	r10, QWORD PTR [rsp+16]
+        mov	QWORD PTR [rsp+72], r10
+        mov	r10, QWORD PTR [rsp+88]
         ; A[6] x A[4]
         mov	rdx, QWORD PTR [r9+32]
         mulx	rcx, rax, QWORD PTR [r9+48]
         adcx	r11, rax
         adox	r10, rcx
-        mov	QWORD PTR [rsp+8], r11
-        mov	r11, QWORD PTR [rsp+24]
+        mov	QWORD PTR [rsp+80], r11
+        mov	r11, QWORD PTR [rsp+96]
         ; A[6] x A[5]
         mov	rdx, QWORD PTR [r9+40]
         mulx	rcx, rax, QWORD PTR [r9+48]
         adcx	r10, rax
         adox	r11, rcx
-        mov	QWORD PTR [rsp+16], r10
+        mov	QWORD PTR [rsp+88], r10
         ; Zero into %r8
         ; A[8] x A[4]
         mov	rdx, QWORD PTR [r9+32]
         mulx	r10, rax, QWORD PTR [r9+64]
         adcx	r11, rax
         adox	r10, r12
-        mov	QWORD PTR [rsp+24], r11
+        mov	QWORD PTR [rsp+96], r11
         ; Zero into %r9
         ; A[8] x A[5]
         mov	rdx, QWORD PTR [r9+40]
         mulx	r11, rax, QWORD PTR [r9+64]
         adcx	r10, rax
         adox	r11, r12
-        mov	QWORD PTR [rsp+32], r10
+        mov	QWORD PTR [rsp+104], r10
         ;  Carry
         adcx	r11, r13
         mov	r13, r12
         adcx	r13, r12
         adox	r13, r12
-        mov	QWORD PTR [rsp+40], r11
+        mov	QWORD PTR [rsp+112], r11
         ; Diagonal 4
         ; No load %rbx - %r8
         ; A[4] x A[3]
@@ -54372,67 +54590,67 @@ sp_521_mont_sqr_avx2_9 PROC
         adcx	rsi, rax
         adox	rbx, rcx
         ; No store %r15 - %r9
-        mov	r11, QWORD PTR [rsp]
+        mov	r11, QWORD PTR [rsp+72]
         ; A[5] x A[3]
         mulx	rcx, rax, QWORD PTR [r9+40]
         adcx	rbx, rax
         adox	r11, rcx
         ; No store %rbx - %r8
-        mov	r10, QWORD PTR [rsp+8]
+        mov	r10, QWORD PTR [rsp+80]
         ; A[5] x A[4]
         mov	rdx, QWORD PTR [r9+32]
         mulx	rcx, rax, QWORD PTR [r9+40]
         adcx	r11, rax
         adox	r10, rcx
-        mov	QWORD PTR [rsp], r11
-        mov	r11, QWORD PTR [rsp+16]
+        mov	QWORD PTR [rsp+72], r11
+        mov	r11, QWORD PTR [rsp+88]
         ; A[8] x A[2]
         mov	rdx, QWORD PTR [r9+16]
         mulx	rcx, rax, QWORD PTR [r9+64]
         adcx	r10, rax
         adox	r11, rcx
-        mov	QWORD PTR [rsp+8], r10
-        mov	r10, QWORD PTR [rsp+24]
+        mov	QWORD PTR [rsp+80], r10
+        mov	r10, QWORD PTR [rsp+96]
         ; A[8] x A[3]
         mov	rdx, QWORD PTR [r9+24]
         mulx	rcx, rax, QWORD PTR [r9+64]
         adcx	r11, rax
         adox	r10, rcx
-        mov	QWORD PTR [rsp+16], r11
-        mov	r11, QWORD PTR [rsp+32]
+        mov	QWORD PTR [rsp+88], r11
+        mov	r11, QWORD PTR [rsp+104]
         ; A[7] x A[5]
         mov	rdx, QWORD PTR [r9+40]
         mulx	rcx, rax, QWORD PTR [r9+56]
         adcx	r10, rax
         adox	r11, rcx
-        mov	QWORD PTR [rsp+24], r10
-        mov	r10, QWORD PTR [rsp+40]
+        mov	QWORD PTR [rsp+96], r10
+        mov	r10, QWORD PTR [rsp+112]
         ; A[7] x A[6]
         mov	rdx, QWORD PTR [r9+48]
         mulx	rcx, rax, QWORD PTR [r9+56]
         adcx	r11, rax
         adox	r10, rcx
-        mov	QWORD PTR [rsp+32], r11
+        mov	QWORD PTR [rsp+104], r11
         ; Zero into %r9
         ; A[8] x A[6]
         mulx	r11, rax, QWORD PTR [r9+64]
         adcx	r10, rax
         adox	r11, r12
-        mov	QWORD PTR [rsp+40], r10
+        mov	QWORD PTR [rsp+112], r10
         ; Zero into %r8
         ; A[8] x A[7]
         mov	rdx, QWORD PTR [r9+56]
         mulx	r10, rax, QWORD PTR [r9+64]
         adcx	r11, rax
         adox	r10, r12
-        mov	QWORD PTR [rsp+48], r11
+        mov	QWORD PTR [rsp+120], r11
         ;  Carry
         adcx	r10, r13
         mov	r13, r12
         adcx	r13, r12
         adox	r13, r12
-        mov	QWORD PTR [rsp+56], r10
-        mov	QWORD PTR [rsp+64], r13
+        mov	QWORD PTR [rsp+128], r10
+        mov	QWORD PTR [rsp+136], r13
         ; Double and Add in A[i] x A[i]
         mov	r11, QWORD PTR [rbp+8]
         ; A[0] x A[0]
@@ -54467,7 +54685,7 @@ sp_521_mont_sqr_avx2_9 PROC
         adox	rsi, rsi
         adcx	rdi, rax
         adcx	rsi, rcx
-        mov	r11, QWORD PTR [rsp]
+        mov	r11, QWORD PTR [rsp+72]
         ; A[4] x A[4]
         mov	rdx, QWORD PTR [r9+32]
         mulx	rcx, rax, rdx
@@ -54475,9 +54693,9 @@ sp_521_mont_sqr_avx2_9 PROC
         adox	r11, r11
         adcx	rbx, rax
         adcx	r11, rcx
-        mov	QWORD PTR [rsp], r11
-        mov	r10, QWORD PTR [rsp+8]
-        mov	r11, QWORD PTR [rsp+16]
+        mov	QWORD PTR [rsp+72], r11
+        mov	r10, QWORD PTR [rsp+80]
+        mov	r11, QWORD PTR [rsp+88]
         ; A[5] x A[5]
         mov	rdx, QWORD PTR [r9+40]
         mulx	rcx, rax, rdx
@@ -54485,10 +54703,10 @@ sp_521_mont_sqr_avx2_9 PROC
         adox	r11, r11
         adcx	r10, rax
         adcx	r11, rcx
-        mov	QWORD PTR [rsp+8], r10
-        mov	QWORD PTR [rsp+16], r11
-        mov	r10, QWORD PTR [rsp+24]
-        mov	r11, QWORD PTR [rsp+32]
+        mov	QWORD PTR [rsp+80], r10
+        mov	QWORD PTR [rsp+88], r11
+        mov	r10, QWORD PTR [rsp+96]
+        mov	r11, QWORD PTR [rsp+104]
         ; A[6] x A[6]
         mov	rdx, QWORD PTR [r9+48]
         mulx	rcx, rax, rdx
@@ -54496,10 +54714,10 @@ sp_521_mont_sqr_avx2_9 PROC
         adox	r11, r11
         adcx	r10, rax
         adcx	r11, rcx
-        mov	QWORD PTR [rsp+24], r10
-        mov	QWORD PTR [rsp+32], r11
-        mov	r10, QWORD PTR [rsp+40]
-        mov	r11, QWORD PTR [rsp+48]
+        mov	QWORD PTR [rsp+96], r10
+        mov	QWORD PTR [rsp+104], r11
+        mov	r10, QWORD PTR [rsp+112]
+        mov	r11, QWORD PTR [rsp+120]
         ; A[7] x A[7]
         mov	rdx, QWORD PTR [r9+56]
         mulx	rcx, rax, rdx
@@ -54507,10 +54725,10 @@ sp_521_mont_sqr_avx2_9 PROC
         adox	r11, r11
         adcx	r10, rax
         adcx	r11, rcx
-        mov	QWORD PTR [rsp+40], r10
-        mov	QWORD PTR [rsp+48], r11
-        mov	r10, QWORD PTR [rsp+56]
-        mov	r11, QWORD PTR [rsp+64]
+        mov	QWORD PTR [rsp+112], r10
+        mov	QWORD PTR [rsp+120], r11
+        mov	r10, QWORD PTR [rsp+128]
+        mov	r11, QWORD PTR [rsp+136]
         ; A[8] x A[8]
         mov	rdx, QWORD PTR [r9+64]
         mulx	rcx, rax, rdx
@@ -54518,25 +54736,24 @@ sp_521_mont_sqr_avx2_9 PROC
         adox	r11, r11
         adcx	r10, rax
         adcx	r11, rcx
-        mov	QWORD PTR [rsp+56], r10
-        mov	QWORD PTR [rsp+64], r11
-        mov	QWORD PTR [rsp+-40], r14
-        mov	QWORD PTR [rsp+-32], r15
-        mov	QWORD PTR [rsp+-24], rdi
-        mov	QWORD PTR [rsp+-16], rsi
-        mov	QWORD PTR [rsp+-8], rbx
-        mov	r10, QWORD PTR [rsp+-8]
-        mov	r11, QWORD PTR [rsp]
-        mov	r14, QWORD PTR [rsp+8]
+        mov	QWORD PTR [rsp+128], r10
+        mov	QWORD PTR [rsp+136], r11
+        mov	QWORD PTR [rsp+32], r14
+        mov	QWORD PTR [rsp+40], r15
+        mov	QWORD PTR [rsp+48], rdi
+        mov	QWORD PTR [rsp+56], rsi
+        mov	QWORD PTR [rsp+64], rbx
+        mov	r10, QWORD PTR [rsp+64]
+        mov	r11, QWORD PTR [rsp+72]
+        mov	r14, QWORD PTR [rsp+80]
         mov	rcx, r10
         and	rcx, 511
-        mov	r15, QWORD PTR [rsp+16]
-        mov	rdi, QWORD PTR [rsp+24]
-        mov	rsi, QWORD PTR [rsp+32]
-        mov	rbx, QWORD PTR [rsp+40]
-        mov	rdx, QWORD PTR [rsp+48]
-        mov	rax, QWORD PTR [rsp+56]
-        sub	rsp, 72
+        mov	r15, QWORD PTR [rsp+88]
+        mov	rdi, QWORD PTR [rsp+96]
+        mov	rsi, QWORD PTR [rsp+104]
+        mov	rbx, QWORD PTR [rsp+112]
+        mov	rdx, QWORD PTR [rsp+120]
+        mov	rax, QWORD PTR [rsp+128]
         shrd	r10, r11, 9
         shrd	r11, r14, 9
         shrd	r14, r15, 9
@@ -54576,7 +54793,7 @@ sp_521_mont_sqr_avx2_9 PROC
         mov	QWORD PTR [r8+48], rbx
         mov	QWORD PTR [r8+56], rdx
         mov	QWORD PTR [r8+64], rax
-        add	rsp, 144
+        add	rsp, 152
         pop	rbx
         pop	rsi
         pop	rdi
@@ -54593,10 +54810,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_cond_sub_avx2_9 PROC
@@ -54655,9 +54873,10 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 521 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_reduce_order_avx2_9 PROC
@@ -54679,7 +54898,6 @@ sp_521_mont_reduce_order_avx2_9 PROC
         mov	rdi, QWORD PTR [r9+16]
         mov	rsi, QWORD PTR [r9+24]
         add	r9, 32
-        xor	rbp, rbp
 L_521_mont_reduce_order_avx2_9_loop:
         ; mu = a[i] * mp
         mov	rdx, r14
@@ -54968,9 +55186,9 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mont_div2_avx2_9 PROC
@@ -55031,9 +55249,9 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_get_entry_64_9 PROC
@@ -55163,9 +55381,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_get_entry_64_avx2_9 PROC
@@ -55181,9 +55399,9 @@ sp_521_get_entry_64_avx2_9 PROC
         vmovdqu	OWORD PTR [rsp+80], xmm11
         mov	r14, 1
         mov	rax, 1
-        movd	xmm9, r8d
+        vmovd	xmm9, r8d
         add	rdx, 144
-        movd	xmm11, eax
+        vmovd	xmm11, eax
         mov	rax, 64
         vpxor	ymm10, ymm10, ymm10
         vpermd	ymm9, ymm10, ymm9
@@ -55248,9 +55466,9 @@ ENDIF
 IFNDEF WC_NO_CACHE_RESISTANT
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_get_entry_65_9 PROC
@@ -55380,9 +55598,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Touch each possible entry that could be being copied.
 ;  *
-;  * r      Point to copy into.
-;  * table  Table - start of the entries to access
-;  * idx    Index of entry to retrieve.
+;  * @param [out] r      Point to copy into.
+;  * @param [in]  table  Table - start of the entries to access
+;  * @param [in]  idx    Index of entry to retrieve.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_get_entry_65_avx2_9 PROC
@@ -55398,9 +55616,9 @@ sp_521_get_entry_65_avx2_9 PROC
         vmovdqu	OWORD PTR [rsp+80], xmm11
         mov	r14, 1
         mov	rax, 1
-        movd	xmm9, r8d
+        vmovd	xmm9, r8d
         add	rdx, 144
-        movd	xmm11, eax
+        vmovd	xmm11, eax
         mov	rax, 65
         vpxor	ymm10, ymm10, ymm10
         vpermd	ymm9, ymm10, ymm9
@@ -55464,7 +55682,7 @@ ENDIF
 ENDIF
 ; /* Add 1 to a. (a = a + 1)
 ;  *
-;  * a  A single precision integer.
+;  * @param [in, out] a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_add_one_9 PROC
@@ -55483,10 +55701,10 @@ _TEXT ENDS
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_from_bin_bswap PROC
@@ -55571,10 +55789,10 @@ IFNDEF NO_MOVBE_SUPPORT
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the movbe instruction which is an optional instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_from_bin_movbe PROC
@@ -55648,8 +55866,8 @@ ENDIF
 ;  * Fixed length number of bytes written: 65
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_to_bin_bswap_9 PROC
@@ -55689,8 +55907,8 @@ IFNDEF NO_MOVBE_SUPPORT
 ;  * Fixed length number of bytes written: 65
 ;  * Uses the movbe instruction which is optional.
 ;  *
-;  * r  A single precision integer.
-;  * a  Byte array.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  Byte array.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_to_bin_movbe_9 PROC
@@ -55720,8 +55938,8 @@ _TEXT ENDS
 ENDIF
 ; /* Shift number right by 1 bit. (r = a >> 1)
 ;  *
-;  * r  Result of right shift by 1.
-;  * a  Number to shift.
+;  * @param [out] r  Result of right shift by 1.
+;  * @param [in]  a  Number to shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_rshift_9 PROC
@@ -55761,9 +55979,9 @@ sp_521_rshift_9 ENDP
 _TEXT ENDS
 ; /* Shift number left by n bit. (r = a << n)
 ;  *
-;  * r  Result of left shift by n.
-;  * a  Number to shift.
-;  * n  Amoutnt o shift.
+;  * @param [out] r  Result of left shift by n.
+;  * @param [in]  a  Number to shift.
+;  * @param [in]  n  Amoutnt o shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_lshift_9 PROC
@@ -55771,7 +55989,7 @@ sp_521_lshift_9 PROC
         push	r13
         mov	rax, rcx
         mov	cl, r8b
-        mov	r12, 0
+        xor	r12, r12
         mov	r13, QWORD PTR [rdx+32]
         mov	r8, QWORD PTR [rdx+40]
         mov	r9, QWORD PTR [rdx+48]
@@ -55808,9 +56026,9 @@ sp_521_lshift_9 ENDP
 _TEXT ENDS
 ; /* Shift number left by n bit. (r = a << n)
 ;  *
-;  * r  Result of left shift by n.
-;  * a  Number to shift.
-;  * n  Amoutnt o shift.
+;  * @param [out] r  Result of left shift by n.
+;  * @param [in]  a  Number to shift.
+;  * @param [in]  n  Amoutnt o shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_lshift_18 PROC
@@ -55818,7 +56036,7 @@ sp_521_lshift_18 PROC
         push	r13
         mov	rax, rcx
         mov	cl, r8b
-        mov	r12, 0
+        xor	r12, r12
         mov	r13, QWORD PTR [rdx+104]
         mov	r8, QWORD PTR [rdx+112]
         mov	r9, QWORD PTR [rdx+120]
@@ -55882,8 +56100,8 @@ sp_521_lshift_18 ENDP
 _TEXT ENDS
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_sub_in_place_9 PROC
@@ -55920,9 +56138,9 @@ sp_521_sub_in_place_9 ENDP
 _TEXT ENDS
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mul_d_9 PROC
@@ -56005,9 +56223,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_mul_d_avx2_9 PROC
@@ -56078,10 +56296,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_521_word_asm_9 PROC
@@ -56095,8 +56314,8 @@ _TEXT ENDS
 ENDIF
 ; /* Shift number right by 1 bit. (r = a >> 1)
 ;  *
-;  * r  Result of right shift by 1.
-;  * a  Number to shift.
+;  * @param [out] r  Result of right shift by 1.
+;  * @param [in]  a  Number to shift.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_rshift1_9 PROC
@@ -56134,9 +56353,9 @@ sp_521_rshift1_9 ENDP
 _TEXT ENDS
 ; /* Divide the number by 2 mod the prime. (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_521_div2_mod_9 PROC
@@ -56295,9 +56514,9 @@ ENDIF
 IFDEF WOLFSSL_SP_1024
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mul_16 PROC
@@ -57938,8 +58157,8 @@ sp_1024_mul_16 ENDP
 _TEXT ENDS
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_sqr_16 PROC
@@ -59027,9 +59246,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Multiply a and b into r. (r = a * b)
 ;  *
-;  * r   Result of multiplication.
-;  * a   First number to multiply.
-;  * b   Second number to multiply.
+;  * @param [out] r  Result of multiplication.
+;  * @param [in]  a  First number to multiply.
+;  * @param [in]  b  Second number to multiply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mul_avx2_16 PROC
@@ -60667,22 +60886,38 @@ sp_1024_mul_avx2_16 PROC
         cmp	rbp, r8
         jne	L_end_1024_mul_avx2_16
 L_start_1024_mul_avx2_16:
-        vmovdqu	xmm0, OWORD PTR [rbx]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+16]
-        vmovups	OWORD PTR [r8+16], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+32]
-        vmovups	OWORD PTR [r8+32], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+48]
-        vmovups	OWORD PTR [r8+48], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+64]
-        vmovups	OWORD PTR [r8+64], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+80]
-        vmovups	OWORD PTR [r8+80], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+96]
-        vmovups	OWORD PTR [r8+96], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbx+112]
-        vmovups	OWORD PTR [r8+112], xmm0
+        mov	rax, QWORD PTR [rbx]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbx+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbx+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbx+24]
+        mov	QWORD PTR [r8+24], rax
+        mov	rax, QWORD PTR [rbx+32]
+        mov	QWORD PTR [r8+32], rax
+        mov	rax, QWORD PTR [rbx+40]
+        mov	QWORD PTR [r8+40], rax
+        mov	rax, QWORD PTR [rbx+48]
+        mov	QWORD PTR [r8+48], rax
+        mov	rax, QWORD PTR [rbx+56]
+        mov	QWORD PTR [r8+56], rax
+        mov	rax, QWORD PTR [rbx+64]
+        mov	QWORD PTR [r8+64], rax
+        mov	rax, QWORD PTR [rbx+72]
+        mov	QWORD PTR [r8+72], rax
+        mov	rax, QWORD PTR [rbx+80]
+        mov	QWORD PTR [r8+80], rax
+        mov	rax, QWORD PTR [rbx+88]
+        mov	QWORD PTR [r8+88], rax
+        mov	rax, QWORD PTR [rbx+96]
+        mov	QWORD PTR [r8+96], rax
+        mov	rax, QWORD PTR [rbx+104]
+        mov	QWORD PTR [r8+104], rax
+        mov	rax, QWORD PTR [rbx+112]
+        mov	QWORD PTR [r8+112], rax
+        mov	rax, QWORD PTR [rbx+120]
+        mov	QWORD PTR [r8+120], rax
 L_end_1024_mul_avx2_16:
         add	rsp, 128
         pop	rdi
@@ -60699,8 +60934,8 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Square a and put result in r. (r = a * a)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_sqr_avx2_16 PROC
@@ -60714,7 +60949,7 @@ sp_1024_sqr_avx2_16 PROC
         push	rbx
         mov	r8, rcx
         mov	r9, rdx
-        sub	rsp, 128
+        sub	rsp, 136
         cmp	r9, r8
         mov	rbp, rsp
         cmovne	rbp, r8
@@ -61724,20 +61959,32 @@ sp_1024_sqr_avx2_16 PROC
         sub	r8, 128
         cmp	r9, r8
         jne	L_end_1024_sqr_avx2_16
-        vmovdqu	xmm0, OWORD PTR [rbp]
-        vmovups	OWORD PTR [r8], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+16]
-        vmovups	OWORD PTR [r8+16], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+32]
-        vmovups	OWORD PTR [r8+32], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+48]
-        vmovups	OWORD PTR [r8+48], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+64]
-        vmovups	OWORD PTR [r8+64], xmm0
-        vmovdqu	xmm0, OWORD PTR [rbp+80]
-        vmovups	OWORD PTR [r8+80], xmm0
+        mov	rax, QWORD PTR [rbp]
+        mov	QWORD PTR [r8], rax
+        mov	rax, QWORD PTR [rbp+8]
+        mov	QWORD PTR [r8+8], rax
+        mov	rax, QWORD PTR [rbp+16]
+        mov	QWORD PTR [r8+16], rax
+        mov	rax, QWORD PTR [rbp+24]
+        mov	QWORD PTR [r8+24], rax
+        mov	rax, QWORD PTR [rbp+32]
+        mov	QWORD PTR [r8+32], rax
+        mov	rax, QWORD PTR [rbp+40]
+        mov	QWORD PTR [r8+40], rax
+        mov	rax, QWORD PTR [rbp+48]
+        mov	QWORD PTR [r8+48], rax
+        mov	rax, QWORD PTR [rbp+56]
+        mov	QWORD PTR [r8+56], rax
+        mov	rax, QWORD PTR [rbp+64]
+        mov	QWORD PTR [r8+64], rax
+        mov	rax, QWORD PTR [rbp+72]
+        mov	QWORD PTR [r8+72], rax
+        mov	rax, QWORD PTR [rbp+80]
+        mov	QWORD PTR [r8+80], rax
+        mov	rax, QWORD PTR [rbp+88]
+        mov	QWORD PTR [r8+88], rax
 L_end_1024_sqr_avx2_16:
-        add	rsp, 128
+        add	rsp, 136
         pop	rbx
         pop	rsi
         pop	rdi
@@ -61752,9 +61999,9 @@ _TEXT ENDS
 ENDIF
 ; /* Add b to a into r. (r = a + b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision integer.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_add_16 PROC
@@ -61814,8 +62061,8 @@ sp_1024_add_16 ENDP
 _TEXT ENDS
 ; /* Sub b from a into a. (a -= b)
 ;  *
-;  * a  A single precision integer and result.
-;  * b  A single precision integer.
+;  * @param [in, out] a  A single precision integer and result.
+;  * @param [in]      b  A single precision integer.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_sub_in_place_16 PROC
@@ -61874,14 +62121,15 @@ _TEXT ENDS
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_cond_sub_16 PROC
-        sub	rsp, 128
+        sub	rsp, 136
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r9
@@ -61995,7 +62243,7 @@ sp_1024_cond_sub_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	rax, rax
-        add	rsp, 128
+        add	rsp, 136
         ret
 sp_1024_cond_sub_16 ENDP
 _TEXT ENDS
@@ -62003,10 +62251,11 @@ IFDEF HAVE_INTEL_AVX2
 ; /* Conditionally subtract b from a using the mask m.
 ;  * m is -1 to subtract and 0 when not copying.
 ;  *
-;  * r  A single precision number representing condition subtract result.
-;  * a  A single precision number to subtract from.
-;  * b  A single precision number to subtract.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number representing condition subtract
+;  *                 result.
+;  * @param [in]  a  A single precision number to subtract from.
+;  * @param [in]  b  A single precision number to subtract.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_cond_sub_avx2_16 PROC
@@ -62099,9 +62348,9 @@ _TEXT ENDS
 ENDIF
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mul_d_16 PROC
@@ -62240,9 +62489,9 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Mul a by digit b into r. (r = a * b)
 ;  *
-;  * r  A single precision integer.
-;  * a  A single precision integer.
-;  * b  A single precision digit.
+;  * @param [out] r  A single precision integer.
+;  * @param [in]  a  A single precision integer.
+;  * @param [in]  b  A single precision digit.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mul_d_avx2_16 PROC
@@ -62355,10 +62604,11 @@ ENDIF
 IFDEF _WIN64
 ; /* Divide the double width number (d1|d0) by the dividend. (d1|d0 / div)
 ;  *
-;  * d1   The high order half of the number to divide.
-;  * d0   The low order half of the number to divide.
-;  * div  The dividend.
-;  * returns the result of the division.
+;  * @param [in] d1   The high order half of the number to divide.
+;  * @param [in] d0   The low order half of the number to divide.
+;  * @param [in] div  The dividend.
+;  *
+;  * @return  The result of the division.
 ;  */
 _TEXT SEGMENT READONLY PARA
 div_1024_word_asm_16 PROC
@@ -62372,10 +62622,11 @@ _TEXT ENDS
 ENDIF
 ; /* Compare a with b in constant time.
 ;  *
-;  * a  A single precision integer.
-;  * b  A single precision integer.
-;  * return -ve, 0 or +ve if a is less than, equal to or greater than b
-;  * respectively.
+;  * @param [in] a  A single precision integer.
+;  * @param [in] b  A single precision integer.
+;  *
+;  * @return  -ve, 0 or +ve if a is less than, equal to or greater than b
+;  *          respectively.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_cmp_16 PROC
@@ -62520,9 +62771,9 @@ _TEXT ENDS
 ; /* Conditionally copy a into r using the mask m.
 ;  * m is -1 to copy and 0 when not.
 ;  *
-;  * r  A single precision number to copy over.
-;  * a  A single precision number to copy.
-;  * m  Mask value to apply.
+;  * @param [out] r  A single precision number to copy over.
+;  * @param [in]  a  A single precision number to copy.
+;  * @param [in]  m  Mask value to apply.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_cond_copy_16 PROC
@@ -62595,9 +62846,10 @@ sp_1024_cond_copy_16 ENDP
 _TEXT ENDS
 ; /* Reduce the number back to 1024 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_reduce_16 PROC
@@ -62777,13 +63029,12 @@ L_1024_mont_reduce_16_loop:
         add	rcx, 8
         dec	r10
         jnz	L_1024_mont_reduce_16_loop
-        mov	r14, QWORD PTR [rcx+120]
+        mov	r14, QWORD PTR [r9+120]
         mov	QWORD PTR [rcx], r15
-        sub	r14, QWORD PTR [r9+120]
+        sub	r14, QWORD PTR [rcx+120]
         mov	QWORD PTR [rcx+8], rdi
         sbb	r14, r14
         neg	rsi
-        not	r14
         or	rsi, r14
 IFDEF _WIN64
         mov	r8, r9
@@ -62793,9 +63044,10 @@ ELSE
         mov	r8, r9
 ENDIF
         mov	rdx, rcx
-        mov	rcx, rcx
         sub	rcx, 128
+        sub	rsp, 40
         call	sp_1024_cond_sub_16
+        add	rsp, 40
         pop	rsi
         pop	rdi
         pop	r15
@@ -62807,16 +63059,16 @@ sp_1024_mont_reduce_16 ENDP
 _TEXT ENDS
 ; /* Add two Montgomery form numbers (r = a + b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_add_16 PROC
         push	r12
         push	r13
-        sub	rsp, 128
+        sub	rsp, 136
         mov	rax, QWORD PTR [rdx]
         mov	r10, QWORD PTR [rdx+8]
         mov	r11, QWORD PTR [rdx+16]
@@ -62867,10 +63119,10 @@ sp_1024_mont_add_16 PROC
         mov	QWORD PTR [rcx+112], r11
         mov	QWORD PTR [rcx+120], r12
         sbb	r13, 0
-        sub	r12, QWORD PTR [r9+120]
-        sbb	r12, r12
-        not	r12
-        or	r13, r12
+        mov	r11, QWORD PTR [r9+120]
+        sub	r11, r12
+        sbb	r11, r11
+        or	r13, r11
         mov	r11, QWORD PTR [r9]
         mov	r12, QWORD PTR [r9+8]
         and	r11, r13
@@ -62967,7 +63219,7 @@ sp_1024_mont_add_16 PROC
         sbb	r10, QWORD PTR [rsp+120]
         mov	QWORD PTR [rcx+112], rax
         mov	QWORD PTR [rcx+120], r10
-        add	rsp, 128
+        add	rsp, 136
         pop	r13
         pop	r12
         ret
@@ -62975,9 +63227,9 @@ sp_1024_mont_add_16 ENDP
 _TEXT ENDS
 ; /* Double a Montgomery form number (r = a + a % m).
 ;  *
-;  * r   Result of addition.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_dbl_16 PROC
@@ -63033,10 +63285,10 @@ sp_1024_mont_dbl_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	r12, 0
-        sub	r11, QWORD PTR [r8+120]
-        sbb	r11, r11
-        not	r11
-        or	r12, r11
+        mov	r10, QWORD PTR [r8+120]
+        sub	r10, r11
+        sbb	r10, r10
+        or	r12, r10
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r12
@@ -63140,9 +63392,9 @@ sp_1024_mont_dbl_16 ENDP
 _TEXT ENDS
 ; /* Triple a Montgomery form number (r = a + a + a % m).
 ;  *
-;  * r   Result of addition.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_tpl_16 PROC
@@ -63198,10 +63450,10 @@ sp_1024_mont_tpl_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	r12, 0
-        sub	r11, QWORD PTR [r8+120]
-        sbb	r11, r11
-        not	r11
-        or	r12, r11
+        mov	r10, QWORD PTR [r8+120]
+        sub	r10, r11
+        sbb	r10, r10
+        or	r12, r10
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r12
@@ -63348,10 +63600,10 @@ sp_1024_mont_tpl_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	r12, 0
-        sub	r11, QWORD PTR [r8+120]
-        sbb	r11, r11
-        not	r11
-        or	r12, r11
+        mov	r10, QWORD PTR [r8+120]
+        sub	r10, r11
+        sbb	r10, r10
+        or	r12, r10
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         and	r10, r12
@@ -63455,16 +63707,16 @@ sp_1024_mont_tpl_16 ENDP
 _TEXT ENDS
 ; /* Subtract two Montgomery form numbers (r = a - b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_sub_16 PROC
         push	r12
         push	r13
-        sub	rsp, 128
+        sub	rsp, 136
         mov	rax, QWORD PTR [rdx]
         mov	r10, QWORD PTR [rdx+8]
         mov	r11, QWORD PTR [rdx+16]
@@ -63611,7 +63863,7 @@ sp_1024_mont_sub_16 PROC
         adc	r10, QWORD PTR [rsp+120]
         mov	QWORD PTR [rcx+112], rax
         mov	QWORD PTR [rcx+120], r10
-        add	rsp, 128
+        add	rsp, 136
         pop	r13
         pop	r12
         ret
@@ -63619,15 +63871,15 @@ sp_1024_mont_sub_16 ENDP
 _TEXT ENDS
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_div2_16 PROC
         push	r12
         push	r13
-        sub	rsp, 128
+        sub	rsp, 136
         mov	r13, QWORD PTR [rdx]
         xor	r12, r12
         mov	rax, r13
@@ -63761,7 +64013,7 @@ sp_1024_mont_div2_16 PROC
         mov	QWORD PTR [rcx+112], rax
         shrd	r9, r12, 1
         mov	QWORD PTR [rcx+120], r9
-        add	rsp, 128
+        add	rsp, 136
         pop	r13
         pop	r12
         ret
@@ -63770,9 +64022,10 @@ _TEXT ENDS
 IFDEF HAVE_INTEL_AVX2
 ; /* Reduce the number back to 1024 bits using Montgomery reduction.
 ;  *
-;  * a   A single precision number to reduce in place.
-;  * m   The single precision number representing the modulus.
-;  * mp  The digit representing the negative inverse of m mod 2^n.
+;  * @param [in, out] a   A single precision number to reduce in place.
+;  * @param [in]      m   The single precision number representing the modulus.
+;  * @param [in]      mp  The digit representing the negative inverse of
+;  *                      m mod 2^n.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_reduce_avx2_16 PROC
@@ -63794,7 +64047,6 @@ sp_1024_mont_reduce_avx2_16 PROC
         mov	rdi, QWORD PTR [r9+16]
         mov	rsi, QWORD PTR [r9+24]
         add	r9, 64
-        xor	rbp, rbp
 L_1024_mont_reduce_avx2_16_loop:
         ; mu = a[i] * mp
         mov	rdx, r14
@@ -64004,12 +64256,12 @@ L_1024_mont_reduce_avx2_16_loop:
         sub	r11, 2
         jnz	L_1024_mont_reduce_avx2_16_loop
         sub	r9, 64
-        sub	r12, QWORD PTR [r10+120]
+        mov	rax, QWORD PTR [r10+120]
+        sub	rax, r12
         mov	r8, r9
-        sbb	r12, r12
+        sbb	rax, rax
         neg	rbp
-        not	r12
-        or	rbp, r12
+        or	rbp, rax
         sub	r9, 128
         mov	rcx, QWORD PTR [r10]
         mov	rdx, r14
@@ -64106,10 +64358,10 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Add two Montgomery form numbers (r = a + b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_add_avx2_16 PROC
@@ -64165,10 +64417,10 @@ sp_1024_mont_add_avx2_16 PROC
         mov	QWORD PTR [rcx+112], r11
         mov	QWORD PTR [rcx+120], r12
         sbb	r13, 0
-        sub	r12, QWORD PTR [r9+120]
-        sbb	r12, r12
-        not	r12
-        or	r13, r12
+        mov	r11, QWORD PTR [r9+120]
+        sub	r11, r12
+        sbb	r11, r11
+        or	r13, r11
         mov	r11, QWORD PTR [r9]
         mov	r12, QWORD PTR [r9+8]
         mov	rax, QWORD PTR [rcx]
@@ -64258,9 +64510,9 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Double a Montgomery form number (r = a + a % m).
 ;  *
-;  * r   Result of addition.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_dbl_avx2_16 PROC
@@ -64315,10 +64567,10 @@ sp_1024_mont_dbl_avx2_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	r12, 0
-        sub	r11, QWORD PTR [r8+120]
-        sbb	r11, r11
-        not	r11
-        or	r12, r11
+        mov	r10, QWORD PTR [r8+120]
+        sub	r10, r11
+        sbb	r10, r10
+        or	r12, r10
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         mov	rax, QWORD PTR [rcx]
@@ -64407,9 +64659,9 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Triple a Montgomery form number (r = a + a + a % m).
 ;  *
-;  * r   Result of addition.
-;  * a   Number to double in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  Number to double in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_tpl_avx2_16 PROC
@@ -64464,10 +64716,10 @@ sp_1024_mont_tpl_avx2_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	r12, 0
-        sub	r11, QWORD PTR [r8+120]
-        sbb	r11, r11
-        not	r11
-        or	r12, r11
+        mov	r10, QWORD PTR [r8+120]
+        sub	r10, r11
+        sbb	r10, r10
+        or	r12, r10
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         mov	rax, QWORD PTR [rcx]
@@ -64598,10 +64850,10 @@ sp_1024_mont_tpl_avx2_16 PROC
         mov	QWORD PTR [rcx+112], r10
         mov	QWORD PTR [rcx+120], r11
         sbb	r12, 0
-        sub	r11, QWORD PTR [r8+120]
-        sbb	r11, r11
-        not	r11
-        or	r12, r11
+        mov	r10, QWORD PTR [r8+120]
+        sub	r10, r11
+        sbb	r10, r10
+        or	r12, r10
         mov	r10, QWORD PTR [r8]
         mov	r11, QWORD PTR [r8+8]
         mov	rax, QWORD PTR [rcx]
@@ -64690,10 +64942,10 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Subtract two Montgomery form numbers (r = a - b % m).
 ;  *
-;  * r   Result of addition.
-;  * a   First number to add in Montgomery form.
-;  * b   Second number to add in Montgomery form.
-;  * m   Modulus (prime).
+;  * @param [out] r  Result of addition.
+;  * @param [in]  a  First number to add in Montgomery form.
+;  * @param [in]  b  Second number to add in Montgomery form.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_sub_avx2_16 PROC
@@ -64838,9 +65090,9 @@ ENDIF
 IFDEF HAVE_INTEL_AVX2
 ; /* Divide the number by 2 mod the modulus (prime). (r = a / 2 % m)
 ;  *
-;  * r  Result of division by 2.
-;  * a  Number to divide.
-;  * m  Modulus (prime).
+;  * @param [out] r  Result of division by 2.
+;  * @param [in]  a  Number to divide.
+;  * @param [in]  m  Modulus (prime).
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_mont_div2_avx2_16 PROC
@@ -64989,10 +65241,10 @@ ENDIF
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the bswap instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_from_bin_bswap PROC
@@ -65077,10 +65329,10 @@ IFNDEF NO_MOVBE_SUPPORT
 ; /* Read big endian unsigned byte array into r.
 ;  * Uses the movbe instruction which is an optional instruction.
 ;  *
-;  * r  A single precision integer.
-;  * size  Maximum number of bytes to convert
-;  * a  Byte array.
-;  * n  Number of bytes in array to read.
+;  * @param [out] r     A single precision integer.
+;  * @param [in]  size  Maximum number of bytes to convert
+;  * @param [in]  a     Byte array.
+;  * @param [in]  n     Number of bytes in array to read.
 ;  */
 _TEXT SEGMENT READONLY PARA
 sp_1024_from_bin_movbe PROC

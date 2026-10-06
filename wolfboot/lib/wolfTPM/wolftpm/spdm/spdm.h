@@ -1,8 +1,8 @@
 /* spdm.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -26,6 +26,7 @@ extern "C" {
 /* Protocol mode: TCG binding + vendor commands.
  * For standard SPDM (emulator, measurements, challenge), see wolfSPDM standalone. */
 typedef enum {
+    WOLFSPDM_MODE_AUTO        = 0,
     WOLFSPDM_MODE_NUVOTON     = 1,
     WOLFSPDM_MODE_NATIONS     = 2,
     WOLFSPDM_MODE_NATIONS_PSK = 3
@@ -38,6 +39,7 @@ typedef enum {
  *   WOLFSPDM_CTX ctx;
  *   wolfSPDM_Init(&ctx);
  *   wolfSPDM_SetIO(&ctx, callback, userPtr);
+ *   wolfSPDM_SetResponderPubKey(&ctx, trustedPubKey, trustedPubKeySz);
  *   wolfSPDM_Connect(&ctx);
  *   wolfSPDM_SecuredExchange(&ctx, ...);
  *   wolfSPDM_Disconnect(&ctx);
@@ -94,7 +96,8 @@ WOLFTPM_API int wolfSPDM_SetIO(WOLFSPDM_CTX* ctx, WOLFSPDM_IO_CB ioCb,
     void* userCtx);
 WOLFTPM_API int wolfSPDM_SetMode(WOLFSPDM_CTX* ctx, WOLFSPDM_MODE mode);
 WOLFTPM_API WOLFSPDM_MODE wolfSPDM_GetMode(WOLFSPDM_CTX* ctx);
-/* Set responder pub key for cert-less operation (96 bytes P-384 X||Y) */
+/* Pin the responder key for cert-less operation (96 bytes P-384 X||Y).
+ * Required before a TCG identity-key connection. */
 WOLFTPM_API int wolfSPDM_SetResponderPubKey(WOLFSPDM_CTX* ctx,
     const byte* pubKey, word32 pubKeySz);
 /* Set requester key pair for mutual auth (privKey=48, pubKey=96 bytes) */

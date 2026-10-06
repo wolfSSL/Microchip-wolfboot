@@ -1,8 +1,8 @@
 /* pkcs7.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -99,6 +99,7 @@ static int PKCS7_SignVerifyEx(WOLFTPM2_DEV* dev, int tpmDevId,
 {
     int rc;
     wc_PKCS7 pkcs7;
+    int pkcs7Init = 0;
     wc_HashAlg       hash;
     byte             hashBuf[TPM_MAX_DIGEST_SIZE];
     word32           hashSz;
@@ -145,6 +146,7 @@ static int PKCS7_SignVerifyEx(WOLFTPM2_DEV* dev, int tpmDevId,
     /* Generate and verify PKCS#7 files containing data using TPM key */
     rc = wc_PKCS7_Init(&pkcs7, NULL, tpmDevId);
     if (rc != 0) goto exit;
+    pkcs7Init = 1;
     rc = wc_PKCS7_InitWithCert(&pkcs7, derCert, derCertSz);
     if (rc != 0) goto exit;
 
@@ -167,6 +169,7 @@ static int PKCS7_SignVerifyEx(WOLFTPM2_DEV* dev, int tpmDevId,
     if (rc != 0) goto exit;
 
     wc_PKCS7_Free(&pkcs7);
+    pkcs7Init = 0;
 
     printf("PKCS7 Header %d\n", outputHeadSz);
     TPM2_PrintBin(outputHead, outputHeadSz);
@@ -211,6 +214,10 @@ static int PKCS7_SignVerifyEx(WOLFTPM2_DEV* dev, int tpmDevId,
 
         XFCLOSE(pemFile);
     }
+    else {
+        printf("Failed to open %s for writing\n", outFile);
+        rc = -1; goto exit;
+    }
 #else
     (void)outFile;
 #endif
@@ -218,6 +225,7 @@ static int PKCS7_SignVerifyEx(WOLFTPM2_DEV* dev, int tpmDevId,
     /* Test verify with TPM */
     rc = wc_PKCS7_Init(&pkcs7, NULL, tpmDevId);
     if (rc != 0) goto exit;
+    pkcs7Init = 1;
     rc = wc_PKCS7_InitWithCert(&pkcs7, NULL, 0);
     if (rc != 0) goto exit;
 
@@ -227,12 +235,14 @@ static int PKCS7_SignVerifyEx(WOLFTPM2_DEV* dev, int tpmDevId,
     if (rc != 0) goto exit;
 
     wc_PKCS7_Free(&pkcs7);
+    pkcs7Init = 0;
 
     printf("PKCS7 Container Verified (using TPM)\n");
 
     /* Test verify with software */
     rc = wc_PKCS7_Init(&pkcs7, NULL, INVALID_DEVID);
     if (rc != 0) goto exit;
+    pkcs7Init = 1;
     rc = wc_PKCS7_InitWithCert(&pkcs7, NULL, 0);
     if (rc != 0) goto exit;
     pkcs7.contentSz = dataChunkSz;
@@ -240,10 +250,14 @@ static int PKCS7_SignVerifyEx(WOLFTPM2_DEV* dev, int tpmDevId,
         outputHead, outputHeadSz, outputFoot, outputFootSz);
     if (rc != 0) goto exit;
     wc_PKCS7_Free(&pkcs7);
+    pkcs7Init = 0;
 
     printf("PKCS7 Container Verified (using software)\n");
 
 exit:
+    if (pkcs7Init) {
+        wc_PKCS7_Free(&pkcs7);
+    }
     return rc;
 }
 #endif /* ENABLE_PKCS7EX_EXAMPLE */
@@ -254,6 +268,7 @@ static int PKCS7_SignVerify(WOLFTPM2_DEV* dev, int tpmDevId,
 {
     int rc;
     wc_PKCS7 pkcs7;
+    int pkcs7Init = 0;
     byte  data[] = "My encoded DER cert.";
     byte output[MAX_PKCS7_SIZE];
     int outputSz;
@@ -266,6 +281,7 @@ static int PKCS7_SignVerify(WOLFTPM2_DEV* dev, int tpmDevId,
     /* Generate and verify PKCS#7 files containing data using TPM key */
     rc = wc_PKCS7_Init(&pkcs7, NULL, tpmDevId);
     if (rc != 0) goto exit;
+    pkcs7Init = 1;
     rc = wc_PKCS7_InitWithCert(&pkcs7, derCert, derCertSz);
     if (rc != 0) goto exit;
 
@@ -282,6 +298,7 @@ static int PKCS7_SignVerify(WOLFTPM2_DEV* dev, int tpmDevId,
     rc = wc_PKCS7_EncodeSignedData(&pkcs7, output, sizeof(output));
     if (rc <= 0) goto exit;
     wc_PKCS7_Free(&pkcs7);
+    pkcs7Init = 0;
     outputSz = rc;
 
     printf("PKCS7 Signed Container %d\n", outputSz);
@@ -296,6 +313,10 @@ static int PKCS7_SignVerify(WOLFTPM2_DEV* dev, int tpmDevId,
             rc = -1; goto exit;
         }
     }
+    else {
+        printf("Failed to open %s for writing\n", outFile);
+        rc = -1; goto exit;
+    }
 #else
     (void)outFile;
 #endif
@@ -303,26 +324,33 @@ static int PKCS7_SignVerify(WOLFTPM2_DEV* dev, int tpmDevId,
     /* Test verify with TPM */
     rc = wc_PKCS7_Init(&pkcs7, NULL, tpmDevId);
     if (rc != 0) goto exit;
+    pkcs7Init = 1;
     rc = wc_PKCS7_InitWithCert(&pkcs7, NULL, 0);
     if (rc != 0) goto exit;
     rc = wc_PKCS7_VerifySignedData(&pkcs7, output, outputSz);
     if (rc != 0) goto exit;
     wc_PKCS7_Free(&pkcs7);
+    pkcs7Init = 0;
 
     printf("PKCS7 Container Verified (using TPM)\n");
 
     /* Test verify with software */
     rc = wc_PKCS7_Init(&pkcs7, NULL, INVALID_DEVID);
     if (rc != 0) goto exit;
+    pkcs7Init = 1;
     rc = wc_PKCS7_InitWithCert(&pkcs7, NULL, 0);
     if (rc != 0) goto exit;
     rc = wc_PKCS7_VerifySignedData(&pkcs7, output, outputSz);
     if (rc != 0) goto exit;
     wc_PKCS7_Free(&pkcs7);
+    pkcs7Init = 0;
 
     printf("PKCS7 Container Verified (using software)\n");
 
 exit:
+    if (pkcs7Init) {
+        wc_PKCS7_Free(&pkcs7);
+    }
     return rc;
 }
 

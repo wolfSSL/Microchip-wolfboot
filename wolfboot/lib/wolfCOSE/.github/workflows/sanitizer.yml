@@ -1,0 +1,122 @@
+name: Sanitizers
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    uses: ./.github/workflows/_resolve-wolfssl.yml
+
+  asan:
+    name: AddressSanitizer (wolfSSL ${{ matrix.wolfssl-version }})
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    - name: Cache wolfSSL (ASan, ${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version != 'master'
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-asan
+        key: wolfssl-asan-${{ matrix.wolfssl-version }}-v1
+
+    - name: Build wolfSSL (ASan, ${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version == 'master' || steps.cache-wolfssl.outputs.cache-hit != 'true'
+      env:
+        PQC: ${{ matrix.pqc }}
+      run: |
+        cd ~
+        git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} \
+            https://github.com/wolfSSL/wolfssl.git wolfssl-asan-src
+        cd wolfssl-asan-src
+        ./autogen.sh
+        if [ "$PQC" = "true" ]; then
+          PQC_FLAGS="--enable-mldsa"
+        else
+          PQC_FLAGS=""
+        fi
+        CFLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-chacha --enable-poly1305 \
+                    $PQC_FLAGS \
+                    --prefix=$HOME/wolfssl-asan
+        make -j$(nproc)
+        make install
+
+    - name: Build wolfCOSE (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        make CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run unit tests (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+                  LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run PSA/EAT conformance tests (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+                          LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run delegated signing tests (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make ext-sign-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+                           LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run delegated signing forced-failure tests (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make ext-sign-force-failure CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+                                    LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run PSA/EAT delegated signing tests (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-ext-sign-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+                                   LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+        make eat-psa-ext-sign-force-failure CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+                                             LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Forced-failure coverage (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make eat-psa-coverage-force-failure CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: ECC private-import backend policy (ASan)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-asan
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make ecc-import-policy-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Og -g -fsanitize=address -fno-omit-frame-pointer -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-fsanitize=address -L$WOLFSSL_DIR/lib -lwolfssl"

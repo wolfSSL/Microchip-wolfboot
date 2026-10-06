@@ -42,7 +42,7 @@ DEF += -DWOLFHSM_CFG_TEST_POSIX
 ARCHFLAGS ?=
 
 # Enable extra C compiler warnings
-CFLAGS_EXTRA = -Werror -Wall -Wextra
+CFLAGS_EXTRA = -Werror -Wall -Wextra -Wpointer-arith
 # Place functions / data into separate sections to allow unused code removal
 CFLAGS_EXTRA += -ffunction-sections -fdata-sections
 # Auto-generate header dependency files (.d) alongside object files
@@ -142,9 +142,44 @@ ifeq ($(DMA),1)
 	DEF += -DWOLFHSM_CFG_DMA
 endif
 
+# Enable CRC16 integrity checking in the NVM flash backend
+ifeq ($(NVM_FLASH_CRC),1)
+	DEF += -DWOLFHSM_CFG_NVM_FLASH_CRC16
+endif
+
+# Build LMS/XMSS in verify-only mode (omits private-key, sign, and keygen
+# paths). May be combined to exercise the mixed (one verify-only) case.
+ifeq ($(LMS_VERIFY_ONLY),1)
+	DEF += -DWOLFSSL_LMS_VERIFY_ONLY
+endif
+
+ifeq ($(XMSS_VERIFY_ONLY),1)
+	DEF += -DWOLFSSL_XMSS_VERIFY_ONLY
+endif
+
+ifeq ($(MLDSA_VERIFY_ONLY),1)
+	DEF += -DWOLFSSL_MLDSA_VERIFY_ONLY
+endif
+
+ifneq ($(KEYCACHE_BIG_BUFSIZE),)
+	DEF += -DWOLFHSM_CFG_SERVER_KEYCACHE_BIG_BUFSIZE=$(KEYCACHE_BIG_BUFSIZE)
+endif
+
 # Support a SHE-capable build
 ifeq ($(SHE),1)
 	DEF += -DWOLFHSM_CFG_SHE_EXTENSION
+endif
+
+# Share all SHE key slots across clients (global SHE device view). Implies
+# SHE=1. WOLFHSM_CFG_GLOBAL_KEYS comes from the test config.
+ifeq ($(SHE_GLOBAL),1)
+	DEF += -DWOLFHSM_CFG_SHE_EXTENSION
+	DEF += -DWOLFHSM_CFG_SHE_GLOBAL_KEYS
+endif
+
+# Enable per-client crypto affinity (HW/SW devId selection) and its unit test
+ifeq ($(CRYPTO_AFFINITY),1)
+	DEF += -DWOLFHSM_CFG_CRYPTO_AFFINITY
 endif
 
 # Support a TLS-capable build
@@ -241,11 +276,13 @@ ifeq ($(TESTWOLFCRYPT),1)
     # Set default TESTWOLFCRYPT_DEVID if not defined by the user
     TESTWOLFCRYPT_DEVID ?= $(TESTWOLFCRYPT_DEFAULT_DEVID)
 
-    # Set the defines for WC_USE_DEVID
+    # Set the defines for WC_USE_DEVID. The wolfCrypt test suite drives the
+    # HSM through the always-registered global devIds (TESTWOLFCRYPT_DEVID
+    # defaults to WH_DEV_ID; TESTWOLFCRYPT_DMA uses WH_DEV_ID_DMA).
     DEF += -DWC_USE_DEVID=$(TESTWOLFCRYPT_DEVID)
 
-	# wolfCrypt test source files
-    SRC_C += $(wildcard $(WOLFSSL_DIR)/wolfcrypt/test/*.c)
+    # wolfCrypt test source file
+    SRC_C += $(WOLFSSL_DIR)/wolfcrypt/test/test.c
 endif
 
 # End of NOCRYPTO
@@ -261,6 +298,11 @@ SRC_C +=  $(wildcard $(WOLFHSM_PORT_DIR)/*.c)
 # Test source files
 SRC_C +=  $(wildcard $(PROJECT_DIR)/*.c)
 
+
+# Only analyze wolfHSM sources
+ifeq ($(SCAN),1)
+SRC_C := $(filter-out $(WOLFSSL_DIR)/%,$(SRC_C))
+endif
 
 ## Automated processing below
 
@@ -292,9 +334,7 @@ analyze:$(OBJS_ASM) $(OBJS_C)
 scan:$(BUILD_DIR)
 	@echo "Running scan-build static analysis"
 	@mkdir -p $(WOLFHSM_DIR)/scan_out/
-	@scan-build --exclude $(WOLFSSL_DIR)/wolfcrypt \
-	            --exclude $(WOLFSSL_DIR)/src \
-	            --status-bugs $(MAKE) analyze 2> $(WOLFHSM_DIR)/scan_out/$(SCAN_LOG)
+	@scan-build --status-bugs $(MAKE) analyze 2> $(WOLFHSM_DIR)/scan_out/$(SCAN_LOG)
 
 $(BUILD_DIR):
 	$(CMD_ECHO) mkdir -p $(BUILD_DIR)

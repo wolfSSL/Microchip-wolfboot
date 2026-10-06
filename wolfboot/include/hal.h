@@ -23,8 +23,13 @@ extern "C" {
 #include <stdint.h>
 
 /* Architecture specific calls */
-#ifdef MMU
+#if defined(MMU) || defined(WOLFBOOT_FDT)
 extern void do_boot(const uint32_t *app_offset, const uint32_t* dts_offset);
+/* Weak copy hook for FIT subimages (kernel/dtb): default memcpy; boards where
+ * CPU writes to the load address don't land override it with a DMA copy.
+ * Returns 0 on success or a negative value if the copy failed, so callers can
+ * fail closed instead of running on stale data. */
+extern int wolfBoot_fit_memcpy(void *dst, const void *src, uint32_t len);
 #else
 extern void do_boot(const uint32_t *app_offset);
 #endif
@@ -43,6 +48,12 @@ void hal_deinit();
 #endif
 
 void hal_init(void);
+
+#ifdef WOLFBOOT_PARTITION_FILENAME
+/* Repoint the filesystem HAL's backing store at runtime, so one binary can
+ * address several boot slots in turn. Implemented by hal/filesystem.c. */
+void hal_filesystem_set_target(const char *path);
+#endif
 
 /* Timer functions (platform-specific, used for benchmarking) */
 #if defined(WOLFBOOT_UPDATE_DISK) || defined(BOOT_BENCHMARK)
@@ -78,11 +89,31 @@ uint64_t hal_get_timer_us(void);
 void hal_flash_unlock(void);
 void hal_flash_lock(void);
 /*
+ * Drop any CPU-side cache of flash contents.
+ *
+ * On parts where flash reads are cached (e.g. the STM32 ICACHE), the CPU can
+ * still see pre-erase bytes after hal_flash_write()/hal_flash_erase() have
+ * completed. Any code that writes flash and then reads it back through the
+ * memory map must call this in between.
+ *
+ * src/libwolfboot.c provides a weak no-op, so targets without such a cache
+ * need not implement it; a HAL that has one overrides it and must also call
+ * it from its own hal_flash_lock(), which is where every write/erase batch
+ * ends.
+ */
+void hal_cache_invalidate(void);
+/*
  * Lock the flash region [address, address + len) against writes.
  * Return 0 on success, or a negative value on failure.
  */
 int hal_flash_protect(haladdr_t address, int len);
 void hal_prepare_boot(void);
+
+/* Re-attribute [start,end) non-cacheable, for memory shared with a
+ * non-coherent bus master. Returns 0, or negative if the port cannot; see
+ * docs/HAL.md. The weak default fails rather than doing nothing, so a caller
+ * never silently runs DMA through write-back memory. */
+int hal_dma_set_noncached(uintptr_t start, uintptr_t end);
 
 #ifdef DUALBANK_SWAP
     void hal_flash_dualbank_swap(void);
@@ -96,6 +127,16 @@ void hal_prepare_boot(void);
 #ifdef MMU
     void *hal_get_dts_address(void);
     void *hal_get_dts_update_address(void);
+    /* Optional hook: supply a boot DTB when the loaded image carries none.
+     * update_disk.c calls it only when dts_addr is still NULL (i.e. the FIT had
+     * no fdt sub-image); the weak default returns NULL. */
+    void *hal_get_boot_dts(void);
+    /* Optional hook: run A/B boot-slot bookkeeping (e.g. RAUC try-counter
+     * decrement + writeback). update_disk.c calls it UNCONDITIONALLY before any
+     * DTB handling - not gated on whether the FIT embedded an fdt - so failover
+     * cannot be silently disabled by adding an fdt sub-image. Runs while the
+     * boot disk is still open. Weak default is a no-op returning 0. */
+    int hal_boot_slot_select(void);
 #endif
 
 #ifdef WOLFBOOT_FIT_CONFIG_SELECT
@@ -107,6 +148,15 @@ void hal_prepare_boot(void);
      * weak default returns NULL.
      */
     const char* hal_fit_config_name(void);
+#endif
+
+/* Optional watchdog kick. With -DWATCHDOG, wolfBoot calls this from its long
+ * hash and flash copy/erase loops; a port overrides the weak no-op default
+ * (see libwolfboot.c, hal/renesas-rx.c). Compiles out when WATCHDOG is unset. */
+#ifdef WATCHDOG
+void wolfBoot_watchdog_feed(void);
+#else
+#define wolfBoot_watchdog_feed() do {} while (0)
 #endif
 
 /* FPGA load mode constants + hal_fpga_load() prototype (kept in a standalone
@@ -150,6 +200,12 @@ void hal_tz_claim_nonsecure_area(uint32_t address, int len);
 void hal_tz_release_nonsecure_area(void);
 void hal_tz_sau_init(void);
 void hal_tz_sau_ns_region(void);
+#if defined(WOLFBOOT_SECURE_APP)
+/* Weak default SAU setup for a secure-application handoff: a port gets a
+ * fully Secure hand-off with no work of its own, and overrides this only
+ * to expose Non-secure regions before the jump. */
+void hal_sau_init(void);
+#endif
 void hal_gtzc_init(void);
 
 /* Needed by TZ to claim/release nonsecure flash areas */

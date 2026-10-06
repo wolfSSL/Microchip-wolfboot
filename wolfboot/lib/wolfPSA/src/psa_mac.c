@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE)
 
@@ -45,6 +45,17 @@ typedef struct wolfpsa_mac_ctx {
     size_t mac_length;
     size_t full_length;
     wolfpsa_mac_type_t type;
+#ifdef WOLF_CRYPTO_CB
+    /* wc_HmacSetKey() borrows the key buffer rather than copying it when
+     * WOLF_CRYPTO_CB is on (hmac.c stores it in Hmac.keyRaw), and a crypto
+     * callback reads it on every update. The caller's copy is freed as soon
+     * as setup returns, so the operation has to own the bytes itself. A
+     * build without the callbacks has no keyRaw to dangle, so it passes
+     * key_data straight through rather than keeping a second copy of the
+     * key alive for the whole operation. */
+    uint8_t *key;
+    size_t key_length;
+#endif
     union {
         Hmac hmac;
 #ifdef WOLFSSL_CMAC
@@ -69,6 +80,15 @@ static void wolfpsa_mac_free_underlying(wolfpsa_mac_ctx_t *ctx)
 #ifdef WOLFSSL_CMAC
     if (ctx->type == WOLFPSA_MAC_CMAC) {
         wc_CmacFree(&ctx->ctx.cmac);
+    }
+#endif
+#ifdef WOLF_CRYPTO_CB
+    /* Released after the wolfCrypt context, which may still reference it. */
+    if (ctx->key != NULL) {
+        wc_ForceZero(ctx->key, ctx->key_length);
+        XFREE(ctx->key, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        ctx->key = NULL;
+        ctx->key_length = 0;
     }
 #endif
 }
@@ -166,7 +186,7 @@ static psa_status_t wolfpsa_mac_check_key(psa_key_id_t key,
     }
 
     key_usage = psa_get_key_usage_flags(attributes);
-    if ((key_usage & usage) == 0) {
+    if ((key_usage & usage) != usage) {
         wolfpsa_forcezero_free_key_data(*key_data, *key_data_length);
         *key_data = NULL;
         *key_data_length = 0;
@@ -281,18 +301,44 @@ static psa_status_t wolfpsa_mac_setup(psa_mac_operation_t *operation,
         int hash_type = wolfpsa_hash_type_from_alg(alg);
         if (hash_type == WC_HASH_TYPE_NONE) {
             wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+            wc_ForceZero(ctx, sizeof(*ctx));
             XFREE(ctx, NULL, DYNAMIC_TYPE_TMP_BUFFER);
             return PSA_ERROR_NOT_SUPPORTED;
         }
-        ret = wc_HmacSetKey(&ctx->ctx.hmac, hash_type, key_data,
-                            (word32)key_data_length);
         ctx->type = WOLFPSA_MAC_HMAC;
+#ifdef WOLF_CRYPTO_CB
+        ctx->key = (uint8_t *)XMALLOC(key_data_length == 0 ? 1 :
+                                      key_data_length, NULL,
+                                      DYNAMIC_TYPE_TMP_BUFFER);
+        if (ctx->key == NULL) {
+            wolfpsa_forcezero_free_key_data(key_data, key_data_length);
+            wc_ForceZero(ctx, sizeof(*ctx));
+            XFREE(ctx, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+            return PSA_ERROR_INSUFFICIENT_MEMORY;
+        }
+        if (key_data_length > 0) {
+            XMEMCPY(ctx->key, key_data, key_data_length);
+        }
+        ctx->key_length = key_data_length;
+#endif
+
+        ret = wc_HmacInit(&ctx->ctx.hmac, NULL, wolfPSA_GetDefaultDevID());
+        if (ret == 0) {
+#ifdef WOLF_CRYPTO_CB
+            ret = wc_HmacSetKey(&ctx->ctx.hmac, hash_type, ctx->key,
+                                (word32)ctx->key_length);
+#else
+            ret = wc_HmacSetKey(&ctx->ctx.hmac, hash_type, key_data,
+                                (word32)key_data_length);
+#endif
+        }
     }
 #ifdef WOLFSSL_CMAC
     else if (PSA_ALG_IS_BLOCK_CIPHER_MAC(alg) &&
              PSA_ALG_FULL_LENGTH_MAC(alg) == PSA_ALG_CMAC) {
-        ret = wc_InitCmac(&ctx->ctx.cmac, key_data, (word32)key_data_length,
-                          WC_CMAC_AES, NULL);
+        ret = wc_InitCmac_ex(&ctx->ctx.cmac, key_data,
+                             (word32)key_data_length, WC_CMAC_AES, NULL, NULL,
+                             wolfPSA_GetDefaultDevID());
         ctx->type = WOLFPSA_MAC_CMAC;
     }
 #endif
@@ -404,7 +450,9 @@ static psa_status_t wolfpsa_mac_final(wolfpsa_mac_ctx_t *ctx,
     int ret;
     psa_status_t status;
 
-    if (mac == NULL || mac_length == NULL) {
+    /* A NULL mac pointer is only an error when the caller declared a
+     * nonzero capacity; (NULL, 0) must reach the size check below. */
+    if (mac_length == NULL || (mac == NULL && mac_size != 0)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -545,14 +593,7 @@ psa_status_t psa_mac_abort(psa_mac_operation_t *operation)
     }
 
     if (ctx != NULL) {
-        if (ctx->type == WOLFPSA_MAC_HMAC) {
-            wc_HmacFree(&ctx->ctx.hmac);
-        }
-#ifdef WOLFSSL_CMAC
-        if (ctx->type == WOLFPSA_MAC_CMAC) {
-            wc_CmacFree(&ctx->ctx.cmac);
-        }
-#endif
+        wolfpsa_mac_free_underlying(ctx);
         wc_ForceZero(ctx, sizeof(*ctx));
         XFREE(ctx, NULL, DYNAMIC_TYPE_TMP_BUFFER);
         operation->opaque = (uintptr_t)NULL;

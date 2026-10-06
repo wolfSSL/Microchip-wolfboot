@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 --  Ada Standard Library packages.
 with Ada.Characters.Handling;
 with Ada.Strings.Bounded;

@@ -6,19 +6,32 @@
 WOLFBOOT_LIB_WOLFSSL?=../lib/wolfssl
 WOLFBOOT_LIB_WOLFTPM?=../lib/wolfTPM
 WOLFBOOT_LIB_WOLFHSM?=../lib/wolfHSM
+WOLFBOOT_LIB_WOLFIP?=../lib/wolfip
 WOLFSSL_LOCAL_OBJDIR?=wolfssl_obj
 WOLFTPM_LOCAL_OBJDIR?=wolftpm_obj
 WOLFHSM_LOCAL_OBJDIR?=wolfhsm_obj
+WOLFIP_LOCAL_OBJDIR?=wolfip_obj
 vpath %.c $(WOLFBOOT_LIB_WOLFSSL)
 vpath %.S $(WOLFBOOT_LIB_WOLFSSL)
 vpath %.c $(WOLFBOOT_LIB_WOLFTPM)
 vpath %.S $(WOLFBOOT_LIB_WOLFTPM)
 vpath %.c $(WOLFBOOT_LIB_WOLFHSM)
 vpath %.S $(WOLFBOOT_LIB_WOLFHSM)
+vpath %.c $(WOLFBOOT_LIB_WOLFIP)
 
 WOLFBOOT_ROOT?=..
 TARGET?=none
 ARCH?=ARM
+
+# PPC64 (e5500/e6500) vs 32-bit (e500/e500mc), set early so the wolfCrypt asm
+# wiring below sees it; per-TARGET blocks later re-assert the same value.
+ifeq ($(ARCH),PPC)
+  ifneq ($(filter nxp_t2080 nxp_t1024 nxp_t1040,$(TARGET)),)
+    PPC64=1
+  else
+    PPC64=0
+  endif
+endif
 MCUXPRESSO_CMSIS?=$(MCUXPRESSO)/CMSIS
 ifneq (,$(filter $(TARGET),mcxa mcxw mcxn))
   ifneq ($(WOLFCRYPT_TZ_PSA),1)
@@ -31,6 +44,11 @@ ifeq ($(TZEN),1)
   CFLAGS:=-I./wcs $(CFLAGS)
 endif
 CFLAGS+=-I. -I..
+# Same opt-out as the bootloader build: target.h is shared, so the
+# partition-vs-bootloader-region guards must be suppressed here too.
+ifeq ($(WOLFBOOT_ALLOW_PART_OVERLAP),1)
+  CFLAGS+=-DWOLFBOOT_ALLOW_PART_OVERLAP=1
+endif
 DEBUG?=1
 DELTA_DATA_SIZE?=2000
 USE_CLANG?=0
@@ -75,7 +93,7 @@ ifeq ($(TARGET),ti_hercules)
 else
   CFLAGS+=-Wall -ffreestanding -Wno-unused -ffunction-sections -fdata-sections
   # Stack usage computation not supported on TriCore
-  ifneq ($(ARCH),AURIX_TC3)
+  ifneq ($(ARCH),AURIX)
     ifneq ($(USE_CLANG),1)
       CFLAGS+=-Wstack-usage=$(STACK_USAGE_LIMIT)
     endif
@@ -84,24 +102,50 @@ else
   CFLAGS+=-g
   ifeq ($(USE_GCC),1)
     CFLAGS+=-ggdb3
-  else ifneq ($(ARCH),AURIX_TC3)
+  else ifneq ($(ARCH),AURIX)
     ifneq ($(USE_CLANG),1)
-      CFLAGS+=-gstabs
+      # -gstabs was removed in GCC 12; -gdwarf-4 works on old and new GCC
+      CFLAGS+=-gdwarf-4
     endif
   endif
 
   ifeq ($(ARCH),RENESAS_RX)
     APP_OBJS:=app_renesas_rx.o ../test-app/libwolfboot.o ../src/boot_renesas.o ../src/boot_renesas_start.o ../hal/renesas-rx.o
-    LDFLAGS+=-ffreestanding -nostartfiles
+    # -ffreestanding/-nostartfiles are gcc-driver flags. Only pass them when
+    # linking via gcc (USE_GCC=1); for USE_GCC=0 rx-elf-ld is invoked directly
+    # and rejects them (-ffreestanding is already in CFLAGS; ld adds no crt).
+    ifeq ($(USE_GCC),1)
+      LDFLAGS+=-ffreestanding -nostartfiles
+    endif
     CFLAGS+=-DWOLFBOOT_RENESAS_APP
   else ifeq ($(WOLFHAL),1)
     APP_OBJS:=app_wolfhal.o led.o system.o timer.o ../test-app/libwolfboot.o
   else
     APP_OBJS:=app_$(TARGET).o led.o system.o timer.o ../test-app/libwolfboot.o
   endif
+  # nRF5340 debug-UART CRLF conversion (host-testable, no nrfx registers)
+  ifneq ($(filter nrf5340%, $(TARGET)),)
+    ifeq ($(DEBUG_UART),1)
+      APP_OBJS+=../hal/nrf5340_uart.o
+    endif
+  endif
+endif
+
+# Disable Thumb2 ASM for MAX32666 before arch.mk: hardware TPU handles AES
+ifeq ($(TARGET),max32666)
+  ifeq ($(WOLFCRYPT_MAX32666_TEST),1)
+    NO_ARM_ASM=1
+  endif
 endif
 
 include ../arch.mk
+
+# The Renesas RX app links with ld directly (USE_GCC=0), with no gcc driver to
+# pull in newlib. syscalls.o provides a minimal stdio (printf/putchar/snprintf/
+# malloc) on top of uart_write, so the app links without libc.
+ifeq ($(ARCH),RENESAS_RX)
+  APP_OBJS+=syscalls.o
+endif
 
 ifeq ($(USE_CLANG),1)
   APP_NEEDS_STRING:=1
@@ -123,8 +167,12 @@ ifeq ($(WOLFCRYPT_TZ_WOLFHSM),1)
   WOLFCRYPT_TZ_WOLFHSM=1
 endif
 
-# Setup default linker flags
+# Setup default linker flags (gcc-driver form). Renesas RX links with ld
+# directly (USE_GCC=0) and gets its -T/-gc-sections/oformat from arch.mk, so
+# these gcc-driver flags (-Wl,/-nostartfiles and a duplicate -T) are skipped.
+ifneq ($(ARCH),RENESAS_RX)
 LDFLAGS+=-T $(LSCRIPT) -Wl,-gc-sections -Wl,-Map=image.map -nostartfiles
+endif
 
 # Setup default objcopy flags
 OBJCOPY_FLAGS+=--gap-fill $(FILL_BYTE)
@@ -138,12 +186,35 @@ ifeq ($(DEBUG_UART),1)
     APP_NEEDS_STRING:=1
 endif
 
+ifeq ($(ARCH),AURIX)
+# AURIX RAM_CODE HAL flash drivers need wolfBoot memcpy
+    APP_NEEDS_STRING:=1
+endif
+
 ifeq ($(APP_NEEDS_STRING),1)
     APP_OBJS+=../src/string.o
 endif
 
 # wolfCrypt Test and Benchmark Support
 WOLFCRYPT_SUPPORT=0
+
+# MAX32666 hardware crypto test (MSDK TPU/MAA/TRNG acceleration)
+# Base TPU/SHA support and MSDK paths are inherited from arch.mk
+# when MAX3266X_TPU=1. This block adds the extra features for the
+# full crypto test (AES, RNG, MAA math, ECDHE).
+ifeq ($(TARGET),max32666)
+  ifeq ($(WOLFCRYPT_MAX32666_TEST),1)
+    STACK_USAGE_LIMIT:=5200
+    CFLAGS += -DWOLFCRYPT_MAX32666_TEST
+    CFLAGS += -DMAX3266X_RNG -DMAX3266X_AES -DMAX3266X_MATH
+    CFLAGS += -DHAVE_ECC_CDH -DHAVE_ECC_DHE
+    CFLAGS += -DHAVE_AESGCM -DGCM_TABLE
+    CFLAGS += -DENCRYPT_WITH_AES256
+    CFLAGS += -DWOLFSSL_SP_MATH_ALL
+    CFLAGS += -I$(MSDK_DIR)/Libraries/PeriphDrivers/Source/TRNG/
+    WOLFCRYPT_SUPPORT=1
+  endif
+endif
 
 ifeq ($(WOLFCRYPT_TEST),1)
   CFLAGS+=-DWOLFCRYPT_TEST
@@ -181,6 +252,7 @@ ifeq ($(WOLFCRYPT_SUPPORT),1)
   # Add SHA implementations (needed for test/benchmark)
   APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sha256.o
   APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sha512.o
+  APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sha3.o
   APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/hmac.o
 
   # Add RNG support (needed for ECC signing and tests)
@@ -193,8 +265,12 @@ ifeq ($(WOLFCRYPT_SUPPORT),1)
   APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/ecc.o
   APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sp_int.o
 
-  # Add SP C math (all architectures)
-  APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sp_c32.o
+  # Add SP C math (sp_c64 for 64-bit RISC-V, sp_c32 otherwise)
+  ifeq ($(ARCH),RISCV64)
+    APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sp_c64.o
+  else
+    APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sp_c32.o
+  endif
 
   # Add RSA support
   APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/rsa.o
@@ -219,31 +295,81 @@ ifeq ($(WOLFCRYPT_SUPPORT),1)
       endif
     endif
 
-    # Power PC
+    # Power PC (wolfSSL PRs 10740 + 10767: AES/SHA-2/SHA-3 PPC asm)
     ifeq ($(ARCH),PPC)
-      # SP mp int PowerPC ASM
+      # SP big-number math stays on the 32-bit PPC asm path (matches the
+      # bootloader and the SP_WORD_SIZE=32 user_settings.h forces for PPC); the
+      # AES/SHA asm under test is independent of SP math.
+      CFLAGS+=-DWOLFSSL_SP_PPC
+      # PPC_ASM=0 builds wolfCrypt pure-C (no PPC64/PPC32 AES/SHA asm) for the
+      # C-vs-asm benchmark baseline. Default on.
+      PPC_ASM?=1
+      ifeq ($(PPC_ASM),1)
       ifeq ($(PPC64),1)
-        CFLAGS+=-DWOLFSSL_SP_PPC64
-      else
-        CFLAGS+=-DWOLFSSL_SP_PPC
-      endif
-
-      # SHA256
-      APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc32/ppc32-sha256-asm_c.o
-      CFLAGS+=-DWOLFSSL_PPC32_ASM
-      CFLAGS+=-DWOLFSSL_PPC32_ASM_INLINE
-      CFLAGS+=-DWOLFSSL_PPC32_ASM_SMALL
-
-      ifeq ($(PPC64),1) # requires wolfssl PR 9852
-        # AES
-        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc64/ppc64-aes-asm_c.o
+        # e5500/e6500: PPC64 base-scalar ASM (AES T-table, SHA-2/SHA-3 via
+        # 64-bit GPR ops). These are NOT POWER8 -- no VSX/vector-crypto -- so
+        # WOLFSSL_PPC64_ASM_CRYPTO / _POWER8 must NOT be set (they emit
+        # vcipher/vshasigma and would trap).
         CFLAGS+=-DWOLFSSL_PPC64_ASM
         CFLAGS+=-DWOLFSSL_PPC64_ASM_INLINE
         CFLAGS+=-DWOLFSSL_PPC64_ASM_SMALL
         CFLAGS+=-DWOLFSSL_PPC64_ASM_AES_NO_HARDEN
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc64/ppc64-aes-asm_c.o
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc64/ppc64-sha256-asm_c.o
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc64/ppc64-sha512-asm_c.o
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc64/ppc64-sha3-asm_c.o
+      else
+        # e500mc: PPC32 base-scalar ASM, condition-register variant (PR 10740).
+        # INLINE_REG selects the *_cr.c files and needs the assembler to accept
+        # symbolic register names (-Wa,-mregnames).
+        CFLAGS+=-DWOLFSSL_PPC32_ASM
+        CFLAGS+=-DWOLFSSL_PPC32_ASM_INLINE
+        CFLAGS+=-DWOLFSSL_PPC32_ASM_INLINE_REG -Wa,-mregnames
+        CFLAGS+=-DWOLFSSL_PPC32_ASM_SMALL
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc32/ppc32-aes-asm_cr.o
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc32/ppc32-sha256-asm_cr.o
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc32/ppc32-sha512-asm_cr.o
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/ppc32/ppc32-sha3-asm_cr.o
       endif
+      endif  # PPC_ASM
 
       CFLAGS+=-fomit-frame-pointer
+    endif
+
+    # AArch64 (ARMv8): armv8 asm + SP arm64 objects (as arch.mk links for the
+    # bootloader). The test-app is a separate link with full AES/SHA/ECC under
+    # WOLFSSL_ARMASM (and the __aarch64__ SP asm in user_settings.h).
+    ifeq ($(ARCH),AARCH64)
+      ifneq ($(NO_ARM_ASM),1)
+        ifeq ($(SPMATH),1)
+          APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/sp_arm64.o
+        endif
+        APP_OBJS+=$(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/cpuid.o \
+                  $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/arm/armv8-aes-asm_c.o \
+                  $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/arm/armv8-sha256-asm_c.o \
+                  $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/arm/armv8-sha512-asm_c.o \
+                  $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/arm/armv8-sha3-asm_c.o
+        # armv8 asm uses crypto mnemonics (aese/sha256h); arch.mk's +crypto is
+        # lost to a later -mstrict-align, so restore it here for the asm.
+        CFLAGS+=-march=armv8-a+crypto
+        # libgcc for SP math 128-bit helpers (__udivti3); link is -nodefaultlibs.
+        LIBS+=-lgcc
+        # syscalls.c _sbrk references _Min_Heap_Size; no heap, so anchor it at
+        # zero (ARM does the same).
+        LDFLAGS+=-Wl,--defsym=_Min_Heap_Size=0
+      endif
+    endif
+
+    # RISC-V 64-bit (mirrors the WOLFCRYPT_OBJS asm set in arch.mk).
+    # arch.mk already adds -DWOLFSSL_RISCV_ASM to CFLAGS for the app, so the
+    # wolfcrypt C sources expect these asm symbols; provide the objects here.
+    ifeq ($(ARCH),RISCV64)
+      CFLAGS+=-DWOLFSSL_RISCV_ASM
+      APP_OBJS+= \
+            $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/riscv/riscv-64-sha256.o \
+            $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/riscv/riscv-64-sha512.o \
+            $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/riscv/riscv-64-sha3.o \
+            $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/riscv/riscv-64-aes.o
     endif
   endif
 
@@ -284,6 +410,9 @@ ifeq ($(TZEN),1)
         ifeq ($(WOLFCRYPT_TZ_PKCS11),1)
             CFLAGS+=-DWOLFSSL_USER_SETTINGS -DWOLFTPM_USER_SETTINGS
             CFLAGS+=-DWOLFBOOT_PKCS11_APP -DSECURE_PKCS11 -DWOLFBOOT_TZ_PKCS11
+            ifeq ($(PKCS11_STORE_STATS),1)
+                CFLAGS+=-DPKCS11_STORE_STATS
+            endif
             ifeq ($(PKCS11_TESTAPP),1)
                 CFLAGS+=-DWOLFBOOT_PKCS11_TESTAPP
             endif
@@ -420,6 +549,13 @@ else
         APP_OBJS+=../hal/wolfhal.o
     else
         APP_OBJS+=../hal/$(TARGET).o
+        # The test-app links the same HAL object, so HALs using the
+        # generic NS16550 console need it here too.
+        ifneq (,$(filter $(TARGET),nxp_ls1028a nxp_t2080 nxp_t1024 nxp_t1040 nxp_p1021))
+            ifeq ($(DEBUG_UART),1)
+                APP_OBJS+=../hal/uart/ns16550.o
+            endif
+        endif
     endif
 endif
 
@@ -487,6 +623,21 @@ ifeq ($(TARGET),stm32l4)
     -I$(STM32CUBE)/Drivers/CMSIS/Include/
 endif
 
+ifeq ($(TARGET),m2354)
+  ifeq ($(TZEN),1)
+    LSCRIPT_TEMPLATE=ARM-m2354-ns.ld
+    # -mcmse is a secure-world flag; arch.mk adds it under TZEN=1 and the
+    # non-secure application must not be built with it.
+    CFLAGS:=$(filter-out -mcmse, $(CFLAGS))
+  else
+    LSCRIPT_TEMPLATE=ARM-m2354.ld
+  endif
+  CFLAGS+=-mcpu=cortex-m23 -ffunction-sections -fdata-sections -fno-common
+  LDFLAGS+=-mcpu=cortex-m23
+  LDFLAGS+=-Wl,-gc-sections -Wl,-Map=image.map
+  CFLAGS+=-I..
+endif
+
 ifeq ($(TARGET),stm32l5)
   ifeq ($(TZEN),1)
     LSCRIPT_TEMPLATE=ARM-stm32l5-ns.ld
@@ -499,6 +650,19 @@ ifeq ($(TARGET),stm32l5)
   LDFLAGS+=-Wl,-gc-sections -Wl,-Map=image.map
   CFLAGS+=-I..
   APP_OBJS+=../hal/uart/uart_drv_$(UART_TARGET).o
+endif
+
+# i.MX95 Cortex-M7. The console is a shared-memory ring buffer rather than an
+# LPUART: no M7 UART is routed to a host-accessible channel on the Toradex SMARC
+# carrier, and Linux owns all four LPUART instances. -mcpu/-mfpu come from
+# arch.mk via CORTEX_M7.
+ifeq ($(TARGET),imx95_m7)
+  CFLAGS+=-I..
+  # The app owns isr_systick: it samples the DWT cycle counter often enough
+  # that the 32-bit counter cannot wrap unnoticed between timebase reads.
+  CFLAGS+=-DAPP_HAS_SYSTICK
+  APP_OBJS+=../hal/uart/uart_drv_$(UART_TARGET).o
+  LSCRIPT_TEMPLATE=ARM-imx95_m7.ld
 endif
 
 ifeq ($(TARGET),stm32h5)
@@ -560,6 +724,9 @@ ifeq ($(TARGET),stm32u5)
   endif
   CFLAGS+=-mcpu=cortex-m33
   LDFLAGS+=-mcpu=cortex-m33
+  ifeq ($(DEBUG_UART),1)
+    APP_OBJS+=../hal/uart/uart_drv_$(UART_TARGET)_ns.o
+  endif
 endif
 
 ifeq ($(TARGET),stm32u3)
@@ -600,6 +767,31 @@ ifeq ($(TARGET),nrf5340_net)
   LSCRIPT_TEMPLATE=ARM-nrf5340_net.ld
 endif
 
+ifeq ($(TARGET),max32666)
+  LSCRIPT_TEMPLATE=ARM-max32666.ld
+  ifeq ($(WOLFCRYPT_MAX32666_TEST),1)
+    ifeq ($(MAX3266X_OLD),1)
+      MAX3266X_SRC := $(MSDK_DIR)/Libraries/MAX32665PeriphDriver/Source
+      APP_OBJS += $(MAX3266X_SRC)/hash.o
+      APP_OBJS += $(MAX3266X_SRC)/cipher.o
+      APP_OBJS += $(MAX3266X_SRC)/maa.o
+      APP_OBJS += $(MAX3266X_SRC)/mem_utils.o
+      APP_OBJS += $(MAX3266X_SRC)/trng.o
+      APP_OBJS += $(MAX3266X_SRC)/mxc_sys.o
+      APP_OBJS += $(MAX3266X_SRC)/mxc_delay.o
+    else
+      APP_OBJS += $(MSDK_DIR)/Libraries/PeriphDrivers/Source/TPU/tpu_me14.o
+      APP_OBJS += $(MSDK_DIR)/Libraries/PeriphDrivers/Source/TPU/tpu_reva.o
+      APP_OBJS += $(MSDK_DIR)/Libraries/PeriphDrivers/Source/TRNG/trng_reva.o
+      APP_OBJS += $(MSDK_DIR)/Libraries/PeriphDrivers/Source/TRNG/trng_me14.o
+      APP_OBJS += $(MSDK_DIR)/Libraries/PeriphDrivers/Source/TRNG/trng_revb.o
+      APP_OBJS += $(MSDK_DIR)/Libraries/PeriphDrivers/Source/SYS/sys_me14.o
+      APP_OBJS += $(MSDK_DIR)/Libraries/PeriphDrivers/Source/SYS/mxc_delay.o
+    endif
+    APP_OBJS += $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/port/maxim/max3266x.o
+  endif
+endif
+
 ifeq ($(TARGET),ti_hercules)
   LSCRIPT_TEMPLATE=ARM-r5be.ld
   # Override linker flags
@@ -631,8 +823,6 @@ ifeq ($(TARGET),nxp_t2080)
   ifneq ($(SIGN),NONE)
     APP_OBJS+=../src/keystore.o
   endif
-  CFLAGS+=-ffunction-sections -fdata-sections
-
   # PowerPC e6500
   PPC64=1
 endif
@@ -686,8 +876,15 @@ ifeq ($(WOLFBOOT_SELF_HEADER),1)
   APP_OBJS+=../src/image.o ../src/keystore.o
   # Only add wolfcrypt objs if WOLFHSM blocks won't provide them
   ifeq ($(WOLFHSM_CLIENT)$(WOLFHSM_SERVER),)
-    # remove duplicates for certain object files
-    APP_OBJS+=$(sort $(WOLFCRYPT_OBJS))
+    # remove duplicates for certain object files. Under FIPS the object list is a
+    # curated, link-ORDER-sensitive boundary (wolfcrypt_first.o ... _last.o, for
+    # the in-core integrity hash) with no duplicates, so it must NOT be $(sort)ed
+    # - sorting would move first/last and break the hash boundary.
+    ifeq ($(FIPS),1)
+      APP_OBJS+=$(WOLFCRYPT_OBJS)
+    else
+      APP_OBJS+=$(sort $(WOLFCRYPT_OBJS))
+    endif
   endif
 endif
 
@@ -889,6 +1086,31 @@ ifeq ($(TARGET),nxp_lpc54s0xx)
     LDFLAGS+=-Wl,--no-warn-rwx-segments
 endif
 
+ifeq ($(TARGET),imx_rt7xx)
+  # XIP test app: linker template at the boot partition, shared startup_arm.o
+  # (ARCH=ARM) supplies the vector table, and the HAL the app links pulls in the
+  # same MCUXpresso XSPI/clock drivers as the bootloader.
+  LSCRIPT_TEMPLATE=ARM-imx_rt7xx.ld
+  LDFLAGS+=-Wl,--no-warn-rwx-segments
+  # The flash path runs from the same NOR it programs, so RAMFUNCTION must be
+  # active in the HAL and libwolfboot objects the app links.
+  ../hal/$(TARGET).o: CFLAGS+=-DRAM_CODE -D__WOLFBOOT
+  ../test-app/libwolfboot.o: CFLAGS+=-DRAM_CODE -D__WOLFBOOT
+  APP_OBJS+=\
+    $(MCUXPRESSO_DRIVERS)/drivers/fsl_clock.o \
+    $(MCUXPRESSO_DRIVERS)/drivers/fsl_reset.o
+  ifeq ($(MCUXSDK),1)
+    APP_OBJS+=\
+      $(MCUXPRESSO_DRIVERS)/drivers/fsl_power.o \
+      $(MCUXPRESSO)/drivers/common/fsl_common_arm.o \
+      $(MCUXPRESSO)/drivers/xspi/fsl_xspi.o
+  else
+    APP_OBJS+=\
+      $(MCUXPRESSO_DRIVERS)/drivers/fsl_common_arm.o \
+      $(MCUXPRESSO_DRIVERS)/drivers/fsl_xspi.o
+  endif
+endif
+
 ifeq ($(TARGET),imx_rt)
   LDFLAGS+=\
     -mcpu=cortex-m7 -Wall --specs=nosys.specs -fno-common -ffunction-sections -fdata-sections \
@@ -1083,11 +1305,14 @@ endif
 
 ifeq ($(TARGET), pic32cz)
   APP_OBJS+=../hal/pic32c.o
+  ifeq ($(DEBUG_UART),1)
+    APP_OBJS+=../hal/uart/uart_drv_pic32cz.o
+  endif
 endif
 
 CFLAGS+=-I"$(WOLFBOOT_LIB_WOLFSSL)"
 
-ifeq ($(TARGET),aurix_tc3xx)
+ifneq (,$(filter aurix_tc3xx aurix_tc3xx_hsm,$(TARGET)))
   # Add BSP objects (same as in arch.mk for wolfBoot)
   APP_OBJS += $(TC3_DIR)/src/tc3_clock.o \
               $(TC3_DIR)/src/tc3_flash.o \
@@ -1095,7 +1320,7 @@ ifeq ($(TARGET),aurix_tc3xx)
               $(TC3_DIR)/src/tc3_uart.o \
               $(TC3_DIR)/src/tc3.o
 
-  ifeq ($(AURIX_TC3_HSM),1)
+  ifeq ($(TARGET),aurix_tc3xx_hsm)
     APP_OBJS += $(TC3_DIR)/src/tc3arm_crt.o \
                 $(TC3_DIR)/src/tc3arm.o
 	# Use TC3 Arm app linker script
@@ -1128,10 +1353,127 @@ ifeq ($(TARGET),aurix_tc3xx)
   endif
 endif
 
+ifneq (,$(filter aurix_tc4xx aurix_tc4xx_csrm,$(TARGET)))
+  # TC4 startup tables miss some sections emitted by -fdata-sections.
+  CFLAGS:=$(filter-out -fdata-sections,$(CFLAGS))
+  # Flash helpers run from PSPR.
+  # Limit __WOLFBOOT to objects that define RAMFUNCTION helpers.
+  ../hal/$(TARGET).o: CFLAGS+=-DRAM_CODE -D__WOLFBOOT
+  ../test-app/libwolfboot.o: CFLAGS+=-DRAM_CODE -D__WOLFBOOT
+  ifeq ($(TARGET),aurix_tc4xx_csrm)
+    # CSRM app uses the shared startup and driver objects.
+    APP_OBJS += $(TC4_LLD_SRCS:.c=.o)
+    APP_OBJS += $(TC4_WB_DIR)/csrm/Cfg_Ssw/Ifx_Cfg_Ssw.o
+    # CSRM app linker script ships with the port.
+    LSCRIPT_TEMPLATE = $(TC4_WB_DIR)/csrm/tc4cs_app.ld
+  else
+    # Host test-app uses patched iLLD startup and drivers from the TC4 port.
+    # Drop Ifx_Ssw_Tc0.o and replace with patched aurix_tc4xx_ssw_tc0.o below
+    APP_OBJS += $(filter-out %/Ifx_Ssw_Tc0.o,$(TC4_LLD_SRCS:.c=.o))
+    APP_OBJS += $(TC4_WB_DIR)/Cfg_Ssw/Ifx_Cfg_Ssw.o
+    APP_OBJS += aurix_tc4xx_ssw_tc0.o
+    # Host app linker script ships with the port.
+    LSCRIPT_TEMPLATE = $(TC4_WB_DIR)/tc4tc_app.ld
+  endif
+
+  # TC4 wolfHSM port objects used by the HAL.
+  ifeq ($(WOLFHSM_CLIENT),1)
+    APP_OBJS += $(WOLFHSM_INFINEON_TC4XX)/port/tchsm_hsmhost.o \
+                $(WOLFHSM_INFINEON_TC4XX)/port/client/tchsm_client.o \
+                $(WOLFHSM_INFINEON_TC4XX)/port/client/tchsm_hh_host.o \
+                $(WOLFHSM_INFINEON_TC4XX)/port/client/tchsm_spr_apu.o \
+                $(WOLFHSM_INFINEON_TC4XX)/port/client/tchsm_dma_client.o \
+                $(WOLFHSM_INFINEON_TC4XX)/port/client/tchsm_time.o \
+                $(WOLFBOOT_LIB_WOLFHSM)/src/wh_transport_mem.o
+  endif
+
+# Build Ifx_Ssw_Tc0.c a second time as aurix_tc4xx_ssw_tc0.o with the
+# hypervisor exit compiled out, since wolfBoot already ran it before
+# jumping to the app. The new name keeps it from conflicting with the
+# bootloader's Ifx_Ssw_Tc0.o, which is built from the same file
+aurix_tc4xx_ssw_tc0.o: $(TC4_LLD_DIR)/Infra/Ssw/TC4xx/Tricore/Ifx_Ssw_Tc0.c
+	@echo "\t[CC-APP] $@"
+	$(Q)$(CC) $(CFLAGS) -DIFX_CFG_SSW_SKIP_DISABLE_VIRTUALIZATION -c -o $@ $<
+
+# Default goal for argument-less sub-makes.
+.DEFAULT_GOAL := image.bin
+endif
+
+# On PPC64 (e5500/e6500) arch.mk turns on PPC32 SHA asm for the bootloader's
+# image-verify link; strip it from the test-app's wolfCrypt so PPC_ASM alone
+# controls the app's AES/SHA asm.
+ifeq ($(PPC64),1)
+  CFLAGS:=$(filter-out -DWOLFSSL_PPC32_ASM -DWOLFSSL_PPC32_ASM_INLINE,$(CFLAGS))
+endif
+
+## ARM Compiler for Embedded (USE_ARMCLANG=1): rebuild the link options from
+## scratch, since the GNU-specific LDFLAGS accumulated above don't apply to
+## armlink, and switch the linker script to a scatter file.
+ifeq ($(USE_ARMCLANG),1)
+  CFLAGS+=-D'_end_stack=Image$$$$ARM_LIB_STACK$$$$ZI$$$$Limit'
+  CFLAGS+=-D'_start_heap=Image$$$$RW_RAM$$$$ZI$$$$Limit'
+  # GCC-only flags accumulated above
+  CFLAGS:=$(filter-out -Wstack-usage=% -gstabs,$(CFLAGS))
+  LSCRIPT:=../config/target-app.sct
+  LSCRIPT_TEMPLATE:=ARM-$(TARGET)-ns.sct
+  LDFLAGS:=$(ARMCLANG_LDFLAGS) --map --list=image.map --scatter=$(LSCRIPT)
+endif
+
 # Capture final flags for locally built wolfSSL objects.
 WOLFSSL_CFLAGS:=$(CFLAGS)
 WOLFTPM_CFLAGS:=$(CFLAGS)
 WOLFHSM_CFLAGS:=$(CFLAGS)
+
+# Optional wolfIP network stack in the test-app.
+#   ENABLE_WOLFIP=1       wolfIP ethernet port (nxp_fman, or nxp_enetc on
+#                         LS1028A) + a link/PHY smoke test.
+#   WOLFBOOT_TEST_TFTP=1  additionally pull in wolfIP core + TFTP client for
+#                         the full network TFTP-fetch test.
+# Point WOLFBOOT_LIB_WOLFIP at a wolfIP checkout, e.g.
+#   make WOLFBOOT_LIB_WOLFIP=/path/to/wolfip ENABLE_WOLFIP=1 ...
+ifeq ($(ENABLE_WOLFIP),1)
+  # Fail early with a clear message if the wolfIP checkout is missing.
+  ifeq ($(wildcard $(WOLFBOOT_LIB_WOLFIP)/src/wolfip.c),)
+    $(error ENABLE_WOLFIP=1 but no wolfIP sources found at WOLFBOOT_LIB_WOLFIP=$(WOLFBOOT_LIB_WOLFIP). Set WOLFBOOT_LIB_WOLFIP to a wolfIP checkout, e.g. make WOLFBOOT_LIB_WOLFIP=/path/to/wolfip ENABLE_WOLFIP=1 ...)
+  endif
+  # Port by target: LS1028A (AArch64) uses ENETC; QorIQ PowerPC uses FMan.
+  ifeq ($(TARGET),nxp_ls1028a)
+    WOLFIP_PORT:=nxp_enetc
+    WOLFIP_PORT_OBJ:=nxp_enetc.o
+    CFLAGS+=-DWOLFIP_PORT_ENETC
+  else
+    WOLFIP_PORT:=nxp_fman
+    WOLFIP_PORT_OBJ:=nxp_fman.o
+    # The PPC test-app's _app_entry does no BSS-PLT fixup, so -mbss-plt
+    # (arch.mk) would route cross-module libc calls (e.g. variable-size memcpy
+    # in the wolfIP driver) through an uninitialized PLT stub branching to 0;
+    # and default _FORTIFY_SOURCE rewrites memcpy/memmove into the _chk glibc
+    # symbols (absent here -> R_PPC_JMP_SLOT imports, zero GOT slots). -fno-plt
+    # + fortify-off keep those calls direct and unfortified. Scoped to the
+    # wolfIP build so default builds are unchanged.
+    CFLAGS+=-ffunction-sections -fdata-sections
+    CFLAGS+=-fno-plt -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+  endif
+  WOLFIP_PORTDIR:=$(WOLFBOOT_LIB_WOLFIP)/src/port/$(WOLFIP_PORT)
+  CFLAGS+=-DENABLE_WOLFIP
+  # wolfIP core (wolfip.c) provides the stack incl. DHCP/ICMP/TCP/UDP.
+  WOLFIP_OBJS:=$(WOLFIP_PORTDIR)/$(WOLFIP_PORT_OBJ) \
+               $(WOLFBOOT_LIB_WOLFIP)/src/wolfip.o
+  ifeq ($(WOLFBOOT_TEST_TFTP),1)
+    CFLAGS+=-DWOLFBOOT_TEST_TFTP
+    WOLFIP_OBJS+=$(WOLFBOOT_LIB_WOLFIP)/src/tftp/wolftftp.o
+  endif
+  ifeq ($(WOLFIP_SPEED_TEST),1)
+    CFLAGS+=-DWOLFIP_SPEED_TEST
+  endif
+  APP_OBJS+=$(WOLFIP_OBJS) wolfip_tftp_test.o
+  # wolfIP TUs need the port headers first (so config.h resolves to the
+  # port copy) and tolerate wolfIP's own style; drop -Werror/-Wstack-usage.
+  WOLFIP_CFLAGS:=-I"$(WOLFIP_PORTDIR)" -I"$(WOLFBOOT_LIB_WOLFIP)" \
+    $(filter-out -Werror -Wstack-usage=$(STACK_USAGE_LIMIT),$(CFLAGS)) \
+    -DWOLFIP_ENABLE_TFTP=$(if $(filter 1,$(WOLFBOOT_TEST_TFTP)),1,0) \
+    -Wno-unused -Wno-sign-compare -Wno-missing-field-initializers
+endif
 
 ifeq ($(WOLFHSM_CLIENT),1)
   CFLAGS += -DSTRING_USER -I"$(WOLFBOOT_LIB_WOLFSSL)"
@@ -1167,6 +1509,9 @@ image.srec: image.elf
 APP_OBJS := $(patsubst $(WOLFBOOT_LIB_WOLFSSL)/%, \
     $(WOLFSSL_LOCAL_OBJDIR)/%, $(APP_OBJS))
 
+APP_OBJS := $(patsubst $(WOLFBOOT_LIB_WOLFIP)/%, \
+    $(WOLFIP_LOCAL_OBJDIR)/%, $(APP_OBJS))
+
 ifeq ($(ELF_FLASH_SCATTER),1)
 # When ELF_FLASH_SCATTER=1, preprocess the ELF file with the squashelf tool
 SQUASHELF_TOOL = ../tools/squashelf/squashelf
@@ -1201,7 +1546,10 @@ delta-extra-data: image.bin
 ../hal/spi/spi_drv_$(SPI_TARGET)_ns.o: ../hal/spi/spi_drv_$(SPI_TARGET).c FORCE
 	$(Q)$(CC) $(CFLAGS) -c -o $(@) ../hal/spi/spi_drv_$(SPI_TARGET).c -DNONSECURE_APP
 
-board_$(BOARD).o: ../hal/boards/$(BOARD)/board.c
+../hal/uart/uart_drv_$(UART_TARGET)_ns.o: ../hal/uart/uart_drv_$(UART_TARGET).c FORCE
+	$(Q)$(CC) $(CFLAGS) -c -o $(@) ../hal/uart/uart_drv_$(UART_TARGET).c -DNONSECURE_APP
+
+board_$(BOARD).o: ../hal/boards/$(BOARD)/wolfHAL_board.c
 	@echo "\t[CC-$(ARCH)] $@"
 	$(Q)$(CC) $(CFLAGS) -DDEBUG_UART -c $(OUTPUT_FLAG) $@ $<
 
@@ -1243,10 +1591,22 @@ $(WOLFHSM_LOCAL_OBJDIR)/%.o: %.S
 	$(Q)mkdir -p $(dir $@)
 	$(Q)$(CC) $(WOLFHSM_CFLAGS) -c $(OUTPUT_FLAG) $@ $<
 
+
+$(WOLFIP_LOCAL_OBJDIR)/%.o: %.c
+	@echo "\t[CC-$(ARCH)] $@"
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(CC) $(WOLFIP_CFLAGS) -c $(OUTPUT_FLAG) $@ $<
+
+# Local test-app wolfIP glue, built with the wolfIP include/flag set.
+wolfip_tftp_test.o: wolfip_tftp_test.c
+	@echo "\t[CC-$(ARCH)] $@"
+	$(Q)$(CC) $(WOLFIP_CFLAGS) -c $(OUTPUT_FLAG) $@ $<
+
+
 clean:
 	$(Q)rm -f *.bin *.elf tags *.o $(LSCRIPT) $(APP_OBJS) wcs/*.o
 	$(Q)rm -rf $(WOLFSSL_LOCAL_OBJDIR) $(WOLFTPM_LOCAL_OBJDIR) \
-		$(WOLFHSM_LOCAL_OBJDIR)
+		$(WOLFHSM_LOCAL_OBJDIR) $(WOLFIP_LOCAL_OBJDIR)
 
 $(LSCRIPT): $(LSCRIPT_TEMPLATE) FORCE
 	$(Q)printf "%d" $(WOLFBOOT_PARTITION_BOOT_ADDRESS) > .wolfboot-offset

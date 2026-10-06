@@ -131,6 +131,13 @@ make
 | `WOLFTPM_FWTPM_TIS` | `--enable-fwtpm` without `--enable-swtpm` |
 | `WOLFTPM_ADV_IO` | Set with `WOLFTPM_FWTPM_HAL` |
 | `WOLFTPM_FWTPM_NV_APPEND_ONLY` | `--enable-fwtpm-nv-appendonly` (CMake `WOLFTPM_FWTPM_NV_APPEND_ONLY=yes`) |
+| `WOLFTPM_FWTPM_TCG_TEST` | Manually (`CFLAGS=-DWOLFTPM_FWTPM_TCG_TEST`); off by default |
+
+No vendor commands are registered by default. Define `WOLFTPM_FWTPM_TCG_TEST` to compile in the optional `TPM2_Vendor_TCG_Test` (`0x20000000`) echo command.
+
+### Command-Code Enforcement
+
+A valid command code carries only the 16-bit index plus, for vendor commands, the V bit (`CC_VEND`, bit 29); codes with any other reserved bit set, or codes not in the dispatch table, are rejected with `TPM_RC_COMMAND_CODE`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` returns proper `TPMA_CC` values (index + handle attributes + V bit, ordered by command code).
 
 
 ## Usage
@@ -169,6 +176,10 @@ wolfTPM fwTPM Server v0.1.0
   Manufacturer:  WOLF
   Model:         fwTPM
 ```
+
+In `--spdm-tcg` test mode the server also prints its generated responder
+public key. This is a local test-harness convenience, not a provisioning or
+trust-anchor channel for hardware responders.
 
 ### Connecting wolfTPM Clients
 
@@ -636,7 +647,8 @@ disabled, the corresponding TPM commands are excluded from the build.
 | `NO_RSA` | not defined | Excludes RSA keygen, sign, verify, `RSA_Encrypt`, `RSA_Decrypt` |
 | `HAVE_ECC` | defined | Enables ECC keygen, sign, verify, `ECDH_KeyGen`, `ECDH_ZGen`, `ECC_Parameters` |
 | `HAVE_ECC384` | defined | Enables P-384 curve support |
-| `HAVE_ECC521` | defined | Enables P-521 curve support |
+| `HAVE_ECC521` or `HAVE_ALL_CURVES` | build-dependent | Enables P-521 when `MAX_ECC_KEY_BITS >= 521` provides 66-byte TPM ECC fields |
+| `ECC_MIN_KEY_SZ` | wolfCrypt-defined | Excludes smaller curves from `ECC_Parameters` and `TPM_CAP_ECC_CURVES` |
 | `NO_AES` | not defined | Excludes `EncryptDecrypt`, `EncryptDecrypt2`, AES parameter encryption |
 | `WOLFSSL_SHA384` | defined | Enables SHA-384 PCR bank |
 
@@ -657,22 +669,43 @@ to reduce code size on constrained targets.
 | `FWTPM_NO_POLICY` | not defined | `PolicyGetDigest`, `PolicyRestart`, `PolicyPCR`, `PolicyPassword`, `PolicyAuthValue`, `PolicyCommandCode`, `PolicyOR`, `PolicySecret`, `PolicyAuthorize`, `PolicyNV` |
 | `FWTPM_NO_CREDENTIAL` | not defined | `MakeCredential`, `ActivateCredential` |
 | `FWTPM_NO_DA` | not defined | `DictionaryAttackParameters`, `DictionaryAttackLockReset`, and all lockout accounting |
+| `FWTPM_NO_PARAM_ENC` | not defined | command/response parameter (XOR/AES-CFB) encryption support in sessions |
+| `FWTPM_NO_KEY_MIGRATION` | not defined | `Import`, `Duplicate`, `Rewrap` |
+| `FWTPM_NO_ECDH` | not defined | `ECDH_KeyGen`, `ECDH_ZGen`, `EC_Ephemeral`, `ZGen_2Phase`, `ECC_Parameters` (ECDSA sign/verify retained), plus the `ecEphemeral*` commit state in `FWTPM_CTX` |
+| `FWTPM_NO_HASH_CMDS` | not defined | `Hash`, `HMAC`, `HMAC_Start`, `HashSequenceStart`, `SequenceUpdate`, `SequenceComplete`, `EventSequenceComplete`, and the `FWTPM_CTX` hash-sequence slots |
+| `FWTPM_NO_CONTEXT` | not defined | `ContextSave`, `ContextLoad` (`FlushContext` retained), plus the per-boot context protection key and saved-context replay list in `FWTPM_CTX` |
+| `FWTPM_NO_SYM_ENCRYPT` | not defined | `EncryptDecrypt`, `EncryptDecrypt2` |
+| `FWTPM_NO_CLOCK` | not defined | `ReadClock`, `ClockSet`, `ClockRateAdjust` |
+
+Removing a command group also removes it from the `TPM2_GetCapability(TPM_CAP_COMMANDS)` advertisement and the `TPM_PT_TOTAL_COMMANDS` count, since both are derived from the dispatch table. Note: when `WOLFTPM_MLDSA` is built, `SequenceUpdate` alone is retained under `FWTPM_NO_HASH_CMDS`, because ML-DSA verify sequences stream their message through it. `SequenceComplete` is not shared -- ML-DSA sequences finalize through `TPM2_SignSequenceComplete` / `TPM2_VerifySequenceComplete` -- so it is gated out with the rest of the hash commands rather than advertised as a command that can never succeed.
 
 The `FWTPM_DA_USED_RETRY` macro (off by default) does not remove commands; it
 makes the server return `TPM_RC_RETRY` on the first DA-protected auth use after
 startup, emulating a real TPM persisting `daUsed`. See
 [Dictionary Attack (DA) Protection](#dictionary-attack-da-protection).
 
-**Minimal build example** (measured boot only):
+**Minimal build example.** There is no umbrella macro - select the command
+groups to drop explicitly, so each is a deliberate choice. For example, to build
+a small ECC-only signing + NV fTPM (this set drops attestation; keep
+`Sign`/`VerifySignature`, PCR, and NV):
 
 ```sh
 ./configure --enable-fwtpm --enable-swtpm \
-    CFLAGS="-DNO_RSA -DFWTPM_NO_NV -DFWTPM_NO_ATTESTATION \
-            -DFWTPM_NO_POLICY -DFWTPM_NO_CREDENTIAL"
+    CFLAGS="-DNO_RSA \
+        -DFWTPM_NO_POLICY -DFWTPM_NO_ATTESTATION -DFWTPM_NO_CREDENTIAL \
+        -DFWTPM_NO_DA -DFWTPM_NO_PARAM_ENC -DFWTPM_NO_KEY_MIGRATION \
+        -DFWTPM_NO_ECDH -DFWTPM_NO_HASH_CMDS -DFWTPM_NO_CONTEXT \
+        -DFWTPM_NO_SYM_ENCRYPT -DFWTPM_NO_CLOCK"
 ```
 
-This retains only: `Startup`, `Shutdown`, `SelfTest`, `GetRandom`, `GetCapability`,
-`PCR_Read`, `PCR_Extend`, `PCR_Reset`, `Hash`, ECC keygen/sign, and session support.
+That set retains a core fTPM: `Startup`, `Shutdown`, `SelfTest`, `GetRandom`,
+`GetCapability`, the `PCR_*` commands, `Create`/`CreatePrimary`/`Load`/
+`ReadPublic`/`FlushContext`, `Sign`/`VerifySignature`, the `NV_*` commands, and
+session support (`StartAuthSession`/`Unseal`). Add `-DFWTPM_NO_NV` to also drop
+NV, or drop any `-DFWTPM_NO_*` above to keep that group. This ECC-only build is
+small enough to run as a soft-core fTPM on a constrained FPGA (see the MicroBlaze
+V example in the `wolftpm-examples` repo, which fits an ECC-only fTPM into
+~192 KB of on-chip memory).
 
 **Dependencies:**
 - `FWTPM_NO_NV` also removes `NV_Certify` (even if `FWTPM_NO_ATTESTATION` is not set)
@@ -721,7 +754,7 @@ register-level access. This mode simulates an SPI-attached TPM.
 
 | Field | Description |
 |-------|-------------|
-| `magic` / `version` | Validation header (`0x57544953` / `"WTIS"`) |
+| `magic` / `version` | Validation header (`0x57544953` / `"WTIS"`, protocol version 2) |
 | `reg_addr`, `reg_len`, `reg_is_write`, `reg_data` | Register access request |
 | TIS register shadow: `access`, `sts`, `int_enable`, `int_status`, `intf_caps`, `did_vid`, `rid` | Emulated TIS registers |
 | `cmd_buf[4096]`, `cmd_len`, `fifo_write_pos` | Command FIFO |
@@ -731,9 +764,14 @@ register-level access. This mode simulates an SPI-attached TPM.
 
 | Define | Default | Description |
 |--------|---------|-------------|
-| `FWTPM_TIS_SHM_PATH` | `/tmp/fwtpm.shm` | Shared memory file |
+| `FWTPM_TIS_SHM_PATH` | `/tmp/fwtpm.shm` | Shared memory file; clients require a regular, single-link, same-UID, exact-size `0600` endpoint |
 | `FWTPM_TIS_SEM_CMD` | `/fwtpm_cmd` | Command semaphore name |
 | `FWTPM_TIS_SEM_RSP` | `/fwtpm_rsp` | Response semaphore name |
+
+Clients require an exact protocol version and shared-region-size match, so
+rebuild the client library and `fwtpm_server` together when changing options
+that affect `FWTPM_TIS_FIFO_SIZE`. The default paths are global, so one server
+per host.
 
 **Server-side API:**
 

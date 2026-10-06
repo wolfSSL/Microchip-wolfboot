@@ -14,6 +14,7 @@
 #include <string.h>
 #include "hal/stm32u5.h"
 #include "hal.h"
+#include "uart_drv.h"
 
 
 static void RAMFUNCTION flash_set_waitstates(unsigned int waitstates)
@@ -23,7 +24,7 @@ static void RAMFUNCTION flash_set_waitstates(unsigned int waitstates)
         FLASH_ACR =  (reg & ~FLASH_ACR_LATENCY_MASK) | waitstates;
 }
 
-static RAMFUNCTION void flash_wait_complete(uint8_t bank)
+void RAMFUNCTION hal_flash_wait_complete(uint8_t bank)
 {
     while ((FLASH_NS_SR & (FLASH_SR_BSY | FLASH_SR_WDW)) != 0)
         ;
@@ -34,7 +35,7 @@ static RAMFUNCTION void flash_wait_complete(uint8_t bank)
 
 }
 
-static void RAMFUNCTION flash_clear_errors(uint8_t bank)
+void RAMFUNCTION hal_flash_clear_errors(uint8_t bank)
 {
 
     FLASH_NS_SR |= (FLASH_SR_OPERR | FLASH_SR_PROGERR | FLASH_SR_WRPERR |
@@ -54,12 +55,12 @@ static void RAMFUNCTION flash_clear_errors(uint8_t bank)
 int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
 {
     int i = 0;
-    uint32_t *src, *dst;
+    uint32_t *dst;
     uint32_t qword[4];
+    uint8_t *qword_bytes = (uint8_t *)qword;
     volatile uint32_t *sr, *cr;
 
-    flash_clear_errors(0);
-    src = (uint32_t*)data;
+    hal_flash_clear_errors(0);
     dst = (uint32_t*)address;
 
 #if (TZ_SECURE())
@@ -82,24 +83,34 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
 #endif
 
     while (i < len) {
-        qword[0] = src[i >> 2];
-        qword[1] = src[(i >> 2) + 1];
-        qword[2] = src[(i >> 2) + 2];
-        qword[3] = src[(i >> 2) + 3];
+        int j;
+        uintptr_t cur_addr = (uintptr_t)dst + i;
+        uint32_t *unit = (uint32_t *)(cur_addr & (~0x0FUL));
+        int off = (int)(cur_addr & 0x0FUL);
+        int i_aligned = i - off;
+
+        /* Read-modify-write the whole 128-bit unit (as stm32h5.c):
+         * the program only starts on the 4th word, and a partial
+         * quad-word leaves FLASH_SR_WDW set, hanging the wait. The
+         * unit is aligned down from the next byte, so an unaligned
+         * start keeps the bytes before the request. */
+        for (j = 0; j < 16; j++) {
+            if ((j >= off) && (i_aligned + j < len))
+                qword_bytes[j] = data[i_aligned + j];
+            else
+                qword_bytes[j] = ((const uint8_t *)unit)[j];
+        }
+
         *cr |= FLASH_CR_PG;
-        dst[i >> 2] = qword[0];
-        ISB();
-        dst[(i >> 2) + 1] = qword[1];
-        ISB();
-        dst[(i >> 2) + 2] = qword[2];
-        ISB();
-        dst[(i >> 2) + 3] = qword[3];
-        ISB();
-        flash_wait_complete(0);
+        for (j = 0; j < 4; j++) {
+            unit[j] = qword[j];
+            ISB();
+        }
+        hal_flash_wait_complete(0);
         if ((*sr & FLASH_SR_EOP) != 0)
             *sr |= FLASH_SR_EOP;
         *cr &= ~FLASH_CR_PG;
-        i += 16;
+        i = i_aligned + 16;
     }
 
     return 0;
@@ -107,7 +118,7 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
 
 void RAMFUNCTION hal_flash_unlock(void)
 {
-    flash_wait_complete(0);
+    hal_flash_wait_complete(0);
 #if (TZ_SECURE())
     if ((FLASH_CR & FLASH_CR_LOCK) != 0) {
         FLASH_KEYR = FLASH_KEY1;
@@ -130,18 +141,24 @@ void RAMFUNCTION hal_flash_unlock(void)
 
 void RAMFUNCTION hal_flash_lock(void)
 {
-    flash_wait_complete(0);
+    hal_flash_wait_complete(0);
 #if (TZ_SECURE())
     if ((FLASH_CR & FLASH_CR_LOCK) == 0)
         FLASH_CR |= FLASH_CR_LOCK;
 #endif
      if ((FLASH_NS_CR & FLASH_CR_LOCK) == 0)
         FLASH_NS_CR |= FLASH_CR_LOCK;
+    /* Drop the flash read cache at the end of the batch rather than in
+     * hal_flash_write()/hal_flash_erase(): every write/erase sequence
+     * ends with a lock, so one invalidate per batch replaces one per
+     * operation (and per error return), and every consumer is covered,
+     * not just the ones that remember to ask. */
+    hal_cache_invalidate();
 }
 
 void RAMFUNCTION hal_flash_opt_unlock(void)
 {
-    flash_wait_complete(0);
+    hal_flash_wait_complete(0);
 
     if ((FLASH_NS_CR & FLASH_CR_OPTLOCK) != 0) {
         FLASH_NS_OPTKEYR = FLASH_OPTKEY1;
@@ -157,7 +174,7 @@ void RAMFUNCTION hal_flash_opt_lock(void)
 {
 
     FLASH_NS_CR |= FLASH_CR_OPTSTRT;
-    flash_wait_complete(0);
+    hal_flash_wait_complete(0);
     FLASH_NS_CR |= FLASH_CR_OBL_LAUNCH;
     if ((FLASH_NS_CR & FLASH_CR_OPTLOCK) == 0)
         FLASH_NS_CR |= FLASH_CR_OPTLOCK;
@@ -169,7 +186,7 @@ int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
     uint32_t p;
     volatile uint32_t *cr = &FLASH_NS_CR;
 
-    flash_clear_errors(0);
+    hal_flash_clear_errors(0);
     if (len == 0)
         return -1;
 
@@ -197,12 +214,19 @@ int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
             *cr &= ~FLASH_CR_PER ;
             return 0; /* Address out of range */
         }
+        /* BKER refers to the physical bank, whatever the SWAP_BANK setting
+         * (RM0456 7.5.8): invert it when the banks are swapped, so that the
+         * erased bank is the one currently mapped at the target address. */
+        if ((FLASH_OPTR & (FLASH_OPTR_DBANK | FLASH_OPTR_SWAP_BANK)) ==
+                (FLASH_OPTR_DBANK | FLASH_OPTR_SWAP_BANK)) {
+            bker ^= FLASH_CR_BKER;
+        }
         reg = *cr & (~((FLASH_CR_PNB_MASK << FLASH_CR_PNB_SHIFT) | FLASH_CR_BKER));
         reg |= ((((p - base)  >> 13) << FLASH_CR_PNB_SHIFT) | FLASH_CR_PER | bker );
         *cr = reg;
         DMB();
         *cr |= FLASH_CR_STRT;
-        flash_wait_complete(0);
+        hal_flash_wait_complete(0);
     }
     /* If the erase operation is completed, disable the associated bits */
     *cr &= ~FLASH_CR_PER ;
@@ -483,6 +507,8 @@ static void led_unsecure()
 #define TZSC1_BASE 0x50032400u
 #define TZSC_SECCFGR1 (*(volatile uint32_t *)(TZSC1_BASE + 0x10u))
 #define TZSC_SECCFGR1_USART3SEC (1u << 10)
+#define TZSC_SECCFGR2 (*(volatile uint32_t *)(TZSC1_BASE + 0x14u))
+#define TZSC_SECCFGR2_USART1SEC (1u << 3)
 
 static void periph_unsecure(void)
 {
@@ -504,6 +530,24 @@ static void periph_unsecure(void)
         reg &= ~TZSC_SECCFGR1_USART3SEC;
         DMB();
         TZSC_SECCFGR1 = reg;
+    }
+
+    /* Enable clock for GPIO A (USART1 pins PA9/PA10) */
+    RCC_AHB2ENR1_CLOCK_ER |= GPIOA_AHB2ENR1_CLOCK_ER;
+
+    /* Enable clock for USART1 */
+    RCC_APB2ENR |= UART1_APB2_CLOCK_ER_VAL;
+
+    /* Unsecure USART1 pins (PA9 TX, PA10 RX) */
+    GPIOA_SECCFGR &= ~(1u << UART1_TX_PIN);
+    GPIOA_SECCFGR &= ~(1u << UART1_RX_PIN);
+
+    /* Unsecure USART1 peripheral in GTZC TZSC */
+    reg = TZSC_SECCFGR2;
+    if (reg & TZSC_SECCFGR2_USART1SEC) {
+        reg &= ~TZSC_SECCFGR2_USART1SEC;
+        DMB();
+        TZSC_SECCFGR2 = reg;
     }
 }
 #endif
@@ -537,6 +581,12 @@ void hal_init(void)
         fork_bootloader();
 #endif
     clock_pll_on(0);
+
+#ifdef DEBUG_UART
+    uart_init(115200, 8, 'N', 1);
+    uart_write("wolfBoot Init\n", 14);
+#endif
+
 #if TZ_SECURE()
     hal_tz_sau_init();
     hal_gtzc_init();
@@ -565,7 +615,7 @@ void hal_cache_disable(void)
     ICACHE_CR &= ~ICACHE_CR_CEN;
 }
 
-void hal_cache_invalidate(void)
+void RAMFUNCTION hal_cache_invalidate(void)
 {
     /* only try and invalidate cache if enabled */
     if ((ICACHE_CR & ICACHE_CR_CEN) == 0)

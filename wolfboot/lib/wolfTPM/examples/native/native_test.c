@@ -1,8 +1,8 @@
 /* native_test.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -1440,7 +1440,7 @@ int TPM2_Native_TestArgs(void* userCtx, int argc, char *argv[])
     cmdIn.rsaDec.inScheme.scheme = TPM_ALG_OAEP;
     cmdIn.rsaDec.inScheme.details.oaep.hashAlg = TPM_ALG_SHA256;
     cmdIn.rsaDec.label.size = sizeof(label); /* Null term required */
-    XMEMCPY(cmdIn.rsaDec.label.buffer, label, cmdIn.rsaEnc.label.size);
+    XMEMCPY(cmdIn.rsaDec.label.buffer, label, cmdIn.rsaDec.label.size);
     rc = TPM2_RSA_Decrypt(&cmdIn.rsaDec, &cmdOut.rsaDec);
     if (rc != TPM_RC_SUCCESS) {
         printf("TPM2_RSA_Decrypt failed 0x%x: %s\n", rc,

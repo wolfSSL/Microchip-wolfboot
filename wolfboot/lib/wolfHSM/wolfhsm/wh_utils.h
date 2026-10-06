@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -57,6 +57,16 @@ uint64_t wh_Utils_Swap64(uint64_t val);
 
 uint32_t wh_Utils_htonl(uint32_t hostlong);
 uint32_t wh_Utils_ntohl(uint32_t networklong);
+
+/** CRC16 functions */
+/* Seed value for wh_Utils_Crc16 */
+#define WH_UTILS_CRC16_INIT ((uint16_t)0xFFFFU)
+
+/* Compute CRC-16/CCITT-FALSE (poly 0x1021) over len bytes of data.  Seed crc
+ * with WH_UTILS_CRC16_INIT, or pass a previous return value to continue an
+ * incremental computation.  Returns crc unchanged when len is 0 or data is
+ * NULL. */
+uint16_t wh_Utils_Crc16(uint16_t crc, const void* data, size_t len);
 
 int wh_Utils_memeqzero(uint8_t* buffer, uint32_t size);
 

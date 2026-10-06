@@ -13,6 +13,13 @@ fi
 if [ -z "$NO_FILESYSTEM" ]; then
     NO_FILESYSTEM=0
 fi
+
+run_keyload() {
+    if [ $NO_FILESYSTEM -eq 0 ]; then
+        ./examples/keygen/keyload "$@"
+    fi
+}
+
 if [ -z "$NO_PUBASPRIV" ]; then
     NO_PUBASPRIV=0
 fi
@@ -276,14 +283,14 @@ echo -e "Key Generation Tests"
 ./examples/keygen/keygen keyblob.bin -rsa >> $TPMPWD/run.out 2>&1
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "keygen rsa failed! $RESULT" && exit 1
-./examples/keygen/keyload keyblob.bin >> $TPMPWD/run.out 2>&1
+run_keyload keyblob.bin >> $TPMPWD/run.out 2>&1
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "keyload rsa failed! $RESULT" && exit 1
 if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
     ./examples/keygen/keygen keyblob.bin -rsa -xor >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "keygen rsa param enc xor failed! $RESULT" && exit 1
-    ./examples/keygen/keyload keyblob.bin -xor >> $TPMPWD/run.out 2>&1
+    run_keyload keyblob.bin -xor >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "keyload rsa param enc xor failed! $RESULT" && exit 1
 
@@ -291,7 +298,7 @@ if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
         ./examples/keygen/keygen keyblob.bin -rsa -aes >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keygen rsa param enc aes failed! $RESULT" && exit 1
-        ./examples/keygen/keyload keyblob.bin -aes >> $TPMPWD/run.out 2>&1
+        run_keyload keyblob.bin -aes >> $TPMPWD/run.out 2>&1
         RESULT=$?
 
         if [ $WOLFCRYPT_RSA -eq 1 ]; then
@@ -299,7 +306,7 @@ if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
             ./examples/keygen/keyimport rsakeyblob.bin -rsa >> $TPMPWD/run.out 2>&1
             RESULT=$?
             [ $RESULT -ne 0 ] && echo -e "keyload rsa import load failed! $RESULT" && exit 1
-            ./examples/keygen/keyload rsakeyblob.bin >> $TPMPWD/run.out 2>&1
+            run_keyload rsakeyblob.bin >> $TPMPWD/run.out 2>&1
             RESULT=$?
             [ $RESULT -ne 0 ] && echo -e "keyload rsa load failed! $RESULT" && exit 1
             rm -f rsakeyblob.bin
@@ -311,7 +318,7 @@ fi
 ./examples/keygen/keygen eccblob.bin -ecc >> $TPMPWD/run.out 2>&1
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "keygen ecc failed! $RESULT" && exit 1
-./examples/keygen/keyload eccblob.bin >> $TPMPWD/run.out 2>&1
+run_keyload eccblob.bin >> $TPMPWD/run.out 2>&1
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "keyload ecc failed! $RESULT" && exit 1
 if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
@@ -319,7 +326,7 @@ if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
         ./examples/keygen/keygen eccblob.bin -ecc -aes >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keygen ecc param enc failed! $RESULT" && exit 1
-        ./examples/keygen/keyload eccblob.bin -aes >> $TPMPWD/run.out 2>&1
+        run_keyload eccblob.bin -aes >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keyload ecc param enc failed! $RESULT" && exit 1
 
@@ -328,7 +335,7 @@ if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
             RESULT=$?
             [ $RESULT -ne 0 ] && echo -e "keyload ecc import failed! $RESULT" && exit 1
 
-            ./examples/keygen/keyload ecckeyblob.bin >> $TPMPWD/run.out 2>&1
+            run_keyload ecckeyblob.bin >> $TPMPWD/run.out 2>&1
             RESULT=$?
             [ $RESULT -ne 0 ] && echo -e "keyload ecc load failed! $RESULT" && exit 1
             rm -f ecckeyblob.bin
@@ -343,14 +350,14 @@ if [ $ENABLE_V185 -eq 1 ]; then
         ./examples/keygen/keygen pqcblob.bin -mldsa=$PS >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keygen mldsa=$PS failed! $RESULT" && exit 1
-        ./examples/keygen/keyload pqcblob.bin >> $TPMPWD/run.out 2>&1
+        run_keyload pqcblob.bin >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keyload mldsa=$PS failed! $RESULT" && exit 1
 
         ./examples/keygen/keygen pqcblob.bin -hash_mldsa=$PS >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keygen hash_mldsa=$PS failed! $RESULT" && exit 1
-        ./examples/keygen/keyload pqcblob.bin >> $TPMPWD/run.out 2>&1
+        run_keyload pqcblob.bin >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keyload hash_mldsa=$PS failed! $RESULT" && exit 1
     done
@@ -358,7 +365,7 @@ if [ $ENABLE_V185 -eq 1 ]; then
         ./examples/keygen/keygen pqcblob.bin -mlkem=$PS >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keygen mlkem=$PS failed! $RESULT" && exit 1
-        ./examples/keygen/keyload pqcblob.bin >> $TPMPWD/run.out 2>&1
+        run_keyload pqcblob.bin >> $TPMPWD/run.out 2>&1
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "keyload mlkem=$PS failed! $RESULT" && exit 1
     done
@@ -375,6 +382,13 @@ if [ $ENABLE_V185 -eq 1 ]; then
         RESULT=$?
         [ $RESULT -ne 0 ] && echo -e "mlkem_encap mlkem=$PS failed! $RESULT" && exit 1
     done
+
+    echo -e "PQC control tool (pqc_ctrl board commands)"
+    # Board-control commands only; the ML-DSA/ML-KEM matrix is already covered
+    # by the standalone example loops above, so do not re-run it here.
+    ./examples/pqc/pqc_ctrl --caps --algs --selftest --getrandom=16 >> $TPMPWD/run.out 2>&1
+    RESULT=$?
+    [ $RESULT -ne 0 ] && echo -e "pqc_ctrl board commands failed! $RESULT" && exit 1
 
     echo -e "PQC primary key (create_primary -mldsa)"
     for PS in 44 65 87; do
@@ -465,7 +479,7 @@ run_keygen_aes_test() { # Usage: run_keygen_aes_test [aescfb128]
     ./examples/keygen/keygen symkeyblob.bin -sym=$1 >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "keygen sym $1 failed! $RESULT" && exit 1
-    ./examples/keygen/keyload symkeyblob.bin >> $TPMPWD/run.out 2>&1
+    run_keyload symkeyblob.bin >> $TPMPWD/run.out 2>&1
     RESULT=$?
     rm -f symkeyblob.bin
     [ $RESULT -ne 0 ] && echo -e "keygen sym $1 load failed! $RESULT" && exit 1
@@ -486,7 +500,7 @@ run_keygen_aes_test "aescbc256"
 ./examples/keygen/keygen keyedhashblob.bin -keyedhash >> $TPMPWD/run.out 2>&1
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "keygen keyed hash failed! $RESULT" && exit 1
-./examples/keygen/keyload keyedhashblob.bin >> $TPMPWD/run.out 2>&1
+run_keyload keyedhashblob.bin >> $TPMPWD/run.out 2>&1
 RESULT=$?
 rm -f keyedhashblob.bin
 [ $RESULT -ne 0 ] && echo -e "keygen keyed hash load failed! $RESULT" && exit 1
@@ -496,14 +510,14 @@ if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
     ./examples/keygen/keygen rsakeyblobeh.bin -rsa -eh >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "keygen endorsement rsa failed! $RESULT" && exit 1
-    ./examples/keygen/keyload rsakeyblobeh.bin -rsa -eh >> $TPMPWD/run.out 2>&1
+    run_keyload rsakeyblobeh.bin -rsa -eh >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "keyload endorsement rsa failed! $RESULT" && exit 1
 
     ./examples/keygen/keygen ecckeyblobeh.bin -ecc -eh >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "keygen endorsement ecc failed! $RESULT" && exit 1
-    ./examples/keygen/keyload ecckeyblobeh.bin -ecc -eh >> $TPMPWD/run.out 2>&1
+    run_keyload ecckeyblobeh.bin -ecc -eh >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "keyload endorsement ecc failed! $RESULT" && exit 1
 
@@ -638,9 +652,18 @@ run_tpm_tls_client() { # Usage: run_tpm_tls_client [ecc/rsa] [tpmargs] [tlsversi
     generate_port
     READY_FILE="/tmp/wolftpm_tls_ready_$$"
     rm -f "$READY_FILE"
+    # The TPM client verifies the peer, so the wolfSSL server presents a cert
+    # for this key type and the client trusts the CA that issued it
+    if [ "$1" = "ecc" ]; then
+        PEER_CERT_ARGS="-c ./certs/server-ecc.pem -k ./certs/ecc-key.pem"
+        PEER_CA_FILE="$WOLFSSL_PATH/certs/ca-ecc-cert.pem"
+    else
+        PEER_CERT_ARGS="-c ./certs/server-cert.pem -k ./certs/server-key.pem"
+        PEER_CA_FILE="$WOLFSSL_PATH/certs/ca-cert.pem"
+    fi
     pushd $WOLFSSL_PATH >> $TPMPWD/run.out 2>&1
-    echo -e "./examples/server/server -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem -R $READY_FILE"
-    ./examples/server/server -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem -R "$READY_FILE" >> $TPMPWD/run.out 2>&1 &
+    echo -e "./examples/server/server -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem $PEER_CERT_ARGS -R $READY_FILE"
+    ./examples/server/server -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem $PEER_CERT_ARGS -R "$READY_FILE" >> $TPMPWD/run.out 2>&1 &
     SERVER_PID=$!
     popd >> $TPMPWD/run.out 2>&1
     if ! wait_for_ready "$READY_FILE" 500; then
@@ -651,8 +674,8 @@ run_tpm_tls_client() { # Usage: run_tpm_tls_client [ecc/rsa] [tpmargs] [tlsversi
     fi
     rm -f "$READY_FILE"
 
-    echo -e "./examples/tls/tls_client -p=$port -$1 $2"
-    ./examples/tls/tls_client -p=$port -$1 $2 >> $TPMPWD/run.out 2>&1
+    echo -e "./examples/tls/tls_client -p=$port -A=$PEER_CA_FILE -$1 $2"
+    ./examples/tls/tls_client -p=$port "-A=$PEER_CA_FILE" -$1 $2 >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "tpm tls client $1 $2 failed! $RESULT" && exit 1
 }
@@ -660,9 +683,18 @@ run_tpm_tls_client() { # Usage: run_tpm_tls_client [ecc/rsa] [tpmargs] [tlsversi
 run_tpm_tls_server() { # Usage: run_tpm_tls_server [ecc/rsa] [tpmargs] [tlsversion] [extraargs]
     echo -e "TLS test (TPM as server) $1 $2 $3"
     generate_port
+    # The TPM server verifies the peer, so the wolfSSL client presents a
+    # client-auth cert for this key type and the server trusts its issuer
+    if [ "$1" = "ecc" ]; then
+        PEER_CERT_ARGS="-c ./certs/client-ecc-ca-cert.pem -k ./certs/ecc-client-key.pem"
+        PEER_CA_FILE="$WOLFSSL_PATH/certs/ca-ecc-cert.pem"
+    else
+        PEER_CERT_ARGS="-c ./certs/client-ca-cert.pem -k ./certs/client-key.pem"
+        PEER_CA_FILE="$WOLFSSL_PATH/certs/ca-cert.pem"
+    fi
 
-    echo -e "./examples/tls/tls_server -p=$port -$1 $2"
-    ./examples/tls/tls_server -p=$port -$1 $2 >> $TPMPWD/run.out 2>&1 &
+    echo -e "./examples/tls/tls_server -p=$port -A=$PEER_CA_FILE -$1 $2"
+    ./examples/tls/tls_server -p=$port "-A=$PEER_CA_FILE" -$1 $2 >> $TPMPWD/run.out 2>&1 &
     SERVER_PID=$!
     if ! wait_for_port "$port" 500; then
         echo -e "TPM TLS server failed to start on port $port for $1 $2"
@@ -671,11 +703,54 @@ run_tpm_tls_server() { # Usage: run_tpm_tls_server [ecc/rsa] [tpmargs] [tlsversi
     fi
     pushd $WOLFSSL_PATH >> $TPMPWD/run.out 2>&1
 
-    echo -e "./examples/client/client -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem $4"
-    ./examples/client/client -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem $4 >> $TPMPWD/run.out 2>&1
+    echo -e "./examples/client/client -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem $PEER_CERT_ARGS $4"
+    ./examples/client/client -v $3 -p $port -w -g -A ./certs/tpm-ca-$1-cert.pem $PEER_CERT_ARGS $4 >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "tls client $1 $2 failed! $RESULT" && exit 1
     popd >> $TPMPWD/run.out 2>&1
+}
+
+
+run_tpm_tls_pq() { # Usage: run_tpm_tls_pq [ML-KEM group] [ML-DSA set]
+    echo -e "TLS test (TPM PQC) group $1 ML-DSA-$2"
+    generate_port
+
+    # the TPM ML-DSA identity and its CA are regenerated per parameter set
+    echo -e "./examples/pqc/gen_pqc_certs -mldsa=$2"
+    ./examples/pqc/gen_pqc_certs -mldsa=$2 >> $TPMPWD/run.out 2>&1
+    RESULT=$?
+    [ $RESULT -ne 0 ] && echo -e "gen_pqc_certs mldsa=$2 failed! $RESULT" && exit 1
+
+    echo -e "./examples/tls/tls_server -p=$port -mldsa=$2"
+    ./examples/tls/tls_server -p=$port -mldsa=$2 > $TPMPWD/pqtls.out 2>&1 &
+    SERVER_PID=$!
+    if ! wait_for_port "$port" 500; then
+        echo -e "TPM PQC TLS server failed to start on port $port"
+        kill $SERVER_PID 2>/dev/null
+        exit 1
+    fi
+
+    echo -e "./examples/tls/tls_client -p=$port -mldsa -group=$1"
+    ./examples/tls/tls_client -p=$port -mldsa -group=$1 >> $TPMPWD/run.out 2>&1
+    RESULT=$?
+    if [ $RESULT -ne 0 ]; then
+        kill $SERVER_PID 2>/dev/null
+        wait $SERVER_PID 2>/dev/null
+        cat $TPMPWD/pqtls.out >> $TPMPWD/run.out
+        rm -f $TPMPWD/pqtls.out
+        echo -e "tpm pqc tls $1 mldsa=$2 failed! $RESULT" && exit 1
+    fi
+    wait $SERVER_PID 2>/dev/null
+    SRV_RESULT=$?
+    cat $TPMPWD/pqtls.out >> $TPMPWD/run.out
+    [ $SRV_RESULT -ne 0 ] && rm -f $TPMPWD/pqtls.out && \
+        echo -e "tpm pqc tls server $1 mldsa=$2 failed! $SRV_RESULT" && exit 1
+
+    # this run's server must have signed on the TPM, not in software
+    grep -q "signed on TPM" $TPMPWD/pqtls.out
+    RESULT=$?
+    rm -f $TPMPWD/pqtls.out
+    [ $RESULT -ne 0 ] && echo -e "tpm pqc tls $1 mldsa=$2 did not sign on TPM!" && exit 1
 }
 
 if [ $WOLFCRYPT_ENABLE -eq 1 ] && [ $WOLFCRYPT_DEFAULT -eq 0 ] && [ $NO_FILESYSTEM -eq 0 ]; then
@@ -736,6 +811,24 @@ if [ $WOLFCRYPT_ENABLE -eq 1 ] && [ $WOLFCRYPT_DEFAULT -eq 0 ] && [ $NO_FILESYST
             run_tpm_tls_server "ecc" "-pk" "4" "./certs/client-ecc384-key.pem -c ./certs/client-ecc384-cert.pem"
             run_tpm_tls_server "ecc" "-pk -aes" "4" "./certs/client-ecc384-key.pem -c ./certs/client-ecc384-cert.pem"
         fi
+    fi
+fi
+
+# TLS 1.3 with ML-KEM key exchange and a TPM held ML-DSA identity. Both ends
+# are wolfTPM examples, so no wolfSSL example pairing is needed here.
+# Requires a wolfSSL that routes wc_MlDsaKey_SignCtx to the crypto callback for
+# device keys; set ENABLE_PQC_TLS=1 once linked against one.
+if [ -z "$ENABLE_PQC_TLS" ]; then
+    ENABLE_PQC_TLS=0
+fi
+if [ $ENABLE_V185 -eq 1 ] && [ $NO_FILESYSTEM -eq 0 ] && \
+   [ $ENABLE_PQC_TLS -eq 1 ]; then
+    run_tpm_tls_pq "ML_KEM_768" "65"
+    run_tpm_tls_pq "ML_KEM_512" "44"
+    run_tpm_tls_pq "ML_KEM_1024" "87"
+    # hybrid groups need the classical curve half
+    if [ $WOLFCRYPT_ECC -eq 1 ]; then
+        run_tpm_tls_pq "SECP256R1MLKEM768" "65"
     fi
 fi
 
@@ -802,8 +895,15 @@ echo -e "PCR Quote tests"
 ./examples/pcr/reset 16 >> $TPMPWD/run.out 2>&1
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "pcr reset failed! $RESULT" && exit 1
-./examples/pcr/extend 16 /usr/bin/zip >> $TPMPWD/run.out 2>&1
+PCR_EXTEND_FILE=/usr/bin/zip
+if [ $WOLFCRYPT_ENABLE -eq 0 ]; then
+    # Without wolfCrypt, extend expects a raw, precomputed SHA-256 digest.
+    PCR_EXTEND_FILE="$TPMPWD/pcr-extend.digest"
+    printf '%s' '0123456789abcdef0123456789abcdef' > "$PCR_EXTEND_FILE"
+fi
+./examples/pcr/extend 16 "$PCR_EXTEND_FILE" >> $TPMPWD/run.out 2>&1
 RESULT=$?
+[ $WOLFCRYPT_ENABLE -eq 0 ] && rm -f "$PCR_EXTEND_FILE"
 [ $RESULT -ne 0 ] && echo -e "pcr extend file failed! $RESULT" && exit 1
 ./examples/pcr/quote 16 zip.quote >> $TPMPWD/run.out 2>&1
 RESULT=$?
@@ -834,6 +934,23 @@ if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
     fi
 fi
 rm -f zip.quote
+
+# PCR Policy tests
+echo -e "PCR Policy tests"
+./examples/pcr/policy 16 >> $TPMPWD/run.out 2>&1
+RESULT=$?
+[ $RESULT -ne 0 ] && echo -e "pcr policy failed! $RESULT" && exit 1
+if [ $WOLFCRYPT_ENABLE -eq 1 ]; then
+    ./examples/pcr/policy 16 -xor >> $TPMPWD/run.out 2>&1
+    RESULT=$?
+    [ $RESULT -ne 0 ] && echo -e "pcr policy param enc xor failed! $RESULT" && exit 1
+
+    if [ $WOLFCRYPT_DEFAULT -eq 0 ]; then
+        ./examples/pcr/policy 16 -aes >> $TPMPWD/run.out 2>&1
+        RESULT=$?
+        [ $RESULT -ne 0 ] && echo -e "pcr policy param enc aes failed! $RESULT" && exit 1
+    fi
+fi
 
 
 # Benchmark tests
@@ -896,9 +1013,64 @@ if [ $NO_FILESYSTEM -eq 0 ]; then
     ./examples/seal/seal sealedkeyblob.bin mySecretMessage >> $TPMPWD/run.out 2>&1
     RESULT=$?
     [ $RESULT -ne 0 ] && echo -e "seal failed! $RESULT" && exit 1
-    ./examples/seal/unseal message.raw sealedkeyblob.bin >> $TPMPWD/run.out 2>&1
+    rm -f message.raw
+    for FILE_STATE in new existing; do
+        if [ "$FILE_STATE" = "existing" ]; then
+            chmod 666 message.raw
+            RESULT=$?
+            [ $RESULT -ne 0 ] && \
+                echo -e "chmod unseal output failed! $RESULT" && exit 1
+        fi
+        # Unsealed data must stay owner-only even under a permissive umask.
+        (umask 000 && ./examples/seal/unseal message.raw sealedkeyblob.bin) \
+            >> $TPMPWD/run.out 2>&1
+        RESULT=$?
+        [ $RESULT -ne 0 ] && \
+            echo -e "unseal to $FILE_STATE file failed! $RESULT" && exit 1
+        grep -qx "mySecretMessage" message.raw
+        RESULT=$?
+        [ $RESULT -ne 0 ] && \
+            echo -e "unsealed data did not match! $RESULT" && exit 1
+        FILE_MODE=$(stat -c %a message.raw 2>/dev/null)
+        if [ -z "$FILE_MODE" ]; then
+            FILE_MODE=$(stat -f %Lp message.raw 2>/dev/null)
+        fi
+        [ "$FILE_MODE" != "600" ] && \
+            echo -e "$FILE_STATE unseal output permissions were $FILE_MODE," \
+                "expected 600" && exit 1
+    done
+
+    rm -f unseal-target.raw unseal-symlink.raw unseal-hardlink.raw
+    printf '%s\n' "doNotOverwrite" > unseal-target.raw
+    ln -s unseal-target.raw unseal-symlink.raw
     RESULT=$?
-    [ $RESULT -ne 0 ] && echo -e "unseal failed! $RESULT" && exit 1
+    [ $RESULT -ne 0 ] && echo -e "create unseal symlink failed! $RESULT" && \
+        exit 1
+    ./examples/seal/unseal unseal-symlink.raw sealedkeyblob.bin \
+        >> $TPMPWD/run.out 2>&1
+    RESULT=$?
+    [ $RESULT -eq 0 ] && echo -e "unseal to symlink should fail!" && exit 1
+    grep -qx "doNotOverwrite" unseal-target.raw
+    RESULT=$?
+    [ $RESULT -ne 0 ] && echo -e "unseal followed symlink! $RESULT" && exit 1
+    rm -f unseal-symlink.raw
+
+    ln unseal-target.raw unseal-hardlink.raw
+    RESULT=$?
+    [ $RESULT -ne 0 ] && echo -e "create unseal hardlink failed! $RESULT" && \
+        exit 1
+    ./examples/seal/unseal unseal-hardlink.raw sealedkeyblob.bin \
+        >> $TPMPWD/run.out 2>&1
+    RESULT=$?
+    [ $RESULT -eq 0 ] && echo -e "unseal to hardlink should fail!" && exit 1
+    grep -qx "doNotOverwrite" unseal-target.raw
+    RESULT=$?
+    [ $RESULT -ne 0 ] && echo -e "unseal followed hardlink! $RESULT" && exit 1
+    rm -f unseal-target.raw unseal-hardlink.raw
+
+    ./examples/seal/unseal . sealedkeyblob.bin >> $TPMPWD/run.out 2>&1
+    RESULT=$?
+    [ $RESULT -eq 0 ] && echo -e "unseal to directory should fail!" && exit 1
     rm -f sealedkeyblob.bin
 
     if [ $WOLFCRYPT_ENABLE -eq 1 ] && [ $WOLFCRYPT_RSA -eq 1 ]; then
@@ -1184,6 +1356,22 @@ echo -e "Endorsement Key (EK) and Certificate"
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "get_ek_certs failed! $RESULT" && exit 1
 
+# PCR reset locality (-loc): smoke-exercise wolfTPM2_SetLocality. Reset PCR 16
+# at locality 0 (universally resettable, a no-op switch). This runs against
+# whichever backend is present (ibmswtpm2, fwTPM, ...) so it does not assert the
+# backend-specific per-PCR map - that rigor lives in tests/fwtpm_check.sh.
+echo -e "PCR reset locality (-loc)"
+LOC_OUT=$(./examples/pcr/reset 16 -loc=0 2>&1)
+echo "$LOC_OUT" >> $TPMPWD/run.out
+if echo "$LOC_OUT" | grep -q "TPM2_PCR_Reset success"; then
+    : # -loc supported and works
+elif echo "$LOC_OUT" | grep -qiE "not compiled in|NOT_COMPILED_IN"; then
+    # kernel (/dev/tpm0) and Windows TBS own the locality; TPM2_GetRCString
+    # renders NOT_COMPILED_IN as "Feature not compiled in" under wolfCrypt.
+    echo -e "  -loc not supported by this backend, skipping"
+else
+    echo -e "pcr reset -loc failed!" && exit 1
+fi
 
 rm -f keyblob.bin
 

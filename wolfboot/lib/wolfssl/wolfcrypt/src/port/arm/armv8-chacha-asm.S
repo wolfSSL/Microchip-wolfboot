@@ -9,17 +9,21 @@
  * https://www.wolfssl.com
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
-
 /* Generated using (from wolfssl):
  *   cd ../scripts
  *   ruby ./chacha/chacha.rb arm64 \
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-chacha-asm.S
  */
+
+#define _WC_BUILDING_ARMV8_CHACHA_ASM_S
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+
 #ifdef WOLFSSL_ARMASM
 #ifdef __aarch64__
 #ifndef WOLFSSL_ARMASM_INLINE
 #ifdef HAVE_CHACHA
+#ifndef WOLFSSL_ARMASM_NO_NEON
 #ifndef __APPLE__
 	.text
 	.section	.rodata
@@ -52,16 +56,17 @@ L_chacha20_arm64_ctr:
 #endif /* __APPLE__ */
 L_chacha20_arm64_rol8:
 	.long	0x02010003,0x06050407,0x0a09080b,0x0e0d0c0f
-#ifndef WOLFSSL_ARMASM_NO_NEON
 #ifndef __APPLE__
 .text
 .globl	wc_chacha_crypt_bytes
+WC_ASM_ATT_HIDDEN(wc_chacha_crypt_bytes)
 .type	wc_chacha_crypt_bytes,@function
 .align	2
 wc_chacha_crypt_bytes:
 #else
 .section	__TEXT,__text
 .globl	_wc_chacha_crypt_bytes
+WC_ASM_ATT_HIDDEN(_wc_chacha_crypt_bytes)
 .p2align	2
 _wc_chacha_crypt_bytes:
 #endif /* __APPLE__ */
@@ -975,12 +980,14 @@ L_chacha_crypt_bytes_arm64_done_all:
 #ifndef __APPLE__
 .text
 .globl	wc_chacha_setiv
+WC_ASM_ATT_HIDDEN(wc_chacha_setiv)
 .type	wc_chacha_setiv,@function
 .align	2
 wc_chacha_setiv:
 #else
 .section	__TEXT,__text
 .globl	_wc_chacha_setiv
+WC_ASM_ATT_HIDDEN(_wc_chacha_setiv)
 .p2align	2
 _wc_chacha_setiv:
 #endif /* __APPLE__ */
@@ -1013,12 +1020,14 @@ L_chacha_setkey_arm64_constant:
 #ifndef __APPLE__
 .text
 .globl	wc_chacha_setkey
+WC_ASM_ATT_HIDDEN(wc_chacha_setkey)
 .type	wc_chacha_setkey,@function
 .align	2
 wc_chacha_setkey:
 #else
 .section	__TEXT,__text
 .globl	_wc_chacha_setkey
+WC_ASM_ATT_HIDDEN(_wc_chacha_setkey)
 .p2align	2
 _wc_chacha_setkey:
 #endif /* __APPLE__ */
@@ -1053,12 +1062,14 @@ L_chacha_setkey_arm64_done:
 #ifndef __APPLE__
 .text
 .globl	wc_chacha_use_over
+WC_ASM_ATT_HIDDEN(wc_chacha_use_over)
 .type	wc_chacha_use_over,@function
 .align	2
 wc_chacha_use_over:
 #else
 .section	__TEXT,__text
 .globl	_wc_chacha_use_over
+WC_ASM_ATT_HIDDEN(_wc_chacha_use_over)
 .p2align	2
 _wc_chacha_use_over:
 #endif /* __APPLE__ */
@@ -1091,8 +1102,7 @@ L_chacha_use_over_arm64_byte_loop:
 	eor	w5, w5, w4
 	subs	x3, x3, #1
 	strb	w5, [x1], #1
-	beq	L_chacha_use_over_arm64_done
-	b	L_chacha_use_over_arm64_byte_loop
+	bne	L_chacha_use_over_arm64_byte_loop
 L_chacha_use_over_arm64_done:
 	ret
 #ifndef __APPLE__

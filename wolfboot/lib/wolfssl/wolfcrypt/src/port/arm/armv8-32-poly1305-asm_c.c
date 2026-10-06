@@ -15,7 +15,9 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-poly1305-asm.c
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+#define _WC_BUILDING_ARMV8_32_POLY1305_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -1436,7 +1438,7 @@ WC_OMIT_FRAME_POINTER void poly1305_final(Poly1305* ctx, byte* mac)
 
 #endif /* WOLFSSL_ARMASM_NO_NEON */
 #endif /* HAVE_POLY1305 */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #endif /* WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

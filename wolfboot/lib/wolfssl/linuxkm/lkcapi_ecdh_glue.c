@@ -898,19 +898,19 @@ static int linuxkm_test_ecdh_nist_driver(const char * driver,
      */
     tfm = crypto_alloc_kpp(driver, 0, 0);
     if (IS_ERR(tfm)) {
-        #if defined(HAVE_FIPS) && defined(CONFIG_CRYPTO_MANAGER) && \
-            !defined(CONFIG_CRYPTO_MANAGER_DISABLE_TESTS)
+        #if defined(HAVE_FIPS) && defined(CONFIG_CRYPTO_FIPS) && \
+            defined(WC_LINUX_CONFIG_SELFTESTS)
         if ((PTR_ERR(tfm) == -ENOENT) && fips_enabled) {
-            pr_info("info: skipping unsupported kpp algorithm %s: %ld\n",
-                    driver, PTR_ERR(tfm));
-            test_rc = NOT_COMPILED_IN;
+            pr_info("info: skipping unsupported kpp algorithm %s: %d\n",
+                    driver, (int)PTR_ERR(tfm));
+            test_rc = FIPS_NOT_ALLOWED_E;
         }
         else
         #endif
         {
-            pr_err("error: allocating kpp algorithm %s failed: %ld\n",
-                   driver, PTR_ERR(tfm));
-            if (PTR_ERR(tfm) == -ENOMEM)
+            pr_err("error: allocating kpp algorithm %s failed: %d\n",
+                   driver, (int)PTR_ERR(tfm));
+            if (PTR_ERR(tfm) == -WC_NO_ERR_TRACE(ENOMEM))
                 test_rc = MEMORY_E;
             else
                 test_rc = BAD_FUNC_ARG;

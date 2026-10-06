@@ -1,8 +1,8 @@
 /* tpm_test.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -35,6 +35,7 @@
 #define TPM2_DEMO_NV_TEST_INDEX         0x01800200
 #define TPM2_DEMO_NV_TEST_AUTH_INDEX    0x01800201
 #define TPM2_DEMO_NVRAM_STORE_INDEX     0x01800202
+#define TPM2_DEMO_NV_TEST_CHUNKED_INDEX 0x01800205
 #define TPM2_DEMO_NVRAM_EXTEND_INDEX    0x01000200
 #define TPM2_DEMO_NV_TEST_SIZE          MAX_DIGEST_BUFFER /* max size on Infineon SLB9670 is 1664 */
 #define TPM2_DEMO_NV_COUNTER_INDEX      0x01800300

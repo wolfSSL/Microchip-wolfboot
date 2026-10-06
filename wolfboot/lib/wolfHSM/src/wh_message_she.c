@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -417,6 +417,38 @@ int wh_MessageShe_TranslateVerifyMacResponse(
     }
     WH_T32(magic, dest, src, rc);
     dest->status = src->status;
+    return 0;
+}
+
+/* Get ID translation functions */
+int wh_MessageShe_TranslateGetIdRequest(uint16_t magic,
+                                        const whMessageShe_GetIdRequest* src,
+                                        whMessageShe_GetIdRequest*       dest)
+{
+    (void)magic;
+
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    if (src != dest) {
+        memcpy(dest->challenge, src->challenge, WH_SHE_KEY_SZ);
+    }
+    return 0;
+}
+
+int wh_MessageShe_TranslateGetIdResponse(
+    uint16_t magic, const whMessageShe_GetIdResponse* src,
+    whMessageShe_GetIdResponse* dest)
+{
+    if ((src == NULL) || (dest == NULL)) {
+        return WH_ERROR_BADARGS;
+    }
+    WH_T32(magic, dest, src, rc);
+    if (src != dest) {
+        memcpy(dest->uid, src->uid, WH_SHE_UID_SZ);
+        memcpy(dest->mac, src->mac, WH_SHE_KEY_SZ);
+    }
+    dest->sreg = src->sreg;
     return 0;
 }
 

@@ -12,6 +12,7 @@
  * https://www.wolfssl.com
  */
 
+#ifndef WOLFBOOT_UNIT_TEST_FLASH_ERASE
 #include <stdint.h>
 #include <target.h>
 #include "image.h"
@@ -34,8 +35,11 @@
 /*!< Core clock frequency: 48000000Hz */
 #define BOARD_BOOTCLOCKRUN_CORE_CLOCK              48000000U
 static flash_config_t pflash;
+#endif /* !WOLFBOOT_UNIT_TEST_FLASH_ERASE */
+
 static uint32_t pflash_sector_size = WOLFBOOT_SECTOR_SIZE;
 
+#ifndef WOLFBOOT_UNIT_TEST_FLASH_ERASE
 uint32_t SystemCoreClock;
 
 #ifdef TZEN
@@ -213,15 +217,26 @@ static void erase_flash_sector(uint32_t *dst) {
     /* Wait for completion */
     while (!(FMU0->FSTAT & 0x00000080)) {}
 }
+#endif /* !WOLFBOOT_UNIT_TEST_FLASH_ERASE */
 
 int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
 {
-    if (address % pflash_sector_size)
-        address -= address % pflash_sector_size;
+    uint32_t sector_size = pflash_sector_size;
+
+    if (sector_size == 0U)
+        sector_size = WOLFBOOT_SECTOR_SIZE;
+
+    /* Rounding the start down extends the range, so the length must grow by
+     * the same amount or the last sector of the request is left unerased. */
+    if (address % sector_size) {
+        uint32_t offset = address % sector_size;
+        address -= offset;
+        len += (int)offset;
+    }
     while (len > 0) {
         erase_flash_sector((uint32_t *)address);
-        address += WOLFBOOT_SECTOR_SIZE;
-        len -= WOLFBOOT_SECTOR_SIZE;
+        address += sector_size;
+        len -= (int)sector_size;
     }
     return 0;
 }

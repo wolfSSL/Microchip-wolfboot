@@ -25,6 +25,8 @@ struct wolfkmod_fpu_state_t {
 
 typedef struct wolfkmod_fpu_state_t wolfkmod_fpu_state_t;
 
+#define WOLFKMOD_FPU_MAX_NEST 128
+
 /* The fpu_states array tracks thread id and nesting level of save/restore
  * and push/pop vector registers macro calls. It is indexed by raw cpu id,
  * and only accessed after the thread calls fpu_kern_enter(), and before
@@ -97,28 +99,33 @@ void wolfkmod_vecreg_exit(void)
  * Build with WOLFSSL_BSDKM_FPU_DEBUG to see verbose FPU logging.
  */
 #if defined(WOLFSSL_BSDKM_FPU_DEBUG)
-    #define wolfkmod_print_curthread(what)                                   \
+    #define wolfkmod_print_curthread(what) do {                              \
         printf("%s: cpuid = %d, curthread: td_tid = %d, pid = %d (%s), "     \
                "td_critnest = %d, kernfpu = %02x\n",                         \
                (what), PCPU_GET(cpuid), curthread->td_tid,                   \
                curthread->td_proc ? curthread->td_proc->p_pid : -1,          \
                curthread->td_proc ? curthread->td_proc->p_comm : "noproc",   \
                curthread->td_critnest,                                       \
-               curthread->td_pcb->pcb_flags & PCB_KERNFPU);
+               curthread->td_pcb->pcb_flags & PCB_KERNFPU);                  \
+    } while (0)
 
-    #define wolfkmod_fpu_kern_enter()                                        \
+    #define wolfkmod_fpu_kern_enter() do {                                   \
         wolfkmod_print_curthread("fpu_kern_enter");                          \
-        fpu_kern_enter(curthread, NULL, FPU_KERN_NOCTX);
+        fpu_kern_enter(curthread, NULL, FPU_KERN_NOCTX);                     \
+    } while (0)
 
-    #define wolfkmod_fpu_kern_leave()                                        \
+    #define wolfkmod_fpu_kern_leave() do {                                   \
         wolfkmod_print_curthread("fpu_kern_leave");                          \
-        fpu_kern_leave(curthread, NULL);
+        fpu_kern_leave(curthread, NULL);                                     \
+    } while (0)
 #else
-    #define wolfkmod_fpu_kern_enter()                                        \
-        fpu_kern_enter(curthread, NULL, FPU_KERN_NOCTX);
+    #define wolfkmod_fpu_kern_enter() do {                                   \
+        fpu_kern_enter(curthread, NULL, FPU_KERN_NOCTX);                     \
+    } while (0)
 
-    #define wolfkmod_fpu_kern_leave()                                        \
-        fpu_kern_leave(curthread, NULL);
+    #define wolfkmod_fpu_kern_leave() do {                                   \
+        fpu_kern_leave(curthread, NULL);                                     \
+    } while (0)
 #endif /* WOLFSSL_BSDKM_FPU_DEBUG */
 
 int wolfkmod_vecreg_save(int flags_unused)
@@ -129,7 +136,7 @@ int wolfkmod_vecreg_save(int flags_unused)
     wolfkmod_print_curthread("wolfkmod_vecreg_save");
     #endif
 
-    if (fpu_states == NULL) {
+    if (__predict_false(fpu_states == NULL)) {
         printf("error: wolfkmod_vecreg_save: fpu_states null\n");
         return (EINVAL);
     }
@@ -147,11 +154,21 @@ int wolfkmod_vecreg_save(int flags_unused)
         /* kern fpu is active for this thread. check td_tid and
          * increment nesting level. */
         lwpid_t td_tid = wolfkmod_fpu_get_tid();
-        if (td_tid != curthread->td_tid) {
+        if (__predict_false(td_tid != curthread->td_tid)) {
             printf("error: wolfkmod_vecreg_save: got tid = %d, expected %d\n",
                    td_tid, curthread->td_tid);
             return (EINVAL);
         }
+
+        if (__predict_false(fpu_states[PCPU_GET(cpuid)].nest >=
+                            WOLFKMOD_FPU_MAX_NEST)) {
+            /* if this nesting depth is reached, something has gone really
+             * wrong (infinite loop, infinite recursion, etc). */
+            printf("error: wolfkmod_vecreg_save: excessive fpu nesting (%u)\n",
+                   WOLFKMOD_FPU_MAX_NEST);
+            return (EINVAL);
+        }
+
         fpu_states[PCPU_GET(cpuid)].nest++;
     }
     else {
@@ -164,7 +181,8 @@ int wolfkmod_vecreg_save(int flags_unused)
         wolfkmod_fpu_kern_enter();
         td_tid = wolfkmod_fpu_get_tid();
 
-        if (fpu_states[PCPU_GET(cpuid)].nest != 0 || td_tid != 0) {
+        if (__predict_false(fpu_states[PCPU_GET(cpuid)].nest != 0 ||
+            td_tid != 0)) {
             printf("error: wolfkmod_fpu_kern_enter() with nest: %d, %d\n",
                    fpu_states[PCPU_GET(cpuid)].nest, td_tid);
             return (EINVAL);
@@ -184,7 +202,7 @@ void wolfkmod_vecreg_restore(void)
     wolfkmod_print_curthread("wolfkmod_vecreg_restore");
     #endif
 
-    if (fpu_states == NULL) {
+    if (__predict_false(fpu_states == NULL)) {
         printf("error: wolfkmod_vecreg_restore: fpu_states null\n");
         return;
     }
@@ -201,7 +219,7 @@ void wolfkmod_vecreg_restore(void)
     if (curthread->td_pcb->pcb_flags & PCB_KERNFPU) {
         /* kern fpu is active for this thread. check tid and nesting level. */
         lwpid_t td_tid = wolfkmod_fpu_get_tid();
-        if (td_tid != curthread->td_tid) {
+        if (__predict_false(td_tid != curthread->td_tid)) {
             printf("error: wolfkmod_vecreg_restore: got tid = %d, "
                    "expected %d\n", td_tid, curthread->td_tid);
             return;

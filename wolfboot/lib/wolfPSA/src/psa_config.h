@@ -1,0 +1,72 @@
+/* psa_config.h
+ *
+ * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ *
+ * This file is part of wolfBoot.
+ *
+ * Contact licensing@wolfssl.com with any questions or comments.
+ *
+ * https://www.wolfssl.com
+ */
+
+/* Build-configuration policy shared by every wolfPSA translation unit.
+ * Include this instead of <wolfssl/wolfcrypt/settings.h>: it pulls settings.h
+ * in first, then applies the checks, so a partial build (one TU compiled on
+ * its own) gets the same diagnostics as a full one. */
+
+#ifndef WOLFPSA_CONFIG_H
+#define WOLFPSA_CONFIG_H
+
+#include <wolfssl/wolfcrypt/settings.h>
+
+#if defined(WOLFSSL_PSA_ENGINE) && !defined(NO_AES)
+
+/* AES backends, none of which loads a table at a secret-dependent index:
+ *
+ *   WC_AES_BITSLICED         adds 15 * 16 * W words of W bits to Aes, where W
+ *                            is WC_AES_BS_WORD_SIZE: 30 * W^2 bytes, 122,880
+ *                            at W = 64 down to 1,920 at W = 8
+ *   WOLFSSL_AES_TOUCH_LINES  every lookup touches each cache line of the
+ *                            table; sizeof(Aes) is unchanged
+ *   a hardware AES core      the list below, which compiles no software
+ *                            tables. WOLFSSL_AESNI and WOLFSSL_ESP32_CRYPT
+ *                            are absent: both keep the T-table core as a
+ *                            runtime fallback
+ *   WOLFPSA_AES_FAST         waives the check and accepts the T-table core:
+ *                            faster, not constant time, not PSA compliant
+ */
+
+/* Internal marker, derived here and nowhere else: a definition arriving from
+ * outside would otherwise satisfy the policy check below on any build. */
+#undef WOLFPSA_AES_HW_BACKEND
+
+#if defined(WOLFSSL_ARMASM) || defined(WOLFSSL_RISCV_ASM) || \
+    defined(FREESCALE_LTC) || defined(FREESCALE_MMCAU) || \
+    defined(WOLFSSL_SILABS_SE_ACCEL) || defined(WOLFSSL_PSOC6_CRYPTO) || \
+    defined(WOLFSSL_AFALG) || defined(WOLFSSL_DEVCRYPTO_AES) || \
+    defined(WOLFSSL_PIC32MZ_CRYPT) || defined(WOLFSSL_NRF51_AES) || \
+    defined(WOLFSSL_SCE) || defined(HAVE_COLDFIRE_SEC) || \
+    defined(WOLF_CRYPTO_CB_ONLY_AES)
+    #define WOLFPSA_AES_HW_BACKEND
+#endif
+
+#if !defined(WOLFPSA_AES_FAST) && !defined(WC_AES_BITSLICED) && \
+    !defined(WOLFSSL_AES_TOUCH_LINES) && !defined(WOLFPSA_AES_HW_BACKEND)
+#error "wolfPSA: AES backend is not constant time. Select WC_AES_BITSLICED or WOLFSSL_AES_TOUCH_LINES, or define WOLFPSA_AES_FAST to accept the T-table core."
+#endif
+
+#if defined(WOLFPSA_AES_FAST) && \
+    (defined(WC_AES_BITSLICED) || defined(WOLFSSL_AES_TOUCH_LINES))
+#error "wolfPSA: WOLFPSA_AES_FAST conflicts with WC_AES_BITSLICED/WOLFSSL_AES_TOUCH_LINES"
+#endif
+
+#endif /* WOLFSSL_PSA_ENGINE && !NO_AES */
+
+/* PSA treats the hash as opaque bytes, but wolfcrypt/src/ecc.c rejects an
+ * all-zero digest unless this is set, in a split build in libwolfssl too. */
+#if defined(WOLFSSL_PSA_ENGINE) && defined(HAVE_ECC) \
+    && !defined(WC_ALLOW_ECC_ZERO_HASH)
+#error "wolfPSA needs WC_ALLOW_ECC_ZERO_HASH (psa_sign_hash/psa_verify_hash must accept an all-zero digest)"
+#endif
+
+#endif /* WOLFPSA_CONFIG_H */

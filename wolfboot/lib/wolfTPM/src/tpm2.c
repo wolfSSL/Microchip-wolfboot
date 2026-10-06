@@ -1,8 +1,8 @@
 /* tpm2.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -74,6 +74,13 @@ static THREAD_LS_T TPM2_CTX* gActiveTPM;
 #else
 #define INTERNAL_SEND_COMMAND      TPM2_TIS_SendCommand
 #define TPM2_INTERNAL_CLEANUP(ctx)
+#endif
+
+#define TPM2_LOCALITY_UNINITIALIZED (-1)
+
+#if !defined(WOLFTPM2_NO_WOLFCRYPT) && !defined(WOLFTPM_NO_LOCK) && \
+    !defined(SINGLE_THREADED) && !defined(WOLFSSL_MUTEX_INITIALIZER)
+#define TPM2_DYNAMIC_HW_LOCK
 #endif
 
 /******************************************************************************/
@@ -218,6 +225,7 @@ static int TPM2_CommandProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
             #ifdef DEBUG_WOLFTPM
                     printf("Command parameter encryption failed\n");
             #endif
+                    TPM2_ForceZero(&authCmd, sizeof(authCmd));
                     return rc;
                 }
             }
@@ -232,6 +240,7 @@ static int TPM2_CommandProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
             #ifdef DEBUG_WOLFTPM
                 printf("Error getting names for cpHash!\n");
             #endif
+                TPM2_ForceZero(&authCmd, sizeof(authCmd));
                 return BAD_FUNC_ARG;
             }
 
@@ -242,6 +251,8 @@ static int TPM2_CommandProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
             #ifdef DEBUG_WOLFTPM
                 printf("Error calculating cpHash!\n");
             #endif
+                TPM2_ForceZero(&hash, sizeof(hash));
+                TPM2_ForceZero(&authCmd, sizeof(authCmd));
                 return rc;
             }
             /* Calculate HMAC for policy, hmac or salted sessions */
@@ -253,6 +264,8 @@ static int TPM2_CommandProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
             #ifdef DEBUG_WOLFTPM
                 printf("Error calculating command HMAC!\n");
             #endif
+                TPM2_ForceZero(&hash, sizeof(hash));
+                TPM2_ForceZero(&authCmd, sizeof(authCmd));
                 return rc;
             }
         #endif /* !WOLFTPM2_NO_WOLFCRYPT && !NO_HMAC */
@@ -304,18 +317,33 @@ int TPM2_ResponseProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
     param = &packet->buf[packet->pos]; /* Mark parameter data */
     authPos = packet->pos + paramSz;
 
-    /* Mark "first" decryption parameter */
+    /* Mark "first" decryption parameter. Reject a parameter area too small to
+     * hold the size prefix before parsing it, so a truncated response returns
+     * TPM_RC_SIZE without reading past the declared parameter area. */
     if (info->flags & CMD_FLAG_DEC2) {
         UINT16 tempSz;
+        if (paramSz < sizeof(UINT16))
+            return TPM_RC_SIZE;
         TPM2_Packet_ParseU16(packet, &tempSz);
         decParam = param + sizeof(UINT16);
         decParamSz = tempSz;
     }
     else if (info->flags & CMD_FLAG_DEC4) {
         UINT32 tempSz;
+        if (paramSz < sizeof(UINT32))
+            return TPM_RC_SIZE;
         TPM2_Packet_ParseU32(packet, &tempSz);
         decParam = param + sizeof(UINT32);
         decParamSz = tempSz;
+    }
+
+    /* Bound the decrypt region to the parameter area so a malicious or faulty
+     * TPM cannot drive an out-of-bounds parameter decryption write */
+    if (decParam != NULL) {
+        UINT32 decOffset = (UINT32)(decParam - param);
+        if (decParamSz > paramSz - decOffset) {
+            return TPM_RC_SIZE;
+        }
     }
 
 #ifdef WOLFTPM_DEBUG_VERBOSE
@@ -353,13 +381,24 @@ int TPM2_ResponseProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
                 int sizeMismatch;
                 int diff;
 
-                if (expectedHmacSz == 0 || authRsp.hmac.size != expectedHmacSz) {
+                XMEMSET(&hash, 0, sizeof(hash));
+                XMEMSET(&hmac, 0, sizeof(hmac));
+
+                if (expectedHmacSz == 0) {
                 #ifdef DEBUG_WOLFTPM
-                    printf("Response HMAC size mismatch! expected=%u got=%u\n",
-                        expectedHmacSz, authRsp.hmac.size);
+                    printf("Response HMAC size invalid! expected=%u\n",
+                        expectedHmacSz);
                 #endif
+                    TPM2_ForceZero(&authRsp, sizeof(authRsp));
                     return TPM_RC_HMAC;
                 }
+                sizeMismatch = (authRsp.hmac.size != expectedHmacSz);
+                #ifdef DEBUG_WOLFTPM
+                if (sizeMismatch) {
+                    printf("Response HMAC size mismatch! expected=%u got=%u\n",
+                        expectedHmacSz, authRsp.hmac.size);
+                }
+                #endif
 
                 /* calculate "rpHash" hash for command code and parameters */
                 rc = TPM2_CalcRpHash(session->authHash, cmdCode, param, paramSz,
@@ -368,6 +407,8 @@ int TPM2_ResponseProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
                 #ifdef DEBUG_WOLFTPM
                     printf("Error calculating rpHash!\n");
                 #endif
+                    TPM2_ForceZero(&hash, sizeof(hash));
+                    TPM2_ForceZero(&authRsp, sizeof(authRsp));
                     return rc;
                 }
 
@@ -379,22 +420,31 @@ int TPM2_ResponseProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
                 #ifdef DEBUG_WOLFTPM
                     printf("Error calculating response HMAC!\n");
                 #endif
+                    TPM2_ForceZero(&hmac, sizeof(hmac));
+                    TPM2_ForceZero(&hash, sizeof(hash));
+                    TPM2_ForceZero(&authRsp, sizeof(authRsp));
                     return rc;
                 }
 
-                /* Verify HMAC using constant-time comparison. Wire-format
-                 * size is validated above; this is a branch-free tail check
-                 * (hmac.size and authRsp.hmac.size are both algorithm-derived
-                 * and equal to expectedHmacSz at this point). */
-                sizeMismatch = (hmac.size != authRsp.hmac.size);
+                /* Verify HMAC using constant-time comparison. A wire-size
+                 * mismatch captured above is combined here rather than
+                 * rejected early, so this always reads expectedHmacSz
+                 * bytes regardless of the attacker-supplied wire size. */
+                sizeMismatch |= (hmac.size != authRsp.hmac.size);
                 diff = TPM2_ConstantCompare(hmac.buffer, authRsp.hmac.buffer,
                     expectedHmacSz);
                 if (sizeMismatch | diff) {
                 #ifdef DEBUG_WOLFTPM
                     printf("Response HMAC verification failed!\n");
                 #endif
+                    TPM2_ForceZero(&hmac, sizeof(hmac));
+                    TPM2_ForceZero(&hash, sizeof(hash));
+                    TPM2_ForceZero(&authRsp, sizeof(authRsp));
                     return TPM_RC_HMAC;
                 }
+
+                TPM2_ForceZero(&hmac, sizeof(hmac));
+                TPM2_ForceZero(&hash, sizeof(hash));
             }
 
             /* Save off last known HMAC */
@@ -416,10 +466,22 @@ int TPM2_ResponseProcess(TPM2_CTX* ctx, TPM2_Packet* packet,
             #ifdef DEBUG_WOLFTPM
                     printf("Response parameter decryption failed\n");
             #endif
+                    TPM2_ForceZero(&authRsp, sizeof(authRsp));
                     return rc;
                 }
             }
+
+            /* Retire a one-shot session: when the TPM clears
+             * continueSession the session is consumed, so clear the local
+             * slot to prevent reuse of a stale handle. */
+            if ((authRsp.sessionAttributes & TPMA_SESSION_continueSession)
+                    == 0) {
+                TPM2_ForceZero(session, sizeof(TPM2_AUTH_SESSION));
+                session->sessionHandle = TPM_RS_PW;
+            }
         }
+
+        TPM2_ForceZero(&authRsp, sizeof(authRsp));
     }
 
     return rc;
@@ -476,6 +538,19 @@ static TPM_RC TPM2_DispatchCommand(TPM2_CTX* ctx, TPM2_Packet* packet)
 {
     TPM_RC rc;
 
+    /* A command that did not fit the packet buffer would otherwise go out
+     * silently truncated, since the marshalling helpers drop what does not
+     * fit and TPM2_Packet_Finalize then stamps the short length. The buffer
+     * is ctx->cmdBuf[XFER_MAX_SIZE], the larger of MAX_COMMAND_SIZE and
+     * MAX_RESPONSE_SIZE, which --enable-smallstack lowers to 1024 and 1350
+     * respectively, so this is reachable on a supported build. */
+    if (packet->overflow) {
+    #ifdef DEBUG_WOLFTPM
+        printf("Command exceeds the %d byte packet buffer\n", packet->size);
+    #endif
+        return (TPM_RC)BUFFER_E;
+    }
+
 #ifdef WOLFTPM_SPDM
     rc = TPM2_SPDM_SendCommand(ctx, packet);
     if (rc >= 0)
@@ -504,6 +579,15 @@ static TPM_RC TPM2_TransmitCommand(TPM2_CTX* ctx, TPM2_Packet* packet,
 
     /* parse response header and extract the TPM response code */
     rc = TPM2_Packet_Parse(rc, packet);
+
+    /* Wipe request-tail bytes a shorter response did not overwrite, so
+     * plaintext auth values do not linger in the shared command buffer. Only
+     * on success: the command must survive a transport error for inspection. */
+    if (rc == TPM_RC_SUCCESS && packet->size >= 0 &&
+            (UINT32)packet->size < cmdSz) {
+        TPM2_ForceZero(packet->buf + packet->size,
+            cmdSz - (UINT32)packet->size);
+    }
 
     return rc;
 }
@@ -543,6 +627,16 @@ static TPM_RC TPM2_TransmitCommand(TPM2_CTX* ctx, TPM2_Packet* packet,
             continue;
         }
         break;
+    }
+
+    /* Wipe request-tail bytes a shorter response did not overwrite, so
+     * plaintext auth values do not linger in the shared command buffer. Only
+     * after the final attempt, and only on success so the command survives a
+     * transport error for retry and inspection. */
+    if (rc == TPM_RC_SUCCESS && packet->size >= 0 &&
+            (UINT32)packet->size < cmdSz) {
+        TPM2_ForceZero(packet->buf + packet->size,
+            cmdSz - (UINT32)packet->size);
     }
 
     return rc;
@@ -647,6 +741,14 @@ static inline int TPM2_WolfCrypt_Init(void)
 {
     int rc = 0;
 
+#if !defined(WOLFTPM_NO_LOCK) && !defined(SINGLE_THREADED) && \
+    defined(WOLFSSL_MUTEX_INITIALIZER)
+    /* gHwLock is statically initialized, so it can guard the reference count
+     * before wolfCrypt is initialized */
+    if (wc_LockMutex(&gHwLock) != 0)
+        return TPM_RC_FAILURE;
+#endif
+
     /* track reference count for wolfCrypt initialization */
     if (gWolfCryptRefCount == 0) {
     #ifdef DEBUG_WOLFSSL
@@ -662,12 +764,46 @@ static inline int TPM2_WolfCrypt_Init(void)
     #endif
     #if !defined(WOLFTPM_NO_LOCK) && !defined(SINGLE_THREADED) && \
         !defined(WOLFSSL_MUTEX_INITIALIZER)
-        wc_InitMutex(&gHwLock);
+        if (rc == 0)
+            wc_InitMutex(&gHwLock);
     #endif
     }
-    gWolfCryptRefCount++;
+    if (rc == 0)
+        gWolfCryptRefCount++;
+
+#if !defined(WOLFTPM_NO_LOCK) && !defined(SINGLE_THREADED) && \
+    defined(WOLFSSL_MUTEX_INITIALIZER)
+    wc_UnLockMutex(&gHwLock);
+#endif
 
     return rc;
+}
+
+static inline void TPM2_WolfCrypt_Cleanup(void)
+{
+#if !defined(WOLFTPM_NO_LOCK) && !defined(SINGLE_THREADED) && \
+    defined(WOLFSSL_MUTEX_INITIALIZER)
+    int locked = (wc_LockMutex(&gHwLock) == 0);
+#endif
+
+    /* track wolf initialize reference count in wolfTPM. wolfCrypt does not
+     * properly track reference count in v4.1 or older releases */
+    gWolfCryptRefCount--;
+    if (gWolfCryptRefCount < 0)
+        gWolfCryptRefCount = 0;
+    if (gWolfCryptRefCount == 0) {
+    #if !defined(WOLFTPM_NO_LOCK) && !defined(SINGLE_THREADED) && \
+        !defined(WOLFSSL_MUTEX_INITIALIZER)
+        wc_FreeMutex(&gHwLock);
+    #endif
+        wolfCrypt_Cleanup();
+    }
+
+#if !defined(WOLFTPM_NO_LOCK) && !defined(SINGLE_THREADED) && \
+    defined(WOLFSSL_MUTEX_INITIALIZER)
+    if (locked)
+        wc_UnLockMutex(&gHwLock);
+#endif
 }
 #endif
 
@@ -729,7 +865,13 @@ TPM_RC TPM2_ChipStartup(TPM2_CTX* ctx, int timeoutTries)
         rc = TPM2_TIS_StartupWait(ctx, timeoutTries);
         if (rc == TPM_RC_SUCCESS) {
 
-            /* Request locality for TPM module */
+            /* Request locality for TPM module. When built with
+             * WOLFTPM_TIS_RESET_STALE_LOCALITY this also relinquishes a stale
+             * non-default locality left active by a prior session (for example
+             * after wolfTPM2_SetLocality) that would otherwise block acquiring
+             * the default one on TPMs that do not preempt. That self-heal is
+             * off by default, so a default build simply requests the default
+             * locality without relinquishing anything. */
             rc = TPM2_TIS_RequestLocality(ctx, timeoutTries);
             if (rc == TPM_RC_SUCCESS) {
 
@@ -787,7 +929,6 @@ int TPM2_GetCommandRetries(TPM2_CTX* ctx)
     if (ctx == NULL) {
         return BAD_FUNC_ARG;
     }
-    /* atomic int read, no lock needed; the setter takes the lock */
     return ctx->retries;
 }
 #endif /* !WOLFTPM_NO_RETRY */
@@ -803,7 +944,20 @@ TPM_RC TPM2_Init_ex(TPM2_CTX* ctx, TPM2HalIoCb ioCb, void* userCtx,
         return BAD_FUNC_ARG;
     }
 
+    if (TPM2_GetActiveCtx() == ctx)
+        TPM2_SetActiveCtx(NULL);
+
     XMEMSET(ctx, 0, sizeof(TPM2_CTX));
+    ctx->locality = TPM2_LOCALITY_UNINITIALIZED;
+
+#if defined(WOLFTPM_SWTPM)
+    /* set before any early return so cleanup cannot act on fd 0 */
+    ctx->tcpCtx.fd = -1;
+#endif
+#if defined(WOLFTPM_LINUX_DEV) || defined(WOLFTPM_LINUX_DEV_AUTODETECT)
+    /* set before any early return so cleanup cannot act on fd 0 */
+    ctx->fd = -1;
+#endif
 
 #ifndef WOLFTPM_NO_RETRY
     ctx->retries = WOLFTPM_MAX_RETRIES;
@@ -815,21 +969,18 @@ TPM_RC TPM2_Init_ex(TPM2_CTX* ctx, TPM2HalIoCb ioCb, void* userCtx,
         return rc;
 #endif
 
-#if defined(WOLFTPM_SWTPM)
-    ctx->tcpCtx.fd = -1;
-#endif
-
 #if defined(WOLFTPM_LINUX_DEV) || defined(WOLFTPM_SWTPM) || \
     defined(WOLFTPM_WINAPI)
     if (ioCb != NULL || userCtx != NULL) {
-        return BAD_FUNC_ARG;
+        rc = BAD_FUNC_ARG;
+        goto exit;
     }
 #elif defined(WOLFTPM_LINUX_DEV_AUTODETECT)
     /* Accept IO callback for SPI fallback path */
     if (ioCb != NULL) {
         rc = TPM2_SetHalIoCb(ctx, ioCb, userCtx);
         if (rc != TPM_RC_SUCCESS)
-            return rc;
+            goto exit;
     }
 #else
     #ifdef WOLFTPM_MMIO
@@ -839,19 +990,34 @@ TPM_RC TPM2_Init_ex(TPM2_CTX* ctx, TPM2HalIoCb ioCb, void* userCtx,
     /* Setup HAL IO Callback */
     rc = TPM2_SetHalIoCb(ctx, ioCb, userCtx);
     if (rc != TPM_RC_SUCCESS)
-        return rc;
+        goto exit;
 #endif
 
-#if defined(WOLFTPM_LINUX_DEV) || defined(WOLFTPM_LINUX_DEV_AUTODETECT)
-    ctx->fd = -1;
+#ifdef WOLFTPM_LINUX_DEV_AUTODETECT
+    /* Probe here, not only in wolfTPM2_Init_ex, so the native API autodetects
+     * /dev/tpmX too. TryOpen leaves fd < 0 whether the node was absent or
+     * merely unopenable (EACCES), and neither is fatal on its own: with an IO
+     * callback the SPI path is still viable, which is what this build mode
+     * exists for. Reject only when no transport can serve AND the caller asked
+     * to bring one up - otherwise TPM2_TIS_SendCommand would call a NULL
+     * ctx->ioCb on the first command. TPM2_Init_minimal passes timeoutTries 0
+     * and performs no IO, so it keeps succeeding either way. */
+    /* Only fd matters here; the return code adds nothing this branch needs. */
+    (void)TPM2_LINUX_TryOpen(ctx);
+    if (ctx->fd < 0 && ctx->ioCb == NULL && timeoutTries > 0) {
+    #ifdef DEBUG_WOLFTPM
+        printf("TPM2: Kernel driver not available and no IO callback for SPI\n");
+    #endif
+        rc = TPM_RC_FAILURE;
+        goto exit;
+    }
+    rc = TPM_RC_SUCCESS;
 #endif
-
-    /* Set the active TPM global */
-    TPM2_SetActiveCtx(ctx);
 
     if (timeoutTries > 0
     #ifdef WOLFTPM_LINUX_DEV_AUTODETECT
-        && ctx->ioCb != NULL /* autodetect: skip if no IO callback */
+        /* skip TIS startup if the kernel driver answered, or SPI has no IO cb */
+        && ctx->fd < 0 && ctx->ioCb != NULL
     #endif
     ) {
         /* Perform chip startup and assign locality */
@@ -860,6 +1026,17 @@ TPM_RC TPM2_Init_ex(TPM2_CTX* ctx, TPM2HalIoCb ioCb, void* userCtx,
     else {
         /* use existing locality */
         ctx->locality = WOLFTPM_LOCALITY_DEFAULT;
+    }
+
+    if (rc == TPM_RC_SUCCESS)
+        TPM2_SetActiveCtx(ctx);
+
+exit:
+    if (rc != TPM_RC_SUCCESS) {
+        ctx->locality = TPM2_LOCALITY_UNINITIALIZED;
+    #ifndef WOLFTPM2_NO_WOLFCRYPT
+        TPM2_WolfCrypt_Cleanup();
+    #endif
     }
 
     return rc;
@@ -878,21 +1055,62 @@ TPM_RC TPM2_Init(TPM2_CTX* ctx, TPM2HalIoCb ioCb, void* userCtx)
 TPM_RC TPM2_Cleanup(TPM2_CTX* ctx)
 {
     TPM_RC rc;
+#ifndef WOLFTPM2_NO_WOLFCRYPT
+    int wolfCryptInit;
+    #ifdef TPM2_DYNAMIC_HW_LOCK
+    int lockCtx;
+    #endif
+#endif
 
     if (ctx == NULL)
         return BAD_FUNC_ARG;
 
+#ifndef WOLFTPM2_NO_WOLFCRYPT
+    wolfCryptInit = (ctx->locality != TPM2_LOCALITY_UNINITIALIZED);
+    #ifdef TPM2_DYNAMIC_HW_LOCK
+    lockCtx = wolfCryptInit;
+    #endif
+#endif
+
     /* clear global */
+    #ifdef TPM2_DYNAMIC_HW_LOCK
+    if (lockCtx) {
+        rc = TPM2_AcquireLock(ctx);
+    }
+    else {
+        rc = TPM_RC_SUCCESS;
+    }
+    #else
     rc = TPM2_AcquireLock(ctx);
+    #endif
     if (rc == TPM_RC_SUCCESS) {
 
         if (TPM2_GetActiveCtx() == ctx) {
+        #ifdef TPM2_DYNAMIC_HW_LOCK
+            if (lockCtx) {
+                TPM2_INTERNAL_CLEANUP(ctx);
+            }
+        #else
             TPM2_INTERNAL_CLEANUP(ctx);
+        #endif
             /* set non-active */
             TPM2_SetActiveCtx(NULL);
         }
 
+        /* Last command/response still holds plaintext (unsealed data,
+         * auth values, decrypted parameters) */
+        TPM2_ForceZero(ctx->cmdBuf, sizeof(ctx->cmdBuf));
+
+    #ifdef TPM2_DYNAMIC_HW_LOCK
+        if (lockCtx) {
+            TPM2_ReleaseLock(ctx);
+        }
+    #else
         TPM2_ReleaseLock(ctx);
+    #endif
+    }
+    else {
+        TPM2_ForceZero(ctx->cmdBuf, sizeof(ctx->cmdBuf));
     }
 
 #ifndef WOLFTPM2_NO_WOLFCRYPT
@@ -903,30 +1121,24 @@ TPM_RC TPM2_Cleanup(TPM2_CTX* ctx)
     }
     #endif
 
-    /* track wolf initialize reference count in wolfTPM. wolfCrypt does not
-     * properly track reference count in v4.1 or older releases */
-    gWolfCryptRefCount--;
-    if (gWolfCryptRefCount < 0)
-        gWolfCryptRefCount = 0;
-    if (gWolfCryptRefCount == 0) {
-    #if !defined(WOLFTPM_NO_LOCK) && !defined(SINGLE_THREADED) && \
-        !defined(WOLFSSL_MUTEX_INITIALIZER)
-        wc_FreeMutex(&gHwLock);
-    #endif
-        wolfCrypt_Cleanup();
+    if (wolfCryptInit) {
+        TPM2_WolfCrypt_Cleanup();
     }
 #endif /* !WOLFTPM2_NO_WOLFCRYPT */
 
 #if (defined(WOLFTPM_LINUX_DEV) || defined(WOLFTPM_LINUX_DEV_AUTODETECT)) \
     && !defined(__UBOOT__)
-    if (ctx->fd >= 0)
+    if (ctx->fd >= 0) {
         close(ctx->fd);
+        ctx->fd = -1; /* keep repeat cleanup idempotent */
+    }
 #endif
 
-#ifdef WOLFTPM_SWTPM_UART
-    /* Close the persistent UART connection */
-    TPM2_SwtpmCloseUART(ctx);
+#ifdef WOLFTPM_SWTPM
+    TPM2_SwtpmClose(ctx);
 #endif
+
+    ctx->locality = TPM2_LOCALITY_UNINITIALIZED;
 
     return TPM_RC_SUCCESS;
 }
@@ -1739,6 +1951,10 @@ TPM_RC TPM2_Unseal(Unseal_In* in, Unseal_Out* out)
                 out->outData.buffer,
                 (UINT16)sizeof(out->outData.buffer));
         }
+
+        /* Wipe the shared buffer so the unsealed plaintext does not linger in
+         * the caller-owned context on any post-send path */
+        TPM2_ForceZero(ctx->cmdBuf, sizeof(ctx->cmdBuf));
 
         TPM2_ReleaseLock(ctx);
     }
@@ -4697,6 +4913,15 @@ TPM_RC TPM2_PolicyAuthorize(PolicyAuthorize_In* in)
 
         TPM2_Packet_AppendU16(&packet, in->checkTicket.tag);
         TPM2_Packet_AppendU32(&packet, in->checkTicket.hierarchy);
+#ifdef WOLFTPM_MLDSA_VERIFY
+        /* A non-NULL DIGEST_VERIFIED ticket carries the 2-byte metadata alg
+         * on the wire; VERIFIED, MESSAGE_VERIFIED and NULL tickets omit it.
+         * Mirrors the response parse condition. */
+        if (in->checkTicket.tag == TPM_ST_DIGEST_VERIFIED &&
+            in->checkTicket.hierarchy != TPM_RH_NULL) {
+            TPM2_Packet_AppendU16(&packet, in->checkTicket.metaAlg);
+        }
+#endif
         TPM2_Packet_AppendU16(&packet, in->checkTicket.digest.size);
         TPM2_Packet_AppendBytes(&packet,
                     in->checkTicket.digest.buffer,
@@ -6495,7 +6720,7 @@ int TPM2_IFX_FieldUpgradeCommand(TPM_CC cc, uint8_t* data, uint32_t size)
 
 #if defined(WOLFTPM_ST33) || defined(WOLFTPM_AUTODETECT)
 /* ST33 Firmware Update Vendor Command Functions */
-int TPM2_ST33_FieldUpgradeStart(TPM_HANDLE sessionHandle,
+int TPM2_ST33_FieldUpgradeStart_ex(TPM_HANDLE sessionHandle, TPM_CC cc,
     uint8_t* data, uint32_t size)
 {
     int rc;
@@ -6518,8 +6743,7 @@ int TPM2_ST33_FieldUpgradeStart(TPM_HANDLE sessionHandle,
 
         TPM2_Packet_AppendBytes(&packet, data, size);
 
-        TPM2_Packet_Finalize(&packet, TPM_ST_SESSIONS,
-            TPM_CC_FieldUpgradeStartVendor_ST33);
+        TPM2_Packet_Finalize(&packet, TPM_ST_SESSIONS, cc);
 
         rc = TPM2_SendCommand(ctx, &packet);
 
@@ -6528,10 +6752,21 @@ int TPM2_ST33_FieldUpgradeStart(TPM_HANDLE sessionHandle,
     return rc;
 }
 
+int TPM2_ST33_FieldUpgradeStart(TPM_HANDLE sessionHandle,
+    uint8_t* data, uint32_t size)
+{
+    return TPM2_ST33_FieldUpgradeStart_ex(sessionHandle,
+        TPM_CC_FieldUpgradeStartVendor_ST33, data, size);
+}
+
 int TPM2_ST33_FieldUpgradeCommand(TPM_CC cc, uint8_t* data, uint32_t size)
 {
     int rc;
     TPM2_CTX* ctx = TPM2_GetActiveCtx();
+
+    if (ctx == NULL) {
+        return BAD_FUNC_ARG;
+    }
 
     rc = TPM2_AcquireLock(ctx);
     if (rc == TPM_RC_SUCCESS) {
@@ -6622,6 +6857,10 @@ int TPM2_GetNonceNoLock(byte* nonceBuf, int nonceSz)
     }
     /* response buffer held freshly generated random; wipe before return */
     TPM2_ForceZero(buffer, sizeof(buffer));
+    if (rc != TPM_RC_SUCCESS && randSz > 0) {
+        /* wipe partial nonce bytes already written from earlier chunks */
+        TPM2_ForceZero(nonceBuf, (word32)randSz);
+    }
 #endif
 
     return rc;
@@ -6777,6 +7016,16 @@ const char* TPM2_GetRCString(int rc)
         return "Success";
     }
 
+    /* Format-zero codes carry the vendor bit (T, bit 10). This has to be
+     * checked before the format-zero decode below, which masks with
+     * RC_MAX_FM0 and would otherwise report a vendor code as whichever
+     * standard code shares its low bits - an ST33 field upgrade rejection of
+     * 0x501 reads as TPM_RC_FAILURE. Format-one codes have no vendor bit, and
+     * negative values are wolfCrypt errors, not TPM response codes. */
+    if (rc > 0 && (rc & RC_FMT1) == 0 && (rc & 0x400)) { /* bit 10 */
+        return "Vendor defined response code";
+    }
+
     if ((rc & RC_WARN) == RC_WARN && (rc & RC_FMT1) == 0) {
         int rc_warn = rc & RC_MAX_WARN;
 
@@ -6923,10 +7172,6 @@ const char* TPM2_GetRCString(int rc)
         default:
             break;
         }
-    }
-
-    else if (rc & 0x400) { /* bit 10 */
-        return "Vendor defined response code";
     }
 
     return "Unknown";
@@ -7280,13 +7525,14 @@ int TPM2_ParseAttest(const TPM2B_ATTEST* in, TPMS_ATTEST* out)
 
     if (in == NULL || out == NULL)
         return BAD_FUNC_ARG;
+    if (in->size > sizeof(in->attestationData))
+        return TPM_RC_SIZE;
 
     XMEMSET(&packet, 0, sizeof(packet));
     packet.buf = (byte*)in->attestationData;
     packet.size = in->size;
 
-    TPM2_Packet_ParseAttest(&packet, out);
-    return TPM_RC_SUCCESS;
+    return TPM2_Packet_ParseAttest(&packet, out);
 }
 
 UINT16 TPM2_GetVendorID(void)
@@ -7305,6 +7551,7 @@ int TPM2_HashNvPublic(TPMS_NV_PUBLIC* nvPublic, byte* buffer, UINT16* size)
 #ifndef WOLFTPM2_NO_WOLFCRYPT
     int rc;
     int hashSize, nameAlgSize;
+    int hashInitialized = 0;
     UINT16 nameAlgValue;
     wc_HashAlg hash;
     enum wc_HashType hashType;
@@ -7340,6 +7587,7 @@ int TPM2_HashNvPublic(TPMS_NV_PUBLIC* nvPublic, byte* buffer, UINT16* size)
 
     rc = wc_HashInit(&hash, hashType);
     if (rc == 0) {
+        hashInitialized = 1;
         rc = wc_HashUpdate(&hash, hashType, packet.buf, packet.pos);
     }
     if (rc == 0) {
@@ -7356,7 +7604,11 @@ int TPM2_HashNvPublic(TPMS_NV_PUBLIC* nvPublic, byte* buffer, UINT16* size)
         rc = TPM_RC_SUCCESS;
     }
 
-    wc_HashFree(&hash, hashType);
+    if (hashInitialized) {
+        wc_HashFree(&hash, hashType);
+    }
+    TPM2_ForceZero(&hash, sizeof(hash));
+    TPM2_ForceZero(appending, sizeof(appending));
 
     return rc;
 #else
@@ -7374,19 +7626,21 @@ int TPM2_AppendPublic(byte* buf, word32 size, int* sizeUsed, TPM2B_PUBLIC* pub)
     if (buf == NULL || pub == NULL || sizeUsed == NULL)
         return BAD_FUNC_ARG;
 
-    if (size < sizeof(TPM2B_PUBLIC)) {
+    /* Prepare temporary buffer. The append helpers bounds-check against
+     * packet.size and set packet.overflow, so an exact-fit buffer is
+     * accepted and only an actually-too-small buffer is rejected. */
+    packet.buf = buf;
+    packet.pos = 0;
+    packet.size = (int)size;
+    packet.overflow = 0;
+
+    TPM2_Packet_AppendPublic(&packet, pub);
+    if (packet.overflow) {
     #ifdef DEBUG_WOLFTPM
         printf("Insufficient buffer size for TPM2B_PUBLIC operations\n");
     #endif
         return TPM_RC_FAILURE;
     }
-
-    /* Prepare temporary buffer */
-    packet.buf = buf;
-    packet.pos = 0;
-    packet.size = (int)size;
-
-    TPM2_Packet_AppendPublic(&packet, pub);
     *sizeUsed = packet.pos;
 
     return TPM_RC_SUCCESS;
@@ -7403,8 +7657,14 @@ int TPM2_ParsePublic(TPM2B_PUBLIC* pub, byte* buf, word32 size, int* sizeUsed)
     packet.buf = buf;
     packet.pos = 0;
     packet.size = (int)size;
+    packet.overflow = 0;
 
     TPM2_Packet_ParsePublic(&packet, pub);
+
+    if (packet.overflow) {
+        *sizeUsed = 0;
+        return TPM_RC_SIZE;
+    }
     *sizeUsed = packet.pos;
 
     return TPM_RC_SUCCESS;

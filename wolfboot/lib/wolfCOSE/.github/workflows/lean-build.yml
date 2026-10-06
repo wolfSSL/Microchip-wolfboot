@@ -1,0 +1,263 @@
+name: Lean Build
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lean-verify:
+    name: Lean verify-only (WOLFCOSE_LEAN_VERIFY)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    - name: Resolve wolfSSL master commit
+      id: wolfssl-rev
+      run: echo "sha=$(git ls-remote https://github.com/wolfSSL/wolfssl.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache wolfSSL (ECC verify backend)
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-lean
+        key: wolfssl-lean-tfm-verifyonly-v3-${{ steps.wolfssl-rev.outputs.sha }}
+
+    # Verify-only full-#tfm backend: NO_ECC_SIGN compiles ECDSA signing out.
+    # This catches a verification path that accidentally pulls in a signing
+    # helper while retaining every algorithm RFC 9783 Section 5.2 requires.
+    - name: Build minimal wolfSSL
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git wolfssl-lean-src
+        cd wolfssl-lean-src
+        ./autogen.sh
+        ./configure --enable-cryptonly --enable-ecc --enable-sha384 --enable-sha512 \
+                    CFLAGS="-DNO_ECC_SIGN" \
+                    --prefix=$HOME/wolfssl-lean
+        make -j$(nproc)
+        make install
+
+    # No --gc-sections here on purpose. Against the NO_ECC_SIGN wolfSSL above, a
+    # verify path that leaks a signing helper (e.g. wc_ecc_sign_hash via
+    # wolfCose_EccSignRaw) must fail to link. With dead-code stripping the unused
+    # helper would be removed and the missing-symbol link error would never fire,
+    # so the regression would slip through unnoticed.
+    - name: Build and run the lean verify-only example
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-lean
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make lean-verify \
+          CFLAGS="-std=c11 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffunction-sections -fdata-sections -I./include -isystem $WOLFSSL_DIR/include" \
+          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Assert the signing API is absent from a verify-only build
+      run: |
+        BIN=examples/sign1_verify_lean
+        if nm "$BIN" | grep -E " [tT] wc_CoseSign1_Sign\b"; then
+          echo "FAIL: signing API present in a verify-only build"; exit 1
+        fi
+        if ! nm "$BIN" | grep -qE " [tT] wc_CoseSign1_Verify\b"; then
+          echo "FAIL: verify API missing from a verify build"; exit 1
+        fi
+        echo "OK: verify present, signing absent"
+
+    - name: Build and run the lean RFC 9783 PSA/EAT verifier
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-lean
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make psa-eat-lean-verify \
+          CFLAGS="-std=c11 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffunction-sections -fdata-sections -I./include -isystem $WOLFSSL_DIR/include" \
+          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Assert PSA/EAT lean verifier has no signing API
+      run: |
+        BIN=examples/psa_eat_verify_lean
+        if nm "$BIN" | grep -E " [tT] wc_Cose(Sign1_Sign|Mac0_Create)\\b"; then
+          echo "FAIL: creation API present in PSA/EAT verifier"; exit 1
+        fi
+        if ! nm "$BIN" | grep -qE " [tT] wc_CoseEatPsaToken_Verify\\b"; then
+          echo "FAIL: PSA/EAT verifier API missing"; exit 1
+        fi
+        if nm "$BIN" | grep -qE " [tT] wc_CoseEatPsaToken_(EncodeClaims|CreateSign1|CreateMac0|VerifyByUeid|ForEachComponent)\\b"; then
+          echo "FAIL: unselected PSA/EAT API linked into lean verifier"; exit 1
+        fi
+        echo "OK: PSA/EAT verification present, signing absent"
+
+    - name: Report lean example size
+      run: |
+        size examples/sign1_verify_lean || true
+        size examples/psa_eat_verify_lean || true
+
+  lean-compile-matrix:
+    name: Lean configs compile clean (strict)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    - name: Resolve wolfSSL master commit
+      id: wolfssl-rev
+      run: echo "sha=$(git ls-remote https://github.com/wolfSSL/wolfssl.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache wolfSSL
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-ubuntu-latest-v3-${{ steps.wolfssl-rev.outputs.sha }}
+
+    - name: Build wolfSSL (full features)
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-chacha --enable-poly1305 \
+                    --enable-dilithium \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    # Each lean/minimal config must compile with zero warnings under the strict
+    # flag set that backs the MISRA C:2023 job.
+    - name: Compile the wolfCOSE sources in lean configurations (no warnings)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        SF="-std=c11 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -I./include -isystem $WOLFSSL_DIR/include"
+        build_cfg() {
+          name="$1"; shift
+          echo "== $name =="
+          objs=""
+          for f in src/*.c; do
+            o="/tmp/$(basename "$f" .c).o"
+            gcc $SF "$@" -c "$f" -o "$o"
+            objs="$objs $o"
+          done
+          # Link so a definition removed under some config while its caller
+          # remains surfaces as an undefined reference (compile-only misses it).
+          gcc -shared $objs -L"$WOLFSSL_DIR/lib" -lwolfssl -Wl,--no-undefined \
+              -o /tmp/leancheck.so
+        }
+        build_cfg "default (full)"
+        build_cfg "WOLFCOSE_LEAN (sign+verify)" -DWOLFCOSE_LEAN
+        build_cfg "WOLFCOSE_LEAN_VERIFY" -DWOLFCOSE_LEAN_VERIFY
+        build_cfg "WOLFCOSE_LEAN_VERIFY + RFC 9783 PSA/EAT" \
+            -DWOLFCOSE_LEAN_VERIFY -DWOLFCOSE_ENABLE_EAT_PSA \
+            -DWOLFCOSE_ENABLE_DEPRECATED_ALGS \
+            -DWOLFCOSE_ENABLE_EAT_PSA_CURRENT \
+            -DWOLFCOSE_ENABLE_EAT_PSA_SIGN1 \
+            -DWOLFCOSE_ENABLE_EAT_PSA_MAC0 -DWOLFCOSE_ENABLE_ES384 \
+            -DWOLFCOSE_ENABLE_ES512 -DWOLFCOSE_ENABLE_HMAC384 \
+            -DWOLFCOSE_ENABLE_HMAC512
+        build_cfg "COSE_Mac without COSE_Mac0" -DWOLFCOSE_NO_MAC0
+        build_cfg "sign-only" -DWOLFCOSE_NO_SIGN1_VERIFY -DWOLFCOSE_NO_ENCRYPT0 \
+            -DWOLFCOSE_NO_MAC0 -DWOLFCOSE_NO_SIGN -DWOLFCOSE_NO_ENCRYPT \
+            -DWOLFCOSE_NO_MAC -DWOLFCOSE_NO_RECIPIENTS
+        build_cfg "WOLFCOSE_LEAN_MLDSA (sign+verify)" -DWOLFCOSE_LEAN_MLDSA
+        build_cfg "WOLFCOSE_LEAN_VERIFY_MLDSA (verify-only)" -DWOLFCOSE_LEAN_VERIFY_MLDSA
+        build_cfg "deprecated RFC 9053 alg IDs" -DWOLFCOSE_ENABLE_DEPRECATED_ALGS
+        build_cfg "WOLFCOSE_LEAN + deprecated RFC 9053 alg IDs" -DWOLFCOSE_LEAN \
+            -DWOLFCOSE_ENABLE_DEPRECATED_ALGS
+        build_cfg "deprecated RFC 9053 alg IDs, Ed448 only" \
+            -DWOLFCOSE_ENABLE_DEPRECATED_ALGS -DWOLFCOSE_NO_EDDSA
+        echo "All lean configurations compiled clean."
+
+    - name: Check PSA/EAT opt-in feature matrix
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        SF="-std=c11 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -I./include -isystem $WOLFSSL_DIR/include"
+        make eat-psa-config-check CFLAGS="$SF" \
+             LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+  mldsa:
+    name: Post-quantum ML-DSA lean sign+verify and verify-only
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    - name: Resolve wolfSSL master commit
+      id: wolfssl-rev
+      run: echo "sha=$(git ls-remote https://github.com/wolfSSL/wolfssl.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache wolfSSL (ML-DSA backend)
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-mldsa
+        key: wolfssl-mldsa-v1-${{ steps.wolfssl-rev.outputs.sha }}
+
+    # ML-DSA (FIPS 204) backend. Dilithium pulls in SHAKE/SHA-3; RNG stays for
+    # key generation and signing in the sign+verify demo.
+    - name: Build wolfSSL with ML-DSA
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git wolfssl-mldsa-src
+        cd wolfssl-mldsa-src
+        ./autogen.sh
+        ./configure --enable-cryptonly --enable-dilithium \
+                    --prefix=$HOME/wolfssl-mldsa
+        make -j$(nproc)
+        make install
+
+    - name: Build and run the ML-DSA sign + verify example (WOLFCOSE_LEAN_MLDSA)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-mldsa
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make mldsa-demo \
+          CFLAGS="-std=c11 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffunction-sections -fdata-sections -I./include -isystem $WOLFSSL_DIR/include" \
+          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl -Wl,--gc-sections"
+
+    - name: Build and run the lean ML-DSA verify-only example (WOLFCOSE_LEAN_VERIFY_MLDSA)
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-mldsa
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make mldsa-verify \
+          CFLAGS="-std=c11 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffunction-sections -fdata-sections -I./include -isystem $WOLFSSL_DIR/include" \
+          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl -Wl,--gc-sections"
+
+    - name: Assert signing API is absent from the ML-DSA verify-only build
+      run: |
+        BIN=examples/sign1_verify_mldsa
+        if nm "$BIN" | grep -E " [tT] wc_CoseSign1_Sign\b"; then
+          echo "FAIL: signing API present in a verify-only build"; exit 1
+        fi
+        if ! nm "$BIN" | grep -qE " [tT] wc_CoseSign1_Verify\b"; then
+          echo "FAIL: verify API missing from a verify build"; exit 1
+        fi
+        echo "OK: ML-DSA verify present, signing absent"
+
+    - name: Report ML-DSA example sizes
+      run: |
+        size examples/sign1_mldsa || true
+        size examples/sign1_verify_mldsa || true

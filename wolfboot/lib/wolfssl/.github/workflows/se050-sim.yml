@@ -31,14 +31,28 @@ permissions:
 # We patch it to COPY the PR checkout instead so CI reflects the PR's source.
 
 env:
-  SIMULATORS_REF: 745893640e21a15b7df8c70567c522953aba2f2c
+  SIMULATORS_REF: bbb959a1ef79c553a3e25393ce989942bd858b2d
 
 jobs:
   se050_sim:
-    name: wolfCrypt against SE050 simulator
+    name: wolfCrypt against SE050 simulator (${{ matrix.name }})
     if: ${{ (github.repository_owner == 'wolfssl') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Cold image rebuilds (registry cache miss after a SIMULATORS_REF bump,
+    # until the weekend cron refreshes the cache) need well over 30 minutes.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default build: every keyed operation is offloaded to the SE050.
+          - name: default
+            extra_cflags: ''
+          # Per-key runtime HW/SW routing. The wolfCrypt test binary runs the
+          # ecc/ed25519/curve25519/rsa SE050_ONLY_KEY_ID coverage (software key
+          # vs SE050-resident key) added to wolfcrypt/test/test.c.
+          - name: only-key-id
+            extra_cflags: '-DWOLFSSL_SE050_ONLY_KEY_ID'
     steps:
       - name: Checkout wolfSSL (PR source)
         uses: actions/checkout@v5
@@ -75,9 +89,25 @@ jobs:
           file: simulators/SE050Sim/Dockerfile.wolfcrypt
           push: false
           load: true
-          tags: wolfssl-se050-sim:ci
+          tags: wolfssl-se050-sim:ci-${{ matrix.name }}
+          # WOLFSSL_EXTRA_CFLAGS is appended to the wolfSSL ./configure CFLAGS by
+          # the simulator's Dockerfile.wolfcrypt (ARG WOLFSSL_EXTRA_CFLAGS). When
+          # bumping SIMULATORS_REF, keep that ARG in place so the only-key-id
+          # matrix leg actually defines the macro.
+          build-args: |
+            WOLFSSL_EXTRA_CFLAGS=${{ matrix.extra_cflags }}
+          # Only the default leg refreshes the shared cache to avoid two matrix
+          # legs writing the same registry ref.
           cache-from: type=registry,ref=ghcr.io/wolfssl/wolfssl-sim-cache:se050
-          cache-to: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'type=registry,ref=ghcr.io/wolfssl/wolfssl-sim-cache:se050,mode=max' || '' }}
+          cache-to: ${{ ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.name == 'default') && 'type=registry,ref=ghcr.io/wolfssl/wolfssl-sim-cache:se050,mode=max' || '' }}
 
       - name: Run wolfCrypt tests against simulator
-        run: docker run --rm wolfssl-se050-sim:ci
+        # SE050_SIM_STRICT_ECDH=1 enforces the applet 7.2 InObject contract
+        # (a Tag7 target must already exist as an exactly-sized HMACKey).
+        # The port now always uses the Tag7-less direct variant, so this is
+        # a regression guard: it fails the run if the InObject flow comes
+        # back. Note the SDK in the image is built for applet 07_02, so only
+        # the >= 7.2 side of the port's version split is compiled here; the
+        # pre-7.2 Binary derive flow is hardware-verified (SE050C, applet
+        # 3.1.1) until an 03_XX matrix leg is added.
+        run: docker run --rm -e SE050_SIM_STRICT_ECDH=1 wolfssl-se050-sim:ci-${{ matrix.name }}

@@ -1,8 +1,8 @@
 /* tpm_io_espressif.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -177,6 +177,7 @@ static esp_err_t show_binary(byte* theVar, size_t dataSz) {
     hex_buffer[maxSz * 2] = '\0';
     ESP_LOGI("TAG", "%s", hex_buffer);
     ESP_LOGI(TAG, "*********************************************************");
+    TPM2_ForceZero(hex_buffer, sizeof(hex_buffer));
     return ESP_OK;
 }
 #endif
@@ -356,6 +357,8 @@ static esp_err_t esp_tpm_register_write(uint32_t reg,
             i2c_master_delete();
         }
     }
+
+    TPM2_ForceZero(buf, sizeof(buf));
 
     return result;
 }
@@ -633,9 +636,19 @@ int TPM2_IoCb_Espressif_SPI(TPM2_CTX* ctx, const byte* txBuf, byte* rxBuf,
     }
 
     if (ret == ESP_OK) {
-        tpm_spi_acquire();
-        ret = tpm_spi_raw_transfer(txBuf, rxBuf, xferSz);
-        tpm_spi_release();
+        ret = tpm_spi_acquire();
+        if (ret == ESP_OK) {
+            ret = tpm_spi_raw_transfer(txBuf, rxBuf, xferSz);
+            tpm_spi_release();
+            ret = (ret == ESP_OK) ? TPM_RC_SUCCESS : TPM_RC_FAILURE;
+        }
+        else {
+            ESP_LOGE(TAG, "SPI Failed to acquire bus. Error: %d", ret);
+            /* acquire drove CS low before failing; raise it so the TPM is
+             * not left selected on a shared bus */
+            gpio_set_level(tpm_data->cs_pin, 1);
+            ret = TPM_RC_FAILURE;
+        }
     }
     else {
         ESP_LOGE(TAG, "SPI Failed to initialize. Error: %d", ret);

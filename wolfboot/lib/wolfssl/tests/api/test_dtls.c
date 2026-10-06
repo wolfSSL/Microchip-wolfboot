@@ -38,7 +38,8 @@
 int test_dtls12_basic_connection_id(void)
 {
     EXPECT_DECLS;
-#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS_CID)
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS_CID) && !defined(WOLFSSL_NO_TLS12)
     unsigned char client_cid[] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
     unsigned char server_cid[] = { 0, 1, 2, 3, 4, 5 };
     unsigned char readBuf[40];
@@ -53,21 +54,28 @@ int test_dtls12_basic_connection_id(void)
 #endif
 #endif /* WOLFSSL_AES_128 && WOLFSSL_STATIC_RSA */
 #if defined(WOLFSSL_AES_128)
+#ifndef NO_DH
         "DHE-RSA-AES128-SHA256",
+#endif
         "ECDHE-RSA-AES128-SHA256",
 #ifdef HAVE_AESGCM
+#ifndef NO_DH
         "DHE-RSA-AES128-GCM-SHA256",
+#endif
         "ECDHE-RSA-AES128-GCM-SHA256",
 #endif
 #endif /* WOLFSSL_AES_128 */
 #endif /* NO_SHA256 */
 #endif /* NO_RSA */
 #if defined(HAVE_CHACHA) && defined(HAVE_POLY1305) && !defined(HAVE_FIPS)
+#ifndef NO_DH
         "DHE-RSA-CHACHA20-POLY1305",
         "DHE-RSA-CHACHA20-POLY1305-OLD",
+#endif
         "ECDHE-RSA-CHACHA20-POLY1305",
         "ECDHE-RSA-CHACHA20-POLY1305-OLD",
 #endif
+#ifndef NO_DH
 #ifndef NO_PSK
         "DHE-PSK-AES128-CBC-SHA256",
     #ifdef WOLFSSL_AES_256
@@ -78,6 +86,7 @@ int test_dtls12_basic_connection_id(void)
 #endif
         "DHE-PSK-AES128-CCM",
 #endif
+#endif /* !NO_DH */
     };
     size_t i;
     struct {
@@ -459,6 +468,63 @@ int test_wolfSSL_dtls_cid_parse(void)
     return EXPECT_RESULT();
 }
 
+/* Argument validation for the ConnectionID APIs. */
+int test_wolfSSL_dtls_cid_args(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_DTLS) && defined(WOLFSSL_DTLS_CID) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(WOLFSSL_NO_TLS12)
+    WOLFSSL_CTX* ctx = NULL;
+    WOLFSSL* ssl = NULL;
+    unsigned char cid[] = { 0xC1, 0xC2, 0xC3, 0xC4 };
+    unsigned char buf[sizeof(cid)];
+    unsigned char* cid0 = NULL;
+    unsigned int cidSz = 0;
+
+    ExpectNotNull(ctx = wolfSSL_CTX_new(wolfDTLSv1_2_client_method()));
+    ExpectNotNull(ssl = wolfSSL_new(ctx));
+
+    /* NULL ssl is rejected by every entry point. */
+    ExpectIntEQ(wolfSSL_dtls_cid_use(NULL), WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_is_enabled(NULL), 0);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(NULL, cid, sizeof(cid)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_get_rx_size(NULL, &cidSz),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_get_rx(NULL, buf, sizeof(buf)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_get0_rx(NULL, &cid0),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx_size(NULL, &cidSz),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx(NULL, buf, sizeof(buf)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_get0_tx(NULL, &cid0),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+    /* Setting a CID before enabling the extension fails. */
+    ExpectIntEQ(wolfSSL_dtls_cid_is_enabled(ssl), 0);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl, cid, sizeof(cid)),
+        WC_NO_ERR_TRACE(WOLFSSL_FAILURE));
+
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_dtls_cid_is_enabled(ssl), 1);
+    /* A NULL buffer with a non-zero size is rejected, while (NULL, 0) is an
+     * empty CID. */
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl, NULL, sizeof(cid)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl, NULL, 0), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl, cid,
+        (unsigned int)wolfSSL_dtls_cid_max_size() + 1),
+        WC_NO_ERR_TRACE(LENGTH_ERROR));
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl, cid, sizeof(cid)), WOLFSSL_SUCCESS);
+
+    wolfSSL_free(ssl);
+    wolfSSL_CTX_free(ctx);
+#endif
+    return EXPECT_RESULT();
+}
+
 int test_wolfSSL_dtls_set_pending_peer(void)
 {
     EXPECT_DECLS;
@@ -552,9 +618,963 @@ int test_wolfSSL_dtls_set_pending_peer(void)
     return EXPECT_RESULT();
 }
 
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS) && defined(WOLFSSL_DTLS_CID)
+/* Capture the single client->server record currently buffered, then reset the
+ * server's incoming buffer so the next record can be captured independently. */
+static int test_dtls_capture_record(struct test_memio_ctx* test_ctx,
+        byte* out, int* outLen)
+{
+    EXPECT_DECLS;
+    ExpectIntEQ(test_ctx->s_msg_count, 1);
+    if (EXPECT_SUCCESS()) {
+        *outLen = test_ctx->s_len;
+        XMEMCPY(out, test_ctx->s_buff, (size_t)test_ctx->s_len);
+        test_ctx->s_len = 0;
+        test_ctx->s_msg_count = 0;
+        test_ctx->s_msg_pos = 0;
+    }
+    return EXPECT_RESULT();
+}
+
+/* Deliver a previously captured record to the server's incoming buffer. */
+static void test_dtls_inject_record(struct test_memio_ctx* test_ctx,
+        const byte* rec, int recLen)
+{
+    XMEMCPY(test_ctx->s_buff, rec, (size_t)recLen);
+    test_ctx->s_len = recLen;
+    test_ctx->s_msg_sizes[0] = recLen;
+    test_ctx->s_msg_count = 1;
+    test_ctx->s_msg_pos = 0;
+}
+
+static int test_dtls_pending_peer_not_newest(method_provider method_c,
+        method_provider method_s)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    unsigned char peer[10];
+    unsigned int peerSz;
+    unsigned char readBuf[10];
+    unsigned char client_cid[] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    unsigned char server_cid[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    byte recA[512], recB[512], recC[512];
+    int lenA = 0, lenB = 0, lenC = 0;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+            method_c, method_s), 0);
+
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_c), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl_c, server_cid, sizeof(server_cid)), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_s), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl_s, client_cid, sizeof(client_cid)), 1);
+
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    /* Capture three consecutive client records with increasing seq numbers. */
+    ExpectIntEQ(wolfSSL_write(ssl_c, "msgA", 5), 5);
+    ExpectIntEQ(test_dtls_capture_record(&test_ctx, recA, &lenA), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_write(ssl_c, "msgB", 5), 5);
+    ExpectIntEQ(test_dtls_capture_record(&test_ctx, recB, &lenB), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_write(ssl_c, "msgC", 5), 5);
+    ExpectIntEQ(test_dtls_capture_record(&test_ctx, recC, &lenC), TEST_SUCCESS);
+
+    /* Deliver the newer record (B) first to advance the receive window. */
+    test_dtls_inject_record(&test_ctx, recB, lenB);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 5);
+    ExpectStrEQ(readBuf, "msgB");
+    peerSz = sizeof(peer);
+    ExpectIntEQ(wolfSSL_dtls_get_peer(ssl_s, peer, &peerSz), 0);
+
+    /* Nominate a pending peer, then deliver the older record (A). It is a valid
+     * CID record but not newer than B, so the peer must NOT be updated. */
+    ExpectIntEQ(wolfSSL_dtls_set_pending_peer(ssl_s, (void*)"123", 4), 1);
+    test_dtls_inject_record(&test_ctx, recA, lenA);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 5);
+    ExpectStrEQ(readBuf, "msgA");
+    peerSz = sizeof(peer);
+    ExpectIntEQ(wolfSSL_dtls_get_peer(ssl_s, peer, &peerSz), 0);
+
+    /* Nominate again, then deliver the newest record (C). Now the peer must be
+     * updated. */
+    ExpectIntEQ(wolfSSL_dtls_set_pending_peer(ssl_s, (void*)"456", 4), 1);
+    test_dtls_inject_record(&test_ctx, recC, lenC);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 5);
+    ExpectStrEQ(readBuf, "msgC");
+    peerSz = sizeof(peer);
+    ExpectIntEQ(wolfSSL_dtls_get_peer(ssl_s, peer, &peerSz), 1);
+    ExpectIntEQ(peerSz, 4);
+    ExpectStrEQ(peer, "456");
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+
+    return EXPECT_RESULT();
+}
+#endif
+
+int test_wolfSSL_dtls_set_pending_peer_not_newest(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS) && defined(WOLFSSL_DTLS_CID)
+#ifndef WOLFSSL_NO_TLS12
+    ExpectIntEQ(test_dtls_pending_peer_not_newest(wolfDTLSv1_2_client_method,
+            wolfDTLSv1_2_server_method), TEST_SUCCESS);
+#endif
+#ifdef WOLFSSL_DTLS13
+    ExpectIntEQ(test_dtls_pending_peer_not_newest(wolfDTLSv1_3_client_method,
+            wolfDTLSv1_3_server_method), TEST_SUCCESS);
+#endif
+#endif
+    return EXPECT_RESULT();
+}
+
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+/* Set up a DTLS 1.3 connection, optionally negotiating CID, and drain all
+ * post-handshake messages (session tickets, ACKs) so both buffers are empty. */
+static int test_dtls13_cid_setup(struct test_memio_ctx* test_ctx,
+        WOLFSSL_CTX** ctx_c, WOLFSSL_CTX** ctx_s, WOLFSSL** ssl_c,
+        WOLFSSL** ssl_s, const byte* serverCid, word32 serverCidSz)
+{
+    EXPECT_DECLS;
+    unsigned char client_cid[] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    byte readBuf[16];
+    int i;
+
+    XMEMSET(test_ctx, 0, sizeof(*test_ctx));
+
+    ExpectIntEQ(test_memio_setup(test_ctx, ctx_c, ctx_s, ssl_c, ssl_s,
+            wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+
+    if (serverCid != NULL) {
+        ExpectIntEQ(wolfSSL_dtls_cid_use(*ssl_c), 1);
+        ExpectIntEQ(wolfSSL_dtls_cid_set(*ssl_c, (unsigned char*)serverCid,
+                serverCidSz), 1);
+        ExpectIntEQ(wolfSSL_dtls_cid_use(*ssl_s), 1);
+        ExpectIntEQ(wolfSSL_dtls_cid_set(*ssl_s, client_cid,
+                sizeof(client_cid)), 1);
+    }
+
+    ExpectIntEQ(test_memio_do_handshake(*ssl_c, *ssl_s, 10, NULL), 0);
+
+    for (i = 0; i < 5 && EXPECT_SUCCESS() &&
+            (test_ctx->c_len > 0 || test_ctx->s_len > 0); i++) {
+        if (test_ctx->c_len > 0)
+            ExpectIntEQ(wolfSSL_read(*ssl_c, readBuf, sizeof(readBuf)), -1);
+        if (test_ctx->s_len > 0)
+            ExpectIntEQ(wolfSSL_read(*ssl_s, readBuf, sizeof(readBuf)), -1);
+    }
+    ExpectIntEQ(test_ctx->c_len, 0);
+    ExpectIntEQ(test_ctx->s_len, 0);
+
+    return EXPECT_RESULT();
+}
+
+/* Build a post-handshake handshake message of type hsType with the given body
+ * and encrypt it with the client's current traffic keys. The message sequence
+ * number is the one the server expects next. */
+static int test_dtls13_build_post_hs_msg(WOLFSSL* ssl_c, WOLFSSL* ssl_s,
+        byte hsType, const byte* body, word16 bodyLen, byte* rec, int* recSz)
+{
+    EXPECT_DECLS;
+    /* largest body a caller builds: a cid_immediate with the longest CID the
+     * wire format allows (RFC 9146 Section 3: opaque<0..2^8-1>) */
+    byte msg[DTLS_HANDSHAKE_HEADER_SZ + 2 + 1 + 255 + 1];
+    size_t idx = 0;
+
+    if (DTLS_HANDSHAKE_HEADER_SZ + bodyLen > (int)sizeof(msg)) {
+        ExpectFail();
+        return EXPECT_RESULT();
+    }
+
+    msg[idx++] = hsType;
+    c32to24(bodyLen, msg + idx);
+    idx += 3;
+    c16toa(ssl_s->keys.dtls_expected_peer_handshake_number, msg + idx);
+    idx += 2;
+    /* fragment_offset */
+    c32to24(0, msg + idx);
+    idx += 3;
+    /* fragment_length */
+    c32to24(bodyLen, msg + idx);
+    idx += 3;
+    XMEMCPY(msg + idx, body, bodyLen);
+    idx += bodyLen;
+
+    ExpectIntGT(*recSz = BuildTls13Message(ssl_c, rec, *recSz, msg, (int)idx,
+            handshake, 0, 0, 0), 0);
+
+    return EXPECT_RESULT();
+}
+
+/* Inject a crafted post-handshake message into the server, expect it to fail
+ * with expErr and to alert the client with a fatal alert of type expAlert. */
+static int test_dtls13_post_hs_cid_msg_err(byte hsType, const byte* body,
+        word16 bodyLen, int useCid, int expErr, int expAlert)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    WOLFSSL_ALERT_HISTORY h;
+    const byte serverCid[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    byte rec[256];
+    int recSz = (int)sizeof(rec);
+    byte readBuf[16];
+
+    ExpectIntEQ(test_dtls13_cid_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c,
+            &ssl_s, useCid ? serverCid : NULL,
+            useCid ? (word32)sizeof(serverCid) : 0), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_build_post_hs_msg(ssl_c, ssl_s, hsType, body,
+            bodyLen, rec, &recSz), TEST_SUCCESS);
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)rec,
+            recSz), 0);
+
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), expErr);
+
+    /* the server must send a fatal alert */
+    ExpectIntEQ(wolfSSL_read(ssl_c, readBuf, sizeof(readBuf)), -1);
+    XMEMSET(&h, 0, sizeof(h));
+    ExpectIntEQ(wolfSSL_get_alert_history(ssl_c, &h), WOLFSSL_SUCCESS);
+    ExpectIntEQ(h.last_rx.level, alert_fatal);
+    ExpectIntEQ(h.last_rx.code, expAlert);
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+
+    return EXPECT_RESULT();
+}
+#endif /* HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES && WOLFSSL_DTLS13 &&
+        * WOLFSSL_DTLS_CID */
+
+int test_dtls13_new_connection_id(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    unsigned char server_cid[] = { 0, 1, 2, 3 };
+    /* one 3-byte CID, usage cid_spare */
+    const byte spareBody[] = { 0x00, 0x04, 0x03, 0xaa, 0xbb, 0xcc, 0x01 };
+    /* NewConnectionId(cid_immediate) carrying a CID longer than the negotiated
+     * one, so a stale AEAD record-size cache would under-allocate. This ensures
+     * the cache is cleared when setting the CID.
+     * The cids list holds a leading empty CID (must be skipped) followed by the
+     * new CID. */
+    byte newCid[8];
+    byte immBody[2 + 1 + 1 + sizeof(newCid) + 1];
+    word16 immBodyLen = 0;
+    unsigned char cidBuf[64];
+    unsigned int cidSz = 0;
+    word16 i;
+    int grsOld = 0, grsNew = 0;
+    byte rec[256];
+    int recSz = (int)sizeof(rec);
+    byte readBuf[16];
+    const byte* parsedCid = NULL;
+
+    for (i = 0; i < (word16)sizeof(newCid); i++)
+        newCid[i] = (byte)(0xA0 + i);
+    immBody[immBodyLen++] = 0x00;                              /* cidsLen hi */
+    immBody[immBodyLen++] = (byte)(1 + 1 + sizeof(newCid));    /* cidsLen lo */
+    immBody[immBodyLen++] = 0x00;                 /* leading empty CID */
+    immBody[immBodyLen++] = (byte)sizeof(newCid); /* CID length */
+    XMEMCPY(immBody + immBodyLen, newCid, sizeof(newCid));
+    immBodyLen += (word16)sizeof(newCid);
+    immBody[immBodyLen++] = 0x00;                 /* usage cid_immediate */
+
+    /* usage cid_spare: the new CID may be discarded, ours must not change */
+    ExpectIntEQ(test_dtls13_cid_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c,
+            &ssl_s, server_cid, sizeof(server_cid)), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_build_post_hs_msg(ssl_c, ssl_s, new_connection_id,
+            spareBody, sizeof(spareBody), rec, &recSz), TEST_SUCCESS);
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)rec,
+            recSz), 0);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    TEST_DTLS13_PUMP(ssl_s);
+    /* the server ACKed the message */
+    ExpectIntGT(test_ctx.c_len, 0);
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx_size(ssl_s, &cidSz), 1);
+    ExpectIntEQ(cidSz, sizeof(server_cid));
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx(ssl_s, cidBuf, sizeof(cidBuf)), 1);
+    ExpectBufEQ(cidBuf, server_cid, sizeof(server_cid));
+
+    /* duplicate delivery: the retransmitted record must be dropped */
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)rec,
+            recSz), 0);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+
+    /* connection must still work in both directions */
+    ExpectIntEQ(wolfSSL_read(ssl_c, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(wolfSSL_write(ssl_c, "test", 5), 5);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 5);
+    ExpectStrEQ(readBuf, "test");
+    ExpectIntEQ(wolfSSL_write(ssl_s, "back", 5), 5);
+    ExpectIntEQ(wolfSSL_read(ssl_c, readBuf, sizeof(readBuf)), 5);
+    ExpectStrEQ(readBuf, "back");
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+    ssl_c = ssl_s = NULL;
+    ctx_c = ctx_s = NULL;
+
+    /* usage cid_immediate: the first non-empty CID must be used for all
+     * records sent from now on, including the ACK of this message */
+    ExpectIntEQ(test_dtls13_cid_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c,
+            &ssl_s, server_cid, sizeof(server_cid)), TEST_SUCCESS);
+    /* Exchange application data first so the server's traffic-epoch keys are
+     * fully installed. Otherwise the injected NewConnectionId would be the
+     * first epoch-3 record the server decrypts, which installs keys and
+     * incidentally clears the record-size cache. */
+    ExpectIntEQ(wolfSSL_write(ssl_c, "hi", 3), 3);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 3);
+    /* prime the record-size overhead cache while the negotiated CID is
+     * still in use */
+    ExpectIntGT(grsOld = wolfssl_local_GetRecordSize(ssl_s, 200, 1), 0);
+    recSz = (int)sizeof(rec);
+    ExpectIntEQ(test_dtls13_build_post_hs_msg(ssl_c, ssl_s, new_connection_id,
+            immBody, immBodyLen, rec, &recSz), TEST_SUCCESS);
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)rec,
+            recSz), 0);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    TEST_DTLS13_PUMP(ssl_s);
+    cidSz = 0;
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx_size(ssl_s, &cidSz), 1);
+    ExpectIntEQ(cidSz, sizeof(newCid));
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx(ssl_s, cidBuf, sizeof(cidBuf)), 1);
+    ExpectBufEQ(cidBuf, newCid, sizeof(newCid));
+    /* the ACK record already carries the new CID */
+    ExpectIntGT(test_ctx.c_len, 0);
+    ExpectNotNull(parsedCid = wolfSSL_dtls_cid_parse(test_ctx.c_buff,
+            (unsigned int)test_ctx.c_len, sizeof(newCid)));
+    if (parsedCid != NULL)
+        ExpectBufEQ(parsedCid, newCid, sizeof(newCid));
+    /* the cached record-size overhead must now reflect the longer CID */
+    ExpectIntGT(grsNew = wolfssl_local_GetRecordSize(ssl_s, 200, 1), 0);
+    ExpectIntEQ(grsNew - grsOld,
+            (int)sizeof(newCid) - (int)sizeof(server_cid));
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_new_connection_id_long_cid(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    unsigned char server_cid[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    /* RFC 9146 Section 3: ConnectionId is opaque<0..2^8-1> */
+    byte newCid[255];
+    byte immBody[2 + 1 + sizeof(newCid) + 1];
+    word16 immBodyLen = 0;
+    unsigned char cidBuf[sizeof(newCid)];
+    unsigned int cidSz = 0;
+    const unsigned char* parsedCid = NULL;
+    int grsOld = 0, grsNew = 0;
+    byte rec[512];
+    int recSz = (int)sizeof(rec);
+    byte readBuf[16];
+    word16 i;
+
+    for (i = 0; i < (word16)sizeof(newCid); i++)
+        newCid[i] = (byte)i;
+    immBody[immBodyLen++] = (byte)((1 + sizeof(newCid)) >> 8); /* cidsLen hi */
+    immBody[immBodyLen++] = (byte)(1 + sizeof(newCid));        /* cidsLen lo */
+    immBody[immBodyLen++] = (byte)sizeof(newCid);              /* CID length */
+    XMEMCPY(immBody + immBodyLen, newCid, sizeof(newCid));
+    immBodyLen += (word16)sizeof(newCid);
+    immBody[immBodyLen++] = 0x00;                 /* usage cid_immediate */
+
+    /* The peer chooses the CID that we put in the records we send, and it can
+     * be as long as 255 bytes. DTLS_CID_MAX_SIZE bounds only the CID that we
+     * ask to receive, thus it must not limit this one. */
+    ExpectIntEQ(test_dtls13_cid_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c,
+            &ssl_s, server_cid, sizeof(server_cid)), TEST_SUCCESS);
+    /* Exchange application data first so the server's traffic-epoch keys are
+     * fully installed, then prime the record-size overhead cache while the
+     * negotiated CID is still in use. */
+    ExpectIntEQ(wolfSSL_write(ssl_c, "hi", 3), 3);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 3);
+    ExpectIntGT(grsOld = wolfssl_local_GetRecordSize(ssl_s, 200, 1), 0);
+
+    ExpectIntEQ(test_dtls13_build_post_hs_msg(ssl_c, ssl_s, new_connection_id,
+            immBody, immBodyLen, rec, &recSz), TEST_SUCCESS);
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)rec,
+            recSz), 0);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    TEST_DTLS13_PUMP(ssl_s);
+
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx_size(ssl_s, &cidSz), 1);
+    ExpectIntEQ(cidSz, (unsigned int)sizeof(newCid));
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx(ssl_s, cidBuf, sizeof(cidBuf)), 1);
+    ExpectBufEQ(cidBuf, newCid, sizeof(newCid));
+    /* the ACK of that message already carries the whole new CID */
+    ExpectIntGT(test_ctx.c_len, 0);
+    ExpectNotNull(parsedCid = wolfSSL_dtls_cid_parse(test_ctx.c_buff,
+            (unsigned int)test_ctx.c_len, sizeof(newCid)));
+    if (parsedCid != NULL)
+        ExpectBufEQ(parsedCid, newCid, sizeof(newCid));
+    /* the record framing must have grown with the CID */
+    ExpectIntGT(grsNew = wolfssl_local_GetRecordSize(ssl_s, 200, 1), 0);
+    ExpectIntEQ(grsNew - grsOld,
+            (int)sizeof(newCid) - (int)sizeof(server_cid));
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_new_connection_id_not_negotiated(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+    /* one 3-byte CID, usage cid_spare */
+    const byte body[] = { 0x00, 0x04, 0x03, 0xaa, 0xbb, 0xcc, 0x01 };
+
+    /* RFC 9147 Section 9: receiving a CID message when CIDs were not
+     * negotiated must be answered with an unexpected_message alert */
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(new_connection_id, body,
+            sizeof(body), 0, WC_NO_ERR_TRACE(SANITY_MSG_E),
+            unexpected_message), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(request_connection_id,
+            (const byte*)"\x02", 1, 0, WC_NO_ERR_TRACE(SANITY_MSG_E),
+            unexpected_message), TEST_SUCCESS);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_request_connection_id(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    const byte body[] = { 0x02 }; /* num_cids */
+    const byte serverCid[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    byte rec[256];
+    int recSz = (int)sizeof(rec);
+    byte readBuf[16];
+
+    /* the request is ACKed but ignored: we never send NewConnectionId */
+    ExpectIntEQ(test_dtls13_cid_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c,
+            &ssl_s, serverCid, sizeof(serverCid)), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_build_post_hs_msg(ssl_c, ssl_s,
+            request_connection_id, body, sizeof(body), rec, &recSz),
+            TEST_SUCCESS);
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)rec,
+            recSz), 0);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    TEST_DTLS13_PUMP(ssl_s);
+    ExpectIntGT(test_ctx.c_len, 0);
+    /* nothing but the ACK reaches the client */
+    ExpectIntEQ(wolfSSL_read(ssl_c, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(test_ctx.c_len, 0);
+    ExpectIntEQ(test_ctx.s_len, 0);
+
+    /* connection must still work in both directions */
+    ExpectIntEQ(wolfSSL_write(ssl_c, "test", 5), 5);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 5);
+    ExpectStrEQ(readBuf, "test");
+    ExpectIntEQ(wolfSSL_write(ssl_s, "back", 5), 5);
+    ExpectIntEQ(wolfSSL_read(ssl_c, readBuf, sizeof(readBuf)), 5);
+    ExpectStrEQ(readBuf, "back");
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+#endif
+    return EXPECT_RESULT();
+}
+
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS_CID) && defined(HAVE_ECC) && !defined(NO_RSA) && \
+    (!defined(NO_ECC256) || defined(HAVE_ALL_CURVES)) && DTLS_CID_MAX_SIZE < 255
+/* Rewrite the first, unfragmented Hello in a captured datagram. Keep the
+ * generated cipher suites/key share, replace CID and supported_versions, and
+ * discard any following records. minor == 0 omits supported_versions.
+ * The output is separate from input so increasing the CID cannot overwrite
+ * extensions that have not yet been copied. */
+static int test_dtls_cid_rewrite_hello(const byte* input, int inputSz,
+        byte* output, int outputSz, byte minor, int cidFirst, byte cidSz,
+        byte legacyMinor)
+{
+    int off = DTLS_RECORD_HEADER_SZ + DTLS_HANDSHAKE_HEADER_SZ;
+    int end, extLenOff, idx, cidWritten = 0;
+    word32 bodySz, fragSz, fragOff;
+    word16 len;
+    byte cid[4 + 1 + 255];
+    int cidExtSz = 5 + cidSz;
+    int isClient;
+
+    if (inputSz < off + VERSION_SZ + RAN_LEN + 1 || input[0] != handshake)
+        return -1;
+    isClient = input[DTLS_RECORD_HEADER_SZ] == client_hello;
+    if (!isClient && input[DTLS_RECORD_HEADER_SZ] != server_hello)
+        return -1;
+    ato24(input + DTLS_RECORD_HEADER_SZ + 1, &bodySz);
+    ato24(input + DTLS_RECORD_HEADER_SZ + 6, &fragOff);
+    ato24(input + DTLS_RECORD_HEADER_SZ + 9, &fragSz);
+    ato16(input + DTLS_RECORD_HEADER_SZ - 2, &len);
+    if (fragOff != 0 || fragSz != bodySz || bodySz < VERSION_SZ + RAN_LEN + 1 ||
+            bodySz > (word32)(inputSz - off) ||
+            len > inputSz - DTLS_RECORD_HEADER_SZ ||
+            bodySz + DTLS_HANDSHAKE_HEADER_SZ > len)
+        return -1;
+    end = off + (int)bodySz;
+    off += VERSION_SZ + RAN_LEN;
+    off += 1 + input[off]; /* session ID */
+    if (off >= end)
+        return -1;
+    if (isClient) {
+        off += 1 + input[off]; /* legacy cookie */
+        if (off + 2 > end)
+            return -1;
+        ato16(input + off, &len);
+        off += 2 + len; /* cipher suites */
+        if (off >= end)
+            return -1;
+        off += 1 + input[off]; /* compression methods */
+    }
+    else
+        off += 3; /* cipher suite and compression method */
+    if (off + 2 > end)
+        return -1;
+    extLenOff = off;
+    ato16(input + off, &len);
+    off += 2;
+    if (off + len != end || end + cidExtSz + 7 > outputSz)
+        return -1;
+
+    XMEMCPY(output, input, (size_t)off);
+    output[DTLS_RECORD_HEADER_SZ + DTLS_HANDSHAKE_HEADER_SZ + 1] = legacyMinor;
+    idx = off;
+    c16toa(TLSXT_CONNECTION_ID, cid);
+    c16toa((word16)(1 + cidSz), cid + 2);
+    cid[4] = cidSz;
+    XMEMSET(cid + 5, 0x5A, cidSz);
+    if (cidFirst || minor == 0) {
+        XMEMCPY(output + idx, cid, (size_t)cidExtSz);
+        idx += cidExtSz;
+        cidWritten = 1;
+    }
+    while (off < end) {
+        word16 type;
+        if (off + 4 > end)
+            return -1;
+        ato16(input + off, &type);
+        ato16(input + off + 2, &len);
+        if (off + 4 + len > end)
+            return -1;
+        if (type == TLSXT_SUPPORTED_VERSIONS) {
+            if (minor != 0) {
+                c16toa(type, output + idx);
+                c16toa((word16)(isClient ? 3 : 2), output + idx + 2);
+                idx += 4;
+                if (isClient)
+                    output[idx++] = 2;
+                output[idx++] = DTLS_MAJOR;
+                output[idx++] = minor;
+                if (!cidWritten) {
+                    XMEMCPY(output + idx, cid, (size_t)cidExtSz);
+                    idx += cidExtSz;
+                    cidWritten = 1;
+                }
+            }
+        }
+        else if (type != TLSXT_CONNECTION_ID) {
+            XMEMCPY(output + idx, input + off, (size_t)(4 + len));
+            idx += 4 + len;
+        }
+        off += 4 + len;
+    }
+    if (!cidWritten)
+        return -1;
+    c16toa((word16)(idx - extLenOff - 2), output + extLenOff);
+    bodySz = (word32)(idx - DTLS_RECORD_HEADER_SZ - DTLS_HANDSHAKE_HEADER_SZ);
+    c32to24(bodySz, output + DTLS_RECORD_HEADER_SZ + 1);
+    c32to24(bodySz, output + DTLS_RECORD_HEADER_SZ + 9);
+    c16toa((word16)(idx - DTLS_RECORD_HEADER_SZ),
+            output + DTLS_RECORD_HEADER_SZ - 2);
+    return idx;
+}
+
+/* Drive the real Hello handlers using only public wolfSSL APIs. Changing a
+ * Hello changes the transcript, so stop after the receiving endpoint processes
+ * it rather than trying to finish with the unmodified sender. */
+static int test_dtls_cid_wire(byte msgType, byte minor, int cidFirst,
+        byte cidSz, byte legacyMinor, int retry, int expected)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL, *receiver;
+    struct test_memio_ctx test_ctx;
+    byte input[4096], output[4096], cid[255], wantCid[255];
+    int inputSz, outputSz, ret, round;
+#ifdef HAVE_SUPPORTED_CURVES
+    int group = WOLFSSL_ECC_SECP256R1;
+#endif
+    unsigned int txSz = 0;
+    int toClient = msgType == server_hello;
+    method_provider clientMethod = wolfDTLS_client_method;
+
+#ifndef WOLFSSL_NO_TLS12
+    /* Exercise the legacy client handler directly. */
+    if (toClient && minor == 0)
+        clientMethod = wolfDTLSv1_2_client_method;
+#endif
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+            clientMethod, wolfDTLS_server_method), 0);
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_c), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_s), WOLFSSL_SUCCESS);
+#ifdef HAVE_SUPPORTED_CURVES
+    /* Keep the generated Hello unfragmented, including in PQ-enabled builds. */
+    ExpectIntEQ(wolfSSL_set_groups(ssl_c, &group, 1), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_groups(ssl_s, &group, 1), WOLFSSL_SUCCESS);
+#endif
+#ifdef WOLFSSL_DTLS13
+    ExpectIntEQ(wolfSSL_disable_hrr_cookie(ssl_s), WOLFSSL_SUCCESS);
+    if (retry)
+        ExpectIntEQ(wolfSSL_NoKeyShares(ssl_c), WOLFSSL_SUCCESS);
+#else
+    (void)retry;
+#endif
+    receiver = toClient ? ssl_c : ssl_s;
+
+    for (round = 0; round <= retry && EXPECT_SUCCESS(); round++) {
+        ExpectIntEQ(wolfSSL_connect(ssl_c), WOLFSSL_FATAL_ERROR);
+        ExpectIntEQ(wolfSSL_get_error(ssl_c, WOLFSSL_FATAL_ERROR),
+                WOLFSSL_ERROR_WANT_READ);
+#ifndef WOLFSSL_DTLS13
+        /* Complete the mandatory HelloVerifyRequest exchange before mutating
+         * the verified ClientHello or generating the real ServerHello. */
+        ExpectIntEQ(wolfSSL_accept(ssl_s), WOLFSSL_FATAL_ERROR);
+        ExpectIntEQ(wolfSSL_get_error(ssl_s, WOLFSSL_FATAL_ERROR),
+                WOLFSSL_ERROR_WANT_READ);
+        ExpectIntEQ(wolfSSL_connect(ssl_c), WOLFSSL_FATAL_ERROR);
+        ExpectIntEQ(wolfSSL_get_error(ssl_c, WOLFSSL_FATAL_ERROR),
+                WOLFSSL_ERROR_WANT_READ);
+#endif
+        if (toClient) {
+            ExpectIntEQ(wolfSSL_accept(ssl_s), WOLFSSL_FATAL_ERROR);
+            ExpectIntEQ(wolfSSL_get_error(ssl_s, WOLFSSL_FATAL_ERROR),
+                    WOLFSSL_ERROR_WANT_READ);
+        }
+        inputSz = (int)sizeof(input);
+        ExpectIntEQ(test_memio_copy_message(&test_ctx, toClient,
+                (char*)input, &inputSz, 0), 0);
+        ExpectIntGT(inputSz, DTLS_RECORD_HEADER_SZ);
+        if (!EXPECT_SUCCESS())
+            break;
+        /* On the retry round, this must be another ClientHello, proving the
+         * client processed an HRR rather than a normal server flight. */
+        ExpectIntEQ(input[DTLS_RECORD_HEADER_SZ], msgType);
+        outputSz = test_dtls_cid_rewrite_hello(input, inputSz, output,
+                (int)sizeof(output),
+                retry && round == 0 ? (byte)DTLSv1_3_MINOR : minor, cidFirst, cidSz,
+                retry && round == 0 ? (byte)DTLSv1_2_MINOR : legacyMinor);
+        ExpectIntGT(outputSz, 0);
+        if (!EXPECT_SUCCESS())
+            break;
+        test_memio_clear_buffer(&test_ctx, toClient);
+        ExpectIntEQ(test_memio_inject_message(&test_ctx, toClient,
+                (const char*)output, outputSz), 0);
+        ret = toClient ? wolfSSL_connect(ssl_c) : wolfSSL_accept(ssl_s);
+        ExpectIntEQ(ret, WOLFSSL_FATAL_ERROR);
+        ExpectIntEQ(wolfSSL_get_error(receiver, ret),
+                round < retry ? WOLFSSL_ERROR_WANT_READ : expected);
+        if (round < retry || expected == WOLFSSL_ERROR_WANT_READ) {
+            ExpectIntEQ(wolfSSL_version(receiver),
+                    round < retry || minor == DTLSv1_3_MINOR ?
+                    DTLS1_3_VERSION : DTLS1_2_VERSION);
+        }
+        ExpectIntEQ(wolfSSL_dtls_cid_get_tx_size(receiver, &txSz),
+                WOLFSSL_SUCCESS);
+        ExpectIntEQ(txSz,
+                expected == WOLFSSL_ERROR_WANT_READ || retry ? cidSz : 0);
+        if (txSz > 0 && EXPECT_SUCCESS()) {
+            XMEMSET(wantCid, 0x5A, cidSz);
+            ExpectIntEQ(wolfSSL_dtls_cid_get_tx(receiver, cid, sizeof(cid)),
+                    WOLFSSL_SUCCESS);
+            ExpectBufEQ(cid, wantCid, cidSz);
+        }
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+    return EXPECT_RESULT();
+}
+#endif
+
+int test_dtls_cid_negotiate_oversize(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS_CID) && defined(HAVE_ECC) && !defined(NO_RSA) && \
+    (!defined(NO_ECC256) || defined(HAVE_ALL_CURVES)) && DTLS_CID_MAX_SIZE < 255
+#ifdef WOLFSSL_DTLS13
+    int order;
+#endif
+    byte msgType;
+    for (msgType = client_hello; msgType <= (byte)server_hello; msgType++) {
+#ifndef WOLFSSL_NO_TLS12
+        /* A legacy ServerHello and a DTLS 1.3 server falling back on CH. */
+        ExpectIntEQ(test_dtls_cid_wire(msgType, 0, 0, DTLS_CID_MAX_SIZE + 1,
+                DTLSv1_2_MINOR, 0, WC_NO_ERR_TRACE(DTLS_CID_ERROR)),
+                TEST_SUCCESS);
+        ExpectIntEQ(test_dtls_cid_wire(msgType, 0, 0, DTLS_CID_MAX_SIZE,
+                DTLSv1_2_MINOR, 0, WOLFSSL_ERROR_WANT_READ), TEST_SUCCESS);
+#endif
+#ifdef WOLFSSL_DTLS13
+        for (order = 0; order < 2; order++) {
+            ExpectIntEQ(test_dtls_cid_wire(msgType, DTLSv1_3_MINOR, order, 255,
+                    DTLSv1_2_MINOR, 0, WOLFSSL_ERROR_WANT_READ), TEST_SUCCESS);
+#ifndef WOLFSSL_NO_TLS12
+            if (msgType == client_hello) {
+                ExpectIntEQ(test_dtls_cid_wire(msgType, DTLSv1_2_MINOR, order,
+                        DTLS_CID_MAX_SIZE + 1, DTLSv1_2_MINOR, 0,
+                        WC_NO_ERR_TRACE(DTLS_CID_ERROR)), TEST_SUCCESS);
+            }
+#endif
+        }
+#endif
+    }
+#if defined(WOLFSSL_DTLS13) && !defined(WOLFSSL_NO_TLS12)
+    /* Absent supported_versions with an invalid legacy 1.3 value: version can
+     * remain at its initial 1.3 value. Also repeat after a stateful HRR, so the
+     * previous Hello really did negotiate 1.3 and install the same TX CID. */
+    ExpectIntEQ(test_dtls_cid_wire(client_hello, 0, 0, DTLS_CID_MAX_SIZE + 1,
+            DTLSv1_3_MINOR, 0, WC_NO_ERR_TRACE(DTLS_CID_ERROR)), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls_cid_wire(client_hello, 0, 0, DTLS_CID_MAX_SIZE + 1,
+            DTLSv1_3_MINOR, 1, WC_NO_ERR_TRACE(DTLS_CID_ERROR)), TEST_SUCCESS);
+#endif
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_cid_msg_malformed(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+    /* cids length exceeding the body */
+    const byte truncated[] = { 0x00, 0x10, 0x03, 0x11, 0x22, 0x33, 0x01 };
+    /* CID length exceeding the cids vector */
+    const byte innerOverrun[] = { 0x00, 0x03, 0x05, 0x11, 0x22, 0x01 };
+    /* RequestConnectionId must be exactly one byte */
+    const byte reqTooLong[] = { 0x02, 0x00 };
+    /* invalid usage */
+    const byte badUsage[] = { 0x00, 0x04, 0x03, 0x11, 0x22, 0x33, 0x02 };
+    /* cid_immediate with no CID to use */
+    const byte immEmpty[] = { 0x00, 0x00, 0x00 };
+    const byte immZeroLenCid[] = { 0x00, 0x01, 0x00, 0x00 };
+
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(new_connection_id, truncated,
+            sizeof(truncated), 1, WC_NO_ERR_TRACE(BUFFER_ERROR),
+            decode_error), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(new_connection_id,
+            innerOverrun, sizeof(innerOverrun), 1,
+            WC_NO_ERR_TRACE(BUFFER_ERROR), decode_error), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(request_connection_id,
+            reqTooLong, sizeof(reqTooLong), 1, WC_NO_ERR_TRACE(BUFFER_ERROR),
+            decode_error), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(new_connection_id, badUsage,
+            sizeof(badUsage), 1, WC_NO_ERR_TRACE(INVALID_PARAMETER),
+            illegal_parameter), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(new_connection_id, immEmpty,
+            sizeof(immEmpty), 1, WC_NO_ERR_TRACE(INVALID_PARAMETER),
+            illegal_parameter), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls13_post_hs_cid_msg_err(new_connection_id,
+            immZeroLenCid, sizeof(immZeroLenCid), 1,
+            WC_NO_ERR_TRACE(INVALID_PARAMETER), illegal_parameter),
+            TEST_SUCCESS);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_cid_oversized_tx(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    unsigned char client_cid[] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    const int serverCidSz = 255;
+    ConnectionID* serverCid = NULL;
+    unsigned int cidSz = 0;
+    int protectedRecords = 0;
+    int i;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+            wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_c), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_s), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl_s, client_cid, sizeof(client_cid)), 1);
+
+    /* The connection_id extension carries the CID that its sender wants to
+     * receive, and an implementation "MUST still be able to send CIDs of
+     * different lengths to other parties" (RFC 9146 Section 3).
+     * DTLS_CID_MAX_SIZE only bounds the CID that we ask for, so a peer can
+     * make us send one of up to 255 bytes. wolfSSL_dtls_cid_set() applies our
+     * own bound, thus bypass the API and build the client CID directly. */
+    ExpectNotNull(ssl_c->dtlsCidInfo);
+    ExpectNotNull(serverCid = (ConnectionID*)XMALLOC(
+            sizeof(*serverCid) + (size_t)serverCidSz, ssl_c->heap,
+            DYNAMIC_TYPE_TLSX));
+    if (EXPECT_SUCCESS()) {
+        serverCid->length = (byte)serverCidSz;
+        for (i = 0; i < serverCidSz; i++)
+            serverCid->id[i] = (byte)i;
+        ssl_c->dtlsCidInfo->rx = serverCid;
+    }
+
+    /* Drive the handshake until the server has sent its Finished. The number of
+     * rounds depends on the build, thus loop while the server answers. */
+    while (EXPECT_SUCCESS() &&
+            ssl_s->options.acceptState < TLS13_ACCEPT_FINISHED_SENT) {
+        ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
+        ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+        ExpectIntEQ(wolfSSL_accept(ssl_s), -1);
+        ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+        /* stop if the server does not answer, do not loop forever */
+        ExpectIntGT(test_ctx.c_len, 0);
+    }
+
+    /* the server must keep the CID that the client asked for ... */
+    ExpectIntEQ(wolfSSL_dtls_cid_get_tx_size(ssl_s, &cidSz), 1);
+    ExpectIntEQ(cidSz, (unsigned int)serverCidSz);
+
+    /* ... and put all of it in each protected record of the flight */
+    for (i = 0; EXPECT_SUCCESS() && i < test_ctx.c_msg_count; i++) {
+        const char* msg = NULL;
+        const unsigned char* wireCid = NULL;
+        int msgSz = 0;
+
+        ExpectIntEQ(test_memio_get_message(&test_ctx, 1, &msg, &msgSz, i), 0);
+        if (EXPECT_SUCCESS()) {
+            wireCid = wolfSSL_dtls_cid_parse((const unsigned char*)msg,
+                    (unsigned int)msgSz, (unsigned int)serverCidSz);
+        }
+        if (wireCid == NULL)
+            continue; /* plaintext record, it carries no CID */
+        ExpectBufEQ(wireCid, serverCid->id, serverCidSz);
+        protectedRecords++;
+    }
+    ExpectIntGT(protectedRecords, 0);
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_cid_oversized_tx_post_hs(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_DTLS_CID)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    unsigned char server_cid[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    const int newCidSz = 255;
+    ConnectionID* newCid = NULL;
+    const unsigned char* wireCid = NULL;
+    const char* msg = NULL;
+    int msgSz = 0;
+    int i;
+
+    ExpectIntEQ(test_dtls13_cid_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c,
+            &ssl_s, server_cid, sizeof(server_cid)), TEST_SUCCESS);
+
+    /* A peer can give us a longer CID after the handshake with a
+     * NewConnectionId message (RFC 9147 Section 9); install the new CID
+     * directly to keep this test focused on the post-handshake framing. */
+    ExpectNotNull(ssl_s->dtlsCidInfo);
+    ExpectNotNull(newCid = (ConnectionID*)XMALLOC(
+            sizeof(*newCid) + (size_t)newCidSz, ssl_s->heap,
+            DYNAMIC_TYPE_TLSX));
+    if (EXPECT_SUCCESS()) {
+        newCid->length = (byte)newCidSz;
+        for (i = 0; i < newCidSz; i++)
+            newCid->id[i] = (byte)i;
+        XFREE(ssl_s->dtlsCidInfo->tx, ssl_s->heap, DYNAMIC_TYPE_TLSX);
+        ssl_s->dtlsCidInfo->tx = newCid;
+        /* the CID changes the record framing, drop the cached overhead */
+        ssl_s->recordSzOverhead = 0;
+    }
+
+    /* the server must build its KeyUpdate with the whole CID in the header */
+    ExpectIntEQ(wolfSSL_update_keys(ssl_s), WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_memio_get_message(&test_ctx, 1, &msg, &msgSz, 0), 0);
+    ExpectNotNull(wireCid = wolfSSL_dtls_cid_parse((const unsigned char*)msg,
+            (unsigned int)msgSz, (unsigned int)newCidSz));
+    ExpectBufEQ(wireCid, newCid->id, newCidSz);
+
+    /* and the same for the close_notify alert */
+    ExpectIntEQ(wolfSSL_shutdown(ssl_s), WOLFSSL_SHUTDOWN_NOT_DONE);
+    ExpectIntEQ(test_memio_get_message(&test_ctx, 1, &msg, &msgSz, 1), 0);
+    ExpectNotNull(wireCid = wolfSSL_dtls_cid_parse((const unsigned char*)msg,
+            (unsigned int)msgSz, (unsigned int)newCidSz));
+    ExpectBufEQ(wireCid, newCid->id, newCidSz);
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+#endif
+    return EXPECT_RESULT();
+}
 
 int test_dtls_version_checking(void)
 {
+/* The test drives a DTLS 1.2 handshake, which needs TLS 1.2. */
+#ifndef WOLFSSL_NO_TLS12
     EXPECT_DECLS;
 #if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS)
     WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
@@ -600,6 +1620,9 @@ int test_dtls_version_checking(void)
     wolfSSL_CTX_free(ctx_s);
 #endif /* HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES && WOLFSSL_DTLS */
     return EXPECT_RESULT();
+#else
+    return TEST_SKIPPED;
+#endif
 }
 
 #if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS)
@@ -661,6 +1684,250 @@ static int test_dtls_communication(WOLFSSL *s, WOLFSSL *c)
     XMEMSET(readBuf, 0, sizeof(readBuf));
     ExpectIntEQ(wolfSSL_read(c, readBuf, sizeof(readBuf)), 16);
     ExpectStrEQ(readBuf, "server message 2");
+
+    return EXPECT_RESULT();
+}
+
+/* Drive a DTLS handshake until the dropping peer reads a genuine flight record,
+ * corrupt its header, confirm the peer silently discards it, then re-deliver
+ * the record and confirm the handshake still completes. */
+static int test_dtls_drop_invalid_record(method_provider method_c,
+    method_provider method_s, int dropServer, int unknownType)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    /* Holds one cookie-exchange/HRR/ClientHello datagram. Pinning a classical
+     * group below keeps that flight small, and the ExpectIntLE(recSz) guard
+     * fails loudly rather than overflowing. */
+    unsigned char rec[2048];
+    unsigned char* recBuf;
+    int recSz = 0;
+    int readIsClient = dropServer ? 0 : 1;
+#if defined(HAVE_SUPPORTED_CURVES) && !defined(NO_ECC_SECP) && \
+    !defined(NO_ECC256)
+    int groups[1] = { WOLFSSL_ECC_SECP256R1 };
+#endif
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    recBuf = readIsClient ? test_ctx.c_buff : test_ctx.s_buff;
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+                    method_c, method_s), 0);
+
+#if defined(HAVE_SUPPORTED_CURVES) && !defined(NO_ECC_SECP) && \
+    !defined(NO_ECC256)
+    /* Pin a classical group so a PQC-default build cannot fragment the first
+     * flight across datagrams and break the corrupt/replay model. Set it on the
+     * WOLFSSL objects, which test_memio_setup() has already created. */
+    ExpectIntEQ(wolfSSL_set_groups(ssl_c, groups, 1), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_groups(ssl_s, groups, 1), WOLFSSL_SUCCESS);
+#endif
+
+    /* Client sends the ClientHello into the server's buffer. */
+    wolfSSL_SetLoggingPrefix("client");
+    ExpectIntEQ(wolfSSL_connect(ssl_c), WOLFSSL_FATAL_ERROR);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, WOLFSSL_FATAL_ERROR),
+        WOLFSSL_ERROR_WANT_READ);
+
+    /* When dropping at the client, let the server produce its first flight into
+     * the client's buffer. */
+    if (!dropServer) {
+        wolfSSL_SetLoggingPrefix("server");
+        ExpectIntEQ(wolfSSL_accept(ssl_s), WOLFSSL_FATAL_ERROR);
+        ExpectIntEQ(wolfSSL_get_error(ssl_s, WOLFSSL_FATAL_ERROR),
+            WOLFSSL_ERROR_WANT_READ);
+    }
+
+    /* Corrupt then replay the datagram the dropping peer is about to read. This
+     * assumes a single-datagram flight (asserted below) so re-injecting cannot
+     * merge record boundaries or drop other queued datagrams. */
+    ExpectIntEQ(readIsClient ? test_ctx.c_msg_count : test_ctx.s_msg_count, 1);
+    recSz = readIsClient ? test_ctx.c_len : test_ctx.s_len;
+    ExpectIntGT(recSz, DTLS_RECORD_HEADER_SZ);
+    ExpectIntLE(recSz, (int)sizeof(rec));
+    if (EXPECT_SUCCESS()) {
+        XMEMCPY(rec, recBuf, (size_t)recSz);
+        if (unknownType) {
+            /* Not a valid ContentType, and not a DTLS 1.3 unified-header byte
+             * (those have top bits 001, i.e. 0x20-0x3F). */
+            recBuf[0] = 0x63;
+        }
+        else {
+            recBuf[DTLS_RECORD_HEADER_SZ - 2] = 0xff;
+            recBuf[DTLS_RECORD_HEADER_SZ - 1] = 0xff;
+        }
+    }
+
+    /* The dropping peer must silently discard the datagram: no fatal error and
+     * nothing sent back to the other peer. */
+    if (dropServer) {
+        wolfSSL_SetLoggingPrefix("server");
+        ExpectIntEQ(wolfSSL_accept(ssl_s), WOLFSSL_FATAL_ERROR);
+        ExpectIntEQ(wolfSSL_get_error(ssl_s, WOLFSSL_FATAL_ERROR),
+            WOLFSSL_ERROR_WANT_READ);
+        ExpectIntEQ(test_ctx.c_len, 0);
+    }
+    else {
+        wolfSSL_SetLoggingPrefix("client");
+        ExpectIntEQ(wolfSSL_connect(ssl_c), WOLFSSL_FATAL_ERROR);
+        ExpectIntEQ(wolfSSL_get_error(ssl_c, WOLFSSL_FATAL_ERROR),
+            WOLFSSL_ERROR_WANT_READ);
+        ExpectIntEQ(test_ctx.s_len, 0);
+    }
+
+    /* Re-deliver the genuine record and finish the handshake to prove the
+     * association was preserved. */
+    test_memio_clear_buffer(&test_ctx, readIsClient);
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, readIsClient,
+                    (const char*)rec, recSz),
+        0);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    ExpectIntEQ(test_dtls_communication(ssl_s, ssl_c), TEST_SUCCESS);
+
+    wolfSSL_SetLoggingPrefix(NULL);
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+
+/* A DTLS peer must silently discard a handshake record whose header fails
+ * validation (UNKNOWN_RECORD_TYPE, LENGTH_ERROR) and still finish the handshake.
+ * Cover client and server paths for DTLS 1.2 and 1.3. */
+int test_dtls_drop_invalid_record_during_handshake(void)
+{
+    EXPECT_DECLS;
+
+#ifndef WOLFSSL_NO_TLS12
+    /* Client drops a corrupted server flight: unknown type, then over-length. */
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_2_client_method,
+        wolfDTLSv1_2_server_method, 0, 1), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_2_client_method,
+        wolfDTLSv1_2_server_method, 0, 0), TEST_SUCCESS);
+    /* Server drops a ClientHello with a bad record header: over-length, then
+     * unknown ContentType (dropped by the new UNKNOWN_RECORD_TYPE clause, which
+     * precedes the server-side non-stateful drop branch). */
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_2_client_method,
+        wolfDTLSv1_2_server_method, 1, 0), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_2_client_method,
+        wolfDTLSv1_2_server_method, 1, 1), TEST_SUCCESS);
+#endif
+
+#ifdef WOLFSSL_DTLS13
+    /* Same silent-drop behavior on the DTLS 1.3 receive path (all four
+     * side/corruption combinations). */
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_3_client_method,
+        wolfDTLSv1_3_server_method, 0, 1), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_3_client_method,
+        wolfDTLSv1_3_server_method, 0, 0), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_3_client_method,
+        wolfDTLSv1_3_server_method, 1, 0), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls_drop_invalid_record(wolfDTLSv1_3_client_method,
+        wolfDTLSv1_3_server_method, 1, 1), TEST_SUCCESS);
+#endif
+
+    return EXPECT_RESULT();
+}
+
+/* Deliver one datagram to a DTLS server that has not yet verified a
+ * ClientHello and require that it is dropped without disturbing a later
+ * handshake. */
+static int test_dtls_drop_invalid_hs_header(method_provider method_c,
+    method_provider method_s, const byte* dgram, int dgramSz)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+                    method_c, method_s), 0);
+
+    /* The server has received nothing so far, so the datagram must be
+     * discarded. */
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)dgram,
+                    dgramSz), 0);
+    wolfSSL_SetLoggingPrefix("server");
+    ExpectIntEQ(wolfSSL_accept(ssl_s), WOLFSSL_FATAL_ERROR);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, WOLFSSL_FATAL_ERROR),
+        WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(test_ctx.c_len, 0);
+    wolfSSL_SetLoggingPrefix(NULL);
+
+    /* The object was preserved, so a genuine client still gets through. */
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+
+/* A DTLS server that has not verified a ClientHello must silently discard a
+ * handshake record whose handshake header is malformed. */
+int test_dtls_drop_invalid_hs_header_when_unverified(void)
+{
+    EXPECT_DECLS;
+    /* Each datagram is a plaintext handshake record at epoch 0, sequence 7,
+     * carrying a corrupted handshake header. */
+
+    /* Message type that is not a handshake type. */
+    static const byte unknown_type[] = {
+        0x16, 0xfe, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
+        0x00, 0x0c,
+        0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    /* Finished, which only makes sense once encryption is on. */
+    static const byte plaintext_finished[] = {
+        0x16, 0xfe, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
+        0x00, 0x0c,
+        0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    /* Record body too short to hold a handshake header. */
+    static const byte truncated[] = {
+        0x16, 0xfe, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
+        0x00, 0x05,
+        0x01, 0x00, 0x00, 0x00, 0x00
+    };
+    /* ClientHello followed by a trailing byte, so it is not the last message
+     * in its record. */
+    static const byte ch_not_last[] = {
+        0x16, 0xfe, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
+        0x00, 0x0d,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00
+    };
+    static const struct {
+        const byte* dgram;
+        int sz;
+    } cases[] = {
+        { unknown_type,       (int)sizeof(unknown_type)       },
+        { plaintext_finished, (int)sizeof(plaintext_finished) },
+        { truncated,          (int)sizeof(truncated)          },
+        { ch_not_last,        (int)sizeof(ch_not_last)        }
+    };
+    size_t i;
+
+    for (i = 0; i < XELEM_CNT(cases); i++) {
+#ifndef WOLFSSL_NO_TLS12
+        ExpectIntEQ(test_dtls_drop_invalid_hs_header(wolfDTLSv1_2_client_method,
+            wolfDTLSv1_2_server_method, cases[i].dgram, cases[i].sz),
+            TEST_SUCCESS);
+#endif
+#ifdef WOLFSSL_DTLS13
+        ExpectIntEQ(test_dtls_drop_invalid_hs_header(wolfDTLSv1_3_client_method,
+            wolfDTLSv1_3_server_method, cases[i].dgram, cases[i].sz),
+            TEST_SUCCESS);
+#endif
+    }
 
     return EXPECT_RESULT();
 }
@@ -774,9 +2041,112 @@ int test_dtls13_short_read(void)
 }
 #endif /* WOLFSSL_DTLS13 && !defined(WOLFSSL_DTLS_RECORDS_CAN_SPAN_DATAGRAMS) */
 
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13)
+/* A plaintext (epoch 0) handshake message whose handshake message_length claims
+ * more than MAX_HANDSHAKE_SZ must not be buffered for reassembly. We use the
+ * server's plaintext ServerHello: the client accepts a fragmented ServerHello
+ * (Dtls13AcceptFragmented()), so an incomplete one is normally stored for
+ * reassembly. Without the message_length cap in _Dtls13HandshakeRecv() the
+ * spoofed message would be added to the rx list; with it the unauthenticated
+ * message is silently dropped. */
+int test_dtls13_oversized_msg_length(void)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    char sh[TEST_MEMIO_BUF_SZ];
+    int shSz = (int)sizeof(sh);
+    int recLen = 0;
+    byte hsMsg[DTLS_HANDSHAKE_HEADER_SZ + 1];
+    word32 idx = 0;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+                    wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+
+    /* CH1 -> server, then server emits its first flight (plaintext ServerHello
+     * is the first record). */
+    ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(wolfSSL_accept(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntGT(test_ctx.c_msg_count, 0);
+    ExpectIntEQ(test_memio_copy_message(&test_ctx, 1, sh, &shSz, 0), 0);
+    ExpectIntGE(shSz, DTLS_RECORD_HEADER_SZ + DTLS_HANDSHAKE_HEADER_SZ);
+    /* First record is a plaintext handshake ServerHello. */
+    ExpectIntEQ((byte)sh[0], handshake);
+    ExpectIntEQ((byte)sh[DTLS_RECORD_HEADER_SZ], server_hello);
+    if (EXPECT_SUCCESS())
+        recLen = (((byte)sh[DTLS_RECORD_HEADER_SZ - 2]) << 8) |
+                  (byte)sh[DTLS_RECORD_HEADER_SZ - 1];
+    /* the ServerHello record must be fully contained in the copied message */
+    ExpectIntLE(DTLS_RECORD_HEADER_SZ + recLen, shSz);
+
+    /* Spoof only the handshake message_length of the ServerHello record,
+     * leaving the record length and fragment_length intact so it clears record
+     * parsing and looks like the first fragment of an oversized message. */
+    c32to24((word32)MAX_HANDSHAKE_SZ + 1,
+            (byte*)sh + DTLS_RECORD_HEADER_SZ + 1);
+    test_memio_clear_buffer(&test_ctx, 1);
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 1, sh,
+            DTLS_RECORD_HEADER_SZ + recLen), 0);
+
+    /* The client must reject the oversized ServerHello without buffering it. */
+    ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectNull(ssl_c->dtls_rx_msg_list);
+    ExpectIntEQ(ssl_c->dtls_rx_msg_list_sz, 0);
+
+    wolfSSL_free(ssl_c);
+    ssl_c = NULL;
+    wolfSSL_CTX_free(ctx_c);
+    ctx_c = NULL;
+    wolfSSL_free(ssl_s);
+    ssl_s = NULL;
+    wolfSSL_CTX_free(ctx_s);
+    ctx_s = NULL;
+
+    /* Stretching the test suite a bit, ideally we should not test using
+     * internal state, but we have no way to forge encrypted packet yet */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+                    wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    if (EXPECT_SUCCESS()) {
+        ssl_c->keys.curEpoch64 = w64From32(0x0, DTLS13_EPOCH_TRAFFIC0);
+        ssl_c->keys.decryptedCur = 1;
+        ssl_c->curRL.pvMajor = ssl_c->version.major;
+        ssl_c->curRL.pvMinor = DTLSv1_2_MINOR;
+    }
+    XMEMSET(hsMsg, 0, sizeof(hsMsg));
+    hsMsg[0] = key_update;
+    /* oversized message_length, single-byte first fragment of it */
+    c32to24((word32)MAX_HANDSHAKE_SZ + 1, hsMsg + 1);
+    hsMsg[DTLS_HANDSHAKE_HEADER_SZ - 1] = 1;
+    ExpectIntEQ(Dtls13HandshakeRecv(ssl_c, hsMsg, &idx, (word32)sizeof(hsMsg)),
+        HANDSHAKE_SIZE_ERROR);
+    ExpectNull(ssl_c->dtls_rx_msg_list);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+#else
+int test_dtls13_oversized_msg_length(void)
+{
+    return TEST_SKIPPED;
+}
+#endif /* HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES && WOLFSSL_DTLS13 */
+
 #if !defined(WOLFSSL_DTLS_RECORDS_CAN_SPAN_DATAGRAMS)
 int test_dtls12_short_read(void)
 {
+/* The test drives a DTLS 1.2 handshake, which needs TLS 1.2. */
+#ifndef WOLFSSL_NO_TLS12
     EXPECT_DECLS;
     WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
     WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
@@ -828,6 +2198,9 @@ int test_dtls12_short_read(void)
     }
 
     return EXPECT_RESULT();
+#else
+    return TEST_SKIPPED;
+#endif
 }
 #else
 int test_dtls12_short_read(void)
@@ -839,6 +2212,8 @@ int test_dtls12_short_read(void)
 #if !defined(WOLFSSL_DTLS_RECORDS_CAN_SPAN_DATAGRAMS)
 int test_dtls12_record_length_mismatch(void)
 {
+/* The test drives a DTLS 1.2 handshake, which needs TLS 1.2. */
+#ifndef WOLFSSL_NO_TLS12
     EXPECT_DECLS;
     WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
     WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
@@ -875,11 +2250,24 @@ int test_dtls12_record_length_mismatch(void)
     ExpectIntEQ(ret, TEST_SUCCESS);
 
     return EXPECT_RESULT();
+#else
+    return TEST_SKIPPED;
+#endif
 }
 
 int test_dtls_record_cross_boundaries(void)
 {
+/* A record must not span datagrams in either DTLS version, so run whichever
+ * one the build has. */
+#if !defined(WOLFSSL_NO_TLS12) || defined(WOLFSSL_DTLS13)
     EXPECT_DECLS;
+#ifdef WOLFSSL_NO_TLS12
+    #define TEST_DTLS_CLIENT_METHOD wolfDTLSv1_3_client_method
+    #define TEST_DTLS_SERVER_METHOD wolfDTLSv1_3_server_method
+#else
+    #define TEST_DTLS_CLIENT_METHOD wolfDTLSv1_2_client_method
+    #define TEST_DTLS_SERVER_METHOD wolfDTLSv1_2_server_method
+#endif
     WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
     WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
     struct test_memio_ctx test_ctx;
@@ -890,11 +2278,20 @@ int test_dtls_record_cross_boundaries(void)
 
     /* Setup DTLS contexts */
     ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
-                    wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method),
+                    TEST_DTLS_CLIENT_METHOD, TEST_DTLS_SERVER_METHOD),
         0);
 
     /* Complete handshake */
     ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    /* The handshake does not drain the transport, and DTLS 1.3 can leave an
+     * ACK behind, so start from an empty buffer to keep the two records that
+     * follow at indices 0 and 1. DTLS 1.2 leaves nothing, and that is still
+     * worth checking rather than clearing away. */
+#ifdef WOLFSSL_NO_TLS12
+    test_memio_clear_buffer(&test_ctx, 0);
+#else
+    ExpectIntEQ(test_ctx.s_len, 0);
+#endif
 
     /* create a first record in the buffer */
     wolfSSL_SetLoggingPrefix("client");
@@ -938,7 +2335,12 @@ int test_dtls_record_cross_boundaries(void)
     wolfSSL_CTX_free(ctx_s);
     wolfSSL_CTX_free(ctx_c);
 
+#undef TEST_DTLS_CLIENT_METHOD
+#undef TEST_DTLS_SERVER_METHOD
     return EXPECT_RESULT();
+#else
+    return TEST_SKIPPED;
+#endif
 }
 #else
 int test_dtls12_record_length_mismatch(void)
@@ -953,6 +2355,8 @@ int test_dtls_record_cross_boundaries(void)
 
 int test_dtls_short_ciphertext(void)
 {
+/* The test drives a DTLS 1.2 handshake, which needs TLS 1.2. */
+#ifndef WOLFSSL_NO_TLS12
     EXPECT_DECLS;
     WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
     WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
@@ -995,8 +2399,19 @@ int test_dtls_short_ciphertext(void)
     ExpectIntEQ(ret, TEST_SUCCESS);
 
     return EXPECT_RESULT();
+#else
+    return TEST_SKIPPED;
+#endif
 }
 #else
+int test_dtls_drop_invalid_record_during_handshake(void)
+{
+    return TEST_SKIPPED;
+}
+int test_dtls_drop_invalid_hs_header_when_unverified(void)
+{
+    return TEST_SKIPPED;
+}
 int test_dtls_short_ciphertext(void)
 {
     return TEST_SKIPPED;
@@ -1014,6 +2429,10 @@ int test_dtls13_short_read(void)
     return TEST_SKIPPED;
 }
 int test_dtls13_longer_length(void)
+{
+    return TEST_SKIPPED;
+}
+int test_dtls13_oversized_msg_length(void)
 {
     return TEST_SKIPPED;
 }
@@ -1281,22 +2700,22 @@ int test_dtls_rtx_across_epoch_change(void)
     /* CH0 */
     wolfSSL_SetLoggingPrefix("client:");
     ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
-    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), SSL_ERROR_WANT_READ);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
 
     /* HRR */
     wolfSSL_SetLoggingPrefix("server:");
     ExpectIntEQ(wolfSSL_accept(ssl_s), -1);
-    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), SSL_ERROR_WANT_READ);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
 
     /* CH1 */
     wolfSSL_SetLoggingPrefix("client:");
     ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
-    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), SSL_ERROR_WANT_READ);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
 
     /* SH ... FINISHED */
     wolfSSL_SetLoggingPrefix("server:");
     ExpectIntEQ(wolfSSL_accept(ssl_s), -1);
-    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), SSL_ERROR_WANT_READ);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
 
     /* we should have now SH ... FINISHED messages in the buffer*/
     ExpectIntGE(test_ctx.c_msg_count, 2);
@@ -1309,7 +2728,7 @@ int test_dtls_rtx_across_epoch_change(void)
     /* Read the SH */
     wolfSSL_SetLoggingPrefix("client:");
     ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
-    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), SSL_ERROR_WANT_READ);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
 
     /* trigger client timeout */
     ExpectIntEQ(wolfSSL_dtls_got_timeout(ssl_c), WOLFSSL_SUCCESS);
@@ -1397,6 +2816,7 @@ int test_dtls_drop_client_ack(void)
     /* this should re-send the ack immediately */
     ExpectIntEQ(wolfSSL_read(ssl_s, data, 32), -1);
     ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    TEST_DTLS13_PUMP(ssl_s);
     ExpectIntEQ(test_ctx.c_msg_count, 1);
 
     /* This should advance the connection on the client */
@@ -1776,6 +3196,14 @@ int test_dtls_certreq_order(void)
     ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, NULL, &ssl_c, NULL,
             wolfDTLSv1_2_client_method, NULL), 0);
 
+#if defined(HAVE_SERVER_RENEGOTIATION_INFO) && \
+    !defined(WOLFSSL_HARDEN_TLS_NO_SCR_CHECK)
+    /* This fixed capture predates renegotiation_info advertising, so its
+     * ServerHello omits the extension. Disable the RFC 5746 check so the test
+     * exercises message ordering rather than renegotiation_info enforcement. */
+    ExpectIntEQ(WOLFSSL_SUCCESS, wolfSSL_set_scr_check_enabled(ssl_c, 0));
+#endif
+
     /* start handshake, send first ClientHello */
     ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
     ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
@@ -1999,6 +3427,80 @@ int test_dtls_memio_wolfio_stateless(void)
     return EXPECT_RESULT();
 }
 
+/* A datagram from an address other than the learned peer is dropped and the
+ * session stays usable. */
+int test_dtls_memio_wolfio_invalid_peer(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_PEER_ADDRESS_CHANGES)
+    size_t i;
+    struct {
+        method_provider client_meth;
+        method_provider server_meth;
+    } params[] = {
+#if defined(WOLFSSL_TLS13) && defined(WOLFSSL_DTLS13)
+        { wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method },
+#endif
+#if !defined(WOLFSSL_NO_TLS12) && defined(WOLFSSL_DTLS)
+        { wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method },
+#endif
+#if !defined(NO_OLD_TLS) && defined(WOLFSSL_DTLS)
+        { wolfDTLSv1_client_method, wolfDTLSv1_server_method },
+#endif
+    };
+    XMEMSET(&test_memio_wolfio_ctx, 0, sizeof(test_memio_wolfio_ctx));
+    for (i = 0; i < XELEM_CNT(params) && !EXPECT_FAIL(); i++) {
+        WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+        WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+        struct test_memio_ctx test_ctx;
+        char readBuf[16];
+
+        XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+        ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+                params[i].client_meth, params[i].server_meth), 0);
+
+        test_memio_wolfio_ctx.test_ctx = &test_ctx;
+        test_memio_wolfio_ctx.ssl_s = ssl_s;
+        /* Large number to error out if any syscalls are called with it */
+        test_memio_wolfio_ctx.fd = 6000;
+        XMEMSET(&test_memio_wolfio_ctx.peer_addr, 0,
+                sizeof(test_memio_wolfio_ctx.peer_addr));
+        test_memio_wolfio_ctx.peer_addr.ss_family = AF_INET;
+
+        wolfSSL_dtls_set_using_nonblock(ssl_s, 1);
+        wolfSSL_SetRecvFrom(ssl_s, test_memio_wolfio_recvfrom);
+        wolfSSL_SetSendTo(ssl_s, test_memio_wolfio_sendto);
+        /* Restore default functions */
+        wolfSSL_SSLSetIORecv(ssl_s, EmbedReceiveFrom);
+        wolfSSL_SSLSetIOSend(ssl_s, EmbedSendTo);
+        /* No wolfSSL_dtls_set_peer(): wolfio learns the peer address */
+        ExpectIntEQ(wolfSSL_set_fd(ssl_s, test_memio_wolfio_ctx.fd),
+                    WOLFSSL_SUCCESS);
+
+        ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+        /* Serve the next datagram as coming from a different address */
+        ExpectIntEQ(wolfSSL_write(ssl_c, "test", 5), 5);
+        ((SOCKADDR_IN*)&test_memio_wolfio_ctx.peer_addr)->sin_port++;
+        ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+        ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+        ((SOCKADDR_IN*)&test_memio_wolfio_ctx.peer_addr)->sin_port--;
+
+        ExpectIntEQ(wolfSSL_write(ssl_c, "test", 5), 5);
+        ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), 5);
+        ExpectStrEQ(readBuf, "test");
+
+        wolfSSL_free(ssl_s);
+        wolfSSL_free(ssl_c);
+        wolfSSL_CTX_free(ctx_s);
+        wolfSSL_CTX_free(ctx_c);
+    }
+#endif
+    return EXPECT_RESULT();
+}
+
 int test_dtls_mtu_split_messages(void)
 {
 #if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
@@ -2137,7 +3639,8 @@ int test_dtls_set_session_min_downgrade(void)
 {
     EXPECT_DECLS;
 #if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
-    defined(WOLFSSL_DTLS13) && defined(HAVE_SESSION_TICKET)
+    defined(WOLFSSL_DTLS13) && defined(HAVE_SESSION_TICKET) && \
+    !defined(WOLFSSL_NO_TLS12)
     WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
     WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
     WOLFSSL_SESSION *sess = NULL;
@@ -3258,6 +4761,22 @@ static void test_AEAD_get_limits(WOLFSSL* ssl, w64wrapper* hardLimit,
     }
 }
 
+/* A DTLS 1.3 key update is scheduled while reading but is only transmitted
+ * from the write path. With WOLFSSL_RW_THREADED the read path does no
+ * scheduled work at all, because the reader must not transmit while a writer
+ * thread may be doing so, so an application that reads without writing has to
+ * pump the deferred work itself. Do what such an application would do. */
+static void test_AEAD_drain_scheduled_work(WOLFSSL* ssl)
+{
+    /* Match where wolfSSL_dtls13_do_scheduled_work() is declared, in
+     * wolfssl/ssl.h, or a WOLFSSL_LEANPSK build has no declaration for it. */
+#if defined(WOLFSSL_RW_THREADED) && !defined(WOLFSSL_LEANPSK)
+    AssertIntEQ(wolfSSL_dtls13_do_scheduled_work(ssl), WOLFSSL_SUCCESS);
+#else
+    (void)ssl;
+#endif
+}
+
 static void test_AEAD_limit_client(WOLFSSL* ssl)
 {
     int ret;
@@ -3295,6 +4814,7 @@ static void test_AEAD_limit_client(WOLFSSL* ssl)
         /* Key update should be sent and negotiated */
         ret = wolfSSL_read(ssl, msgBuf, sizeof(msgBuf));
         AssertIntGT(ret, 0);
+        test_AEAD_drain_scheduled_work(ssl);
         /* Epoch after one key update is 4 */
         if (w64Equal(ssl->dtls13PeerEpoch, w64From32(0, 4)) &&
                 w64Equal(Dtls13GetEpoch(ssl, ssl->dtls13PeerEpoch)->dropCount, counter)) {
@@ -3304,6 +4824,17 @@ static void test_AEAD_limit_client(WOLFSSL* ssl)
     }
     AssertTrue(didReKey);
 
+    /* Everything below needs the ACK of that first key update to be
+     * processed, which rotates our own sending keys and so creates an epoch.
+     * The epoch table has no locking, and with WOLFSSL_RW_THREADED the read
+     * thread mutates it too, so that processing deliberately stays off the
+     * write path and a second key update cannot complete in such a build.
+     * Don't assert behaviour that is knowingly not provided. The hard limit
+     * check below is inside this too, and deliberately: without that ACK the
+     * decrypting epoch stops matching the one the drop counter is placed on,
+     * so the read never reaches the limit and loops until the test times out.
+     */
+#ifndef WOLFSSL_RW_THREADED
     if (!w64IsZero(sendLimit)) {
         /* Test the sending limit for AEAD ciphers */
 #ifdef WOLFSSL_MUTEX_INITIALIZER
@@ -3341,7 +4872,13 @@ static void test_AEAD_limit_client(WOLFSSL* ssl)
     ret = wolfSSL_read(ssl, msgBuf, sizeof(msgBuf));
     AssertIntEQ(ret, WC_NO_ERR_TRACE(WOLFSSL_FATAL_ERROR));
     AssertIntEQ(wolfSSL_get_error(ssl, ret), WC_NO_ERR_TRACE(DECRYPT_ERROR));
+#else
+    (void)sendLimit;
+    (void)hardLimit;
+#endif
 
+    /* Always signal completion, including on the paths skipped above, so the
+     * peer thread does not spin waiting for a flag that never gets set. */
 #ifdef WOLFSSL_ATOMIC_INITIALIZER
     WOLFSSL_ATOMIC_STORE(test_AEAD_done, 1);
 #else
@@ -5310,7 +6847,1240 @@ int test_dtls_old_seq_number(void)
     return EXPECT_RESULT();
 }
 
+/* A DTLS 1.2 server that has not yet accepted a cookie must not let a record it
+ * ignores advance its anti-replay window. A record with a high record sequence
+ * number would otherwise leave every later ClientHello, which starts at zero,
+ * looking like a replay, and the server would never answer one again. */
+int test_dtls12_stateless_window(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && !defined(NO_WOLFSSL_CLIENT) && \
+    !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    /* Handshake record, epoch 0, record sequence number 1000000, holding a
+     * complete server_hello with a 32 byte body. A server drops the message
+     * before it has seen a ClientHello, so nothing resets the state. */
+    const byte spoof[] = {
+        0x16, 0xfe, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x42, 0x40,
+        0x00, 0x2c,
+        0x02, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+
+    ExpectIntEQ(test_memio_inject_message(&test_ctx, 0, (const char*)spoof,
+        (int)sizeof(spoof)), 0);
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    if (EXPECT_SUCCESS() && ssl_s != NULL) {
+        ExpectIntEQ(ssl_s->options.dtlsStateful, 0);
+        ExpectIntEQ((int)ssl_s->keys.peerSeq[0].nextSeq_lo, 0);
+        ExpectIntEQ((int)ssl_s->keys.peerSeq[0].nextSeq_hi, 0);
+    }
+
+    /* The cookie exchange and the rest of the handshake still run. */
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Re-frame a protected dtls12_cid record as the given wire type and strip the
+ * CID. The MAC doesn't cover the wire type, so the record still authenticates
+ * and is dispatched on the forged type. */
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS_CID) \
+    && !defined(WOLFSSL_NO_TLS12)
+static int test_dtls12_cid_type_swap_to(byte type)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    unsigned char client_cid[] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    const char msg[] = "hello";
+    char readBuf[32];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_c), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_s), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl_s, client_cid, sizeof(client_cid)), 1);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    test_memio_clear_buffer(&test_ctx, 0);
+    ExpectIntEQ(wolfSSL_write(ssl_c, msg, (int)sizeof(msg)), (int)sizeof(msg));
+    ExpectIntEQ(test_ctx.s_buff[0], dtls12_cid);
+    ExpectIntGT(test_ctx.s_len, (int)(DTLS12_CID_OFFSET + sizeof(client_cid)));
+
+    /* drop the CID and forge the wire type */
+    if (EXPECT_SUCCESS()) {
+        int cidSz = (int)sizeof(client_cid);
+        test_ctx.s_buff[0] = type;
+        XMEMMOVE(test_ctx.s_buff + DTLS12_CID_OFFSET,
+                 test_ctx.s_buff + DTLS12_CID_OFFSET + cidSz,
+                 (size_t)(test_ctx.s_len - DTLS12_CID_OFFSET - cidSz));
+        test_ctx.s_len -= cidSz;
+        test_ctx.s_msg_sizes[0] -= cidSz;
+    }
+
+    /* the record must be dropped, not delivered or acted on */
+    XMEMSET(readBuf, 0, sizeof(readBuf));
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+#endif
+
+int test_dtls12_cid_record_type_swap(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS_CID) \
+    && !defined(WOLFSSL_NO_TLS12)
+    ExpectIntEQ(test_dtls12_cid_type_swap_to(application_data), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls12_cid_type_swap_to(alert), TEST_SUCCESS);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* A client that offers a CID the server ignores must keep accepting ordinary
+ * protected records. The rx CID stays configured on the DTLS 1.2 client, so the
+ * dtls12_cid requirement must key off the negotiated state, not the setting. */
+int test_dtls12_cid_not_negotiated(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS_CID) \
+    && !defined(WOLFSSL_NO_TLS12)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    unsigned char client_cid[] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    const char msg[] = "hello";
+    char readBuf[32];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    /* Only the client asks for a CID. */
+    ExpectIntEQ(wolfSSL_dtls_cid_use(ssl_c), 1);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(ssl_c, client_cid, sizeof(client_cid)), 1);
+
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    ExpectIntEQ(wolfSSL_write(ssl_s, msg, (int)sizeof(msg)), (int)sizeof(msg));
+    XMEMSET(readBuf, 0, sizeof(readBuf));
+    ExpectIntEQ(wolfSSL_read(ssl_c, readBuf, sizeof(readBuf)),
+            (int)sizeof(msg));
+    ExpectStrEQ(readBuf, msg);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Renegotiate at the given server epoch and report whether it was allowed. */
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && defined(HAVE_SECURE_RENEGOTIATION) && \
+    defined(HAVE_SERVER_RENEGOTIATION_INFO) && !defined(NO_WOLFSSL_SERVER) && \
+    !defined(NO_WOLFSSL_CLIENT)
+static int test_dtls12_scr_epoch_wrap_at(word16 epoch, int expectAccept)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    WOLFSSL_ALERT_HISTORY h;
+    char readBuf[16];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(wolfSSL_UseSecureRenegotiation(ssl_c), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_UseSecureRenegotiation(ssl_s), WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    /* Only the server's send epoch. Moving the receive epochs would drop the
+     * ClientHello, and moving the client's would trip _Rehandshake(). */
+    if (EXPECT_SUCCESS() && ssl_s != NULL)
+        ssl_s->keys.dtls_epoch = epoch;
+
+    ExpectIntEQ(wolfSSL_Rehandshake(ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+
+    XMEMSET(readBuf, 0, sizeof(readBuf));
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, sizeof(readBuf)), -1);
+
+    ExpectIntEQ(wolfSSL_SSL_renegotiate_pending(ssl_s),
+            expectAccept ? 1 : 0);
+    if (!expectAccept) {
+        /* refused with a warning alert, epoch untouched */
+        XMEMSET(&h, 0, sizeof(h));
+        ExpectIntEQ(wolfSSL_get_alert_history(ssl_s, &h), WOLFSSL_SUCCESS);
+        ExpectIntEQ(h.last_tx.level, alert_warning);
+        ExpectIntEQ(h.last_tx.code, no_renegotiation);
+        if (EXPECT_SUCCESS() && ssl_s != NULL)
+            ExpectIntEQ((int)ssl_s->keys.dtls_epoch, (int)epoch);
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+#endif
+
+int test_dtls12_scr_epoch_wrap(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && defined(HAVE_SECURE_RENEGOTIATION) && \
+    defined(HAVE_SERVER_RENEGOTIATION_INFO) && !defined(NO_WOLFSSL_SERVER) && \
+    !defined(NO_WOLFSSL_CLIENT)
+    ExpectIntEQ(test_dtls12_scr_epoch_wrap_at(0xFFFF, 0), TEST_SUCCESS);
+    /* one below the boundary still renegotiates */
+    ExpectIntEQ(test_dtls12_scr_epoch_wrap_at(0xFFFE, 1), TEST_SUCCESS);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Ask the client to renegotiate with one of its epoch counters at the wrap
+ * boundary. Covers both disjuncts of the _Rehandshake() epoch check. */
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && defined(HAVE_SECURE_RENEGOTIATION) && \
+    defined(HAVE_SERVER_RENEGOTIATION_INFO) && !defined(NO_WOLFSSL_SERVER) && \
+    !defined(NO_WOLFSSL_CLIENT)
+static int test_dtls12_scr_client_epoch_wrap_at(int useRecvEpoch)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(wolfSSL_UseSecureRenegotiation(ssl_c), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_UseSecureRenegotiation(ssl_s), WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    if (EXPECT_SUCCESS() && ssl_c != NULL) {
+        if (useRecvEpoch)
+            ssl_c->keys.peerSeq[0].nextEpoch = 0xFFFF;
+        else
+            ssl_c->keys.dtls_epoch = 0xFFFF;
+    }
+
+    /* refused locally: nothing is put on the wire */
+    ExpectIntEQ(wolfSSL_Rehandshake(ssl_c),
+            WC_NO_ERR_TRACE(SECURE_RENEGOTIATION_E));
+    ExpectIntEQ(test_ctx.c_len, 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+#endif
+
+int test_dtls12_scr_client_epoch_wrap(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && defined(HAVE_SECURE_RENEGOTIATION) && \
+    defined(HAVE_SERVER_RENEGOTIATION_INFO) && !defined(NO_WOLFSSL_SERVER) && \
+    !defined(NO_WOLFSSL_CLIENT)
+    ExpectIntEQ(test_dtls12_scr_client_epoch_wrap_at(0), TEST_SUCCESS);
+    ExpectIntEQ(test_dtls12_scr_client_epoch_wrap_at(1), TEST_SUCCESS);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls12_seq_num_wrap(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    const char msg[] = "wrap";
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    /* one below the last legal 48 bit sequence number */
+    if (EXPECT_SUCCESS() && ssl_c != NULL) {
+        ssl_c->keys.dtls_sequence_number_hi = 0xFFFF;
+        ssl_c->keys.dtls_sequence_number_lo = 0xFFFFFFFEU;
+    }
+
+    ExpectIntEQ(wolfSSL_write(ssl_c, msg, (int)sizeof(msg)), (int)sizeof(msg));
+    if (EXPECT_SUCCESS() && ssl_c != NULL) {
+        ExpectIntEQ((int)ssl_c->keys.dtls_sequence_number_hi, 0xFFFF);
+        ExpectIntEQ(ssl_c->keys.dtls_sequence_number_lo, 0xFFFFFFFFU);
+    }
+
+    /* the next record would wrap the counter back to 0 */
+    test_memio_clear_buffer(&test_ctx, 0);
+    ExpectIntLT(wolfSSL_write(ssl_c, msg, (int)sizeof(msg)), 0);
+    ExpectIntEQ(test_ctx.s_len, 0);
+    if (EXPECT_SUCCESS() && ssl_c != NULL) {
+        ExpectIntEQ((int)ssl_c->keys.dtls_sequence_number_hi, 0xFFFF);
+        ExpectIntEQ(ssl_c->keys.dtls_sequence_number_lo, 0xFFFFFFFFU);
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
 /*-- dtls12_missing_finished (api.c lines 32007,32068) ---*/
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+/* Drive a DTLS 1.3 handshake up to the point where the client has sent its
+ * second ClientHello (carrying the HRR cookie), with the cookie signed by
+ * secret s1.  Leaves ssl_s about to process that ClientHello. */
+static int test_dtls13_hrr_cookie_pump_to_ch2(struct test_memio_ctx* test_ctx,
+    WOLFSSL_CTX** ctx_c, WOLFSSL_CTX** ctx_s, WOLFSSL** ssl_c, WOLFSSL** ssl_s,
+    const byte* s1, word32 s1Sz)
+{
+    EXPECT_DECLS;
+    int group = WOLFSSL_ECC_SECP256R1;
+
+    ExpectIntEQ(test_memio_setup(test_ctx, ctx_c, ctx_s, ssl_c, ssl_s,
+        wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+
+    /* Force a single ECC key share so the ClientHello is not fragmented. */
+    ExpectIntEQ(wolfSSL_set_groups(*ssl_c, &group, 1), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_groups(*ssl_s, &group, 1), WOLFSSL_SUCCESS);
+
+    /* Server signs the HRR cookie with the primary secret s1. */
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(*ssl_s, s1, s1Sz), WOLFSSL_SUCCESS);
+
+    /* CH1 */
+    ExpectIntEQ(wolfSSL_connect(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    /* HRR (cookie signed with s1) */
+    ExpectIntEQ(wolfSSL_accept(*ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    /* CH2 carrying the s1 cookie */
+    ExpectIntEQ(wolfSSL_connect(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+
+    return EXPECT_RESULT();
+}
+#endif
+
+/* A cookie issued under the previous (now secondary) secret is still accepted
+ * after an application-driven secret rotation on a stateless DTLS 1.3 server. */
+int test_dtls13_hrr_cookie_secret_secondary(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[32];
+    byte s2[32];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0xA5, sizeof(s2));
+
+    ExpectIntEQ(test_dtls13_hrr_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* The secondary-secret API is server side only. */
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_c, s1, sizeof(s1)),
+        WC_NO_ERR_TRACE(SIDE_ERROR));
+
+    /* Application rotates the cookie secret before CH2 is processed: s2 becomes
+     * the primary, and s1 is installed as the secondary (verify-only) secret. */
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, s2, sizeof(s2)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s1, sizeof(s1)),
+        WOLFSSL_SUCCESS);
+
+    /* The cookie (signed with s1) must verify against the secondary secret and
+     * the handshake must complete. */
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* A cookie whose signing secret is neither the primary nor the secondary secret
+ * (rotated out entirely) is rejected with HRR_COOKIE_ERROR. */
+int test_dtls13_hrr_cookie_secret_secondary_dropped(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[32];
+    byte s2[32];
+    byte s3[32];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0x22, sizeof(s2));
+    XMEMSET(s3, 0x11, sizeof(s3));
+
+    ExpectIntEQ(test_dtls13_hrr_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* Two rotations have happened: s1 is now neither the primary (s3) nor the
+     * secondary (s2) secret. */
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, s3, sizeof(s3)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s2, sizeof(s2)),
+        WOLFSSL_SUCCESS);
+
+    /* Server drops the ClientHello carrying the unverifiable cookie and sends
+     * an illegal_parameter alert; the handshake cannot complete. */
+    ExpectIntNE(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    {
+        WOLFSSL_ALERT_HISTORY h;
+        XMEMSET(&h, 0, sizeof(h));
+        ExpectIntEQ(wolfSSL_get_alert_history(ssl_c, &h), WOLFSSL_SUCCESS);
+        ExpectIntEQ(h.last_rx.code, illegal_parameter);
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+/* Assert that the pumped CH2 cookie is rejected: the handshake does not
+ * complete and the client receives an illegal_parameter alert. */
+static int test_dtls13_hrr_assert_rejected(WOLFSSL* ssl_c, WOLFSSL* ssl_s)
+{
+    EXPECT_DECLS;
+    WOLFSSL_ALERT_HISTORY h;
+
+    ExpectIntNE(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    XMEMSET(&h, 0, sizeof(h));
+    ExpectIntEQ(wolfSSL_get_alert_history(ssl_c, &h), WOLFSSL_SUCCESS);
+    ExpectIntEQ(h.last_rx.code, illegal_parameter);
+
+    return EXPECT_RESULT();
+}
+
+/* Set primary=p and secondary=q on a fresh DTLS 1.3 server, then drive the
+ * handshake until the client has sent CH2.  The cookie is issued during the
+ * HRR step (and per the contract must be signed with the primary p).  Leaves
+ * ssl_s about to process CH2. */
+static int test_dtls13_hrr_issue_with_secondary(struct test_memio_ctx* test_ctx,
+    WOLFSSL_CTX** ctx_c, WOLFSSL_CTX** ctx_s, WOLFSSL** ssl_c, WOLFSSL** ssl_s,
+    const byte* p, word32 pSz, const byte* q, word32 qSz)
+{
+    EXPECT_DECLS;
+    int group = WOLFSSL_ECC_SECP256R1;
+
+    ExpectIntEQ(test_memio_setup(test_ctx, ctx_c, ctx_s, ssl_c, ssl_s,
+        wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+    ExpectIntEQ(wolfSSL_set_groups(*ssl_c, &group, 1), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_groups(*ssl_s, &group, 1), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(*ssl_s, p, pSz), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(*ssl_s, q, qSz),
+        WOLFSSL_SUCCESS);
+
+    /* CH1 */
+    ExpectIntEQ(wolfSSL_connect(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    /* HRR - cookie issued here */
+    ExpectIntEQ(wolfSSL_accept(*ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    /* CH2 carrying the issued cookie */
+    ExpectIntEQ(wolfSSL_connect(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+
+    return EXPECT_RESULT();
+}
+#endif
+
+/* Clearing the secondary secret (NULL/0) makes a cookie issued under it stop
+ * verifying again. */
+int test_dtls13_hrr_cookie_secret_secondary_cleared(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[32];
+    byte s2[32];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0xA5, sizeof(s2));
+
+    ExpectIntEQ(test_dtls13_hrr_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* Rotate primary to s2 and install s1 as the secondary - this alone would
+     * make the s1 cookie verify. */
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, s2, sizeof(s2)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s1, sizeof(s1)),
+        WOLFSSL_SUCCESS);
+    /* But clearing it again must drop it. */
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, NULL, 0),
+        WOLFSSL_SUCCESS);
+
+    /* The s1 cookie is no longer accepted (only primary s2 remains). */
+    ExpectIntEQ(test_dtls13_hrr_assert_rejected(ssl_c, ssl_s), TEST_SUCCESS);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* A cookie that matches the primary secret is accepted on the normal fast path
+ * even when a (different) secondary secret is configured. */
+int test_dtls13_hrr_cookie_secret_primary_wins(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[32];
+    byte s2[32];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0xA5, sizeof(s2));
+
+    ExpectIntEQ(test_dtls13_hrr_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* Primary still s1 (matches the cookie); a different secondary is present
+     * but must not be needed. */
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s2, sizeof(s2)),
+        WOLFSSL_SUCCESS);
+
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Setting the secondary secret equal to the primary is harmless (guards against
+ * duplication/double-free regressions). */
+int test_dtls13_hrr_cookie_secret_same_as_primary(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[32];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+
+    ExpectIntEQ(test_dtls13_hrr_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s1, sizeof(s1)),
+        WOLFSSL_SUCCESS);
+
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Replacing the secondary secret keeps only the most recent value: the old
+ * secondary is discarded and the new one is active (single overlap window). */
+int test_dtls13_hrr_cookie_secret_secondary_replaced(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte sP[32];
+    byte sA[32];
+    byte sB[32];
+
+    XMEMSET(sP, 0x11, sizeof(sP));
+    XMEMSET(sA, 0x5A, sizeof(sA));
+    XMEMSET(sB, 0xA5, sizeof(sB));
+
+    /* Replacing secondary sA with sB discards sA: a cookie signed with sA is
+     * then rejected (neither primary sP nor secondary sB). */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls13_hrr_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, sA, sizeof(sA)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, sP, sizeof(sP)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, sA, sizeof(sA)),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, sB, sizeof(sB)),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_dtls13_hrr_assert_rejected(ssl_c, ssl_s), TEST_SUCCESS);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+    ssl_c = NULL; ctx_c = NULL; ssl_s = NULL; ctx_s = NULL;
+
+    /* The replacement value sB is active: a cookie signed with sB verifies. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls13_hrr_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, sB, sizeof(sB)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, sP, sizeof(sP)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, sA, sizeof(sA)),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, sB, sizeof(sB)),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* The secondary secret is verify-only: cookies are always issued with the
+ * primary, never the secondary. */
+int test_dtls13_hrr_cookie_secret_issue_uses_primary(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte p[32];
+    byte q[32];
+
+    XMEMSET(p, 0x5A, sizeof(p));
+    XMEMSET(q, 0xA5, sizeof(q));
+
+    /* Control: with primary=p, secondary=q at issue time, dropping the
+     * secondary and keeping only the primary p still verifies the cookie -
+     * confirming the cookie is valid under p. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls13_hrr_issue_with_secondary(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, p, sizeof(p), q, sizeof(q)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, NULL, 0),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+    ssl_c = NULL; ctx_c = NULL; ssl_s = NULL; ctx_s = NULL;
+
+    /* Test: making the secondary value q the only secret rejects the cookie.
+     * If issuance had (incorrectly) used the secondary q, the cookie would now
+     * verify - so rejection proves the cookie was signed with the primary p. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls13_hrr_issue_with_secondary(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, p, sizeof(p), q, sizeof(q)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, q, sizeof(q)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, NULL, 0),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_dtls13_hrr_assert_rejected(ssl_c, ssl_s), TEST_SUCCESS);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Argument validation for the secondary cookie-secret APIs. */
+int test_dtls13_hrr_cookie_secret_secondary_args(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s[16];
+
+    XMEMSET(s, 0x5A, sizeof(s));
+
+    /* NULL ssl is rejected by both APIs. */
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(NULL, s, sizeof(s)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(NULL, s, sizeof(s)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+
+    /* DTLS 1.3 objects: client side is rejected, server side accepts, and the
+     * NULL/0 clear forms both succeed. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_c, s, sizeof(s)),
+        WC_NO_ERR_TRACE(SIDE_ERROR));
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s, sizeof(s)),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, NULL, 0),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s, 0),
+        WOLFSSL_SUCCESS);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+    ssl_c = NULL; ctx_c = NULL; ssl_s = NULL; ctx_s = NULL;
+
+    /* The DTLS 1.3 secondary API is DTLS only: a (non-DTLS) TLS 1.3 server is
+     * rejected. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfTLSv1_3_client_method, wolfTLSv1_3_server_method), 0);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s, sizeof(s)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+    ssl_c = NULL; ctx_c = NULL; ssl_s = NULL; ctx_s = NULL;
+
+#ifndef WOLFSSL_NO_TLS12
+    /* A non-TLS-1.3 object (DTLS 1.2 server) is rejected by the 1.3 API. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, s, sizeof(s)),
+        WC_NO_ERR_TRACE(BAD_FUNC_ARG));
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+#endif
+    return EXPECT_RESULT();
+}
+
+/* wolfSSL_disable_hrr_cookie() frees the secondary secret and clears its
+ * pointer.  Arming and disabling twice exercises that free/zeroize path more
+ * than once, so a free-without-clear is caught under ASAN /
+ * WOLFSSL_CHECK_MEM_ZERO instead of going unnoticed. */
+int test_dtls13_hrr_cookie_secret_secondary_disabled(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS13) && \
+    defined(WOLFSSL_SEND_HRR_COOKIE) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte sP[32];
+    byte sS[32];
+
+    XMEMSET(sP, 0x11, sizeof(sP));
+    XMEMSET(sS, 0x5A, sizeof(sS));
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+
+    /* Round 1: arm primary + secondary, then disable frees both. */
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, sP, sizeof(sP)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, sS, sizeof(sS)),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_disable_hrr_cookie(ssl_s), WOLFSSL_SUCCESS);
+
+    /* Round 2: re-arm and disable again.  The first disable must have cleared
+     * the secondary pointer, so this neither double-frees nor leaks. */
+    ExpectIntEQ(wolfSSL_send_hrr_cookie(ssl_s, sP, sizeof(sP)), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_set_hrr_cookie_secret_secondary(ssl_s, sS, sizeof(sS)),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_disable_hrr_cookie(ssl_s), WOLFSSL_SUCCESS);
+
+    /* Disabling again with nothing armed is a no-op success. */
+    ExpectIntEQ(wolfSSL_disable_hrr_cookie(ssl_s), WOLFSSL_SUCCESS);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+/* Drive a DTLS 1.2 handshake up to the point where the client has sent its
+ * second ClientHello (carrying the HelloVerifyRequest cookie), with the cookie
+ * signed by secret s1.  Leaves ssl_s about to process that ClientHello. */
+static int test_dtls12_cookie_pump_to_ch2(struct test_memio_ctx* test_ctx,
+    WOLFSSL_CTX** ctx_c, WOLFSSL_CTX** ctx_s, WOLFSSL** ssl_c, WOLFSSL** ssl_s,
+    const byte* s1, word32 s1Sz)
+{
+    EXPECT_DECLS;
+
+    ExpectIntEQ(test_memio_setup(test_ctx, ctx_c, ctx_s, ssl_c, ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+
+    /* Server signs the HelloVerifyRequest cookie with the primary secret s1. */
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(*ssl_s, s1, s1Sz), 0);
+
+    /* CH1 */
+    ExpectIntEQ(wolfSSL_negotiate(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    /* HVR (cookie signed with s1) */
+    ExpectIntEQ(wolfSSL_negotiate(*ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    /* CH2 carrying the s1 cookie */
+    ExpectIntEQ(wolfSSL_negotiate(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+
+    return EXPECT_RESULT();
+}
+
+/* Set primary=p and secondary=q on a fresh DTLS 1.2 server, then drive the
+ * handshake until the client has sent CH2.  The cookie is issued in the
+ * HelloVerifyRequest (and per the contract must be signed with the primary p).
+ * Leaves ssl_s about to process CH2. */
+static int test_dtls12_cookie_issue_with_secondary(
+    struct test_memio_ctx* test_ctx, WOLFSSL_CTX** ctx_c, WOLFSSL_CTX** ctx_s,
+    WOLFSSL** ssl_c, WOLFSSL** ssl_s, const byte* p, word32 pSz,
+    const byte* q, word32 qSz)
+{
+    EXPECT_DECLS;
+
+    ExpectIntEQ(test_memio_setup(test_ctx, ctx_c, ctx_s, ssl_c, ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(*ssl_s, p, pSz), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(*ssl_s, q, qSz), 0);
+
+    /* CH1 */
+    ExpectIntEQ(wolfSSL_negotiate(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+    /* HVR - cookie issued here */
+    ExpectIntEQ(wolfSSL_negotiate(*ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    /* CH2 carrying the issued cookie */
+    ExpectIntEQ(wolfSSL_negotiate(*ssl_c), -1);
+    ExpectIntEQ(wolfSSL_get_error(*ssl_c, -1), WOLFSSL_ERROR_WANT_READ);
+
+    return EXPECT_RESULT();
+}
+#endif
+
+/* A DTLS 1.2 cookie issued under the previous (now secondary) secret is still
+ * accepted after an application-driven secret rotation: the server becomes
+ * stateful immediately instead of issuing another HelloVerifyRequest. */
+int test_dtls12_cookie_secret_secondary(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[16];
+    byte s2[16];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0xA5, sizeof(s2));
+
+    ExpectIntEQ(test_dtls12_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* Application rotates the cookie secret before CH2 is processed: s2 becomes
+     * the primary, and s1 is installed as the secondary (verify-only) secret. */
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(ssl_s, s2, sizeof(s2)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, s1, sizeof(s1)), 0);
+
+    /* Server processes CH2: the cookie verifies against the secondary secret,
+     * so the server enters stateful processing rather than re-issuing an HVR. */
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 1);
+
+    /* And the handshake completes. */
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* When the signing secret has been rotated out of both the primary and the
+ * secondary slot, the DTLS 1.2 cookie no longer verifies, so the server stays
+ * stateless and re-issues a HelloVerifyRequest instead of accepting CH2. */
+int test_dtls12_cookie_secret_secondary_dropped(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[16];
+    byte s2[16];
+    byte s3[16];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0x22, sizeof(s2));
+    XMEMSET(s3, 0x11, sizeof(s3));
+
+    ExpectIntEQ(test_dtls12_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* Two rotations have happened: s1 is now neither the primary (s3) nor the
+     * secondary (s2) secret. */
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(ssl_s, s3, sizeof(s3)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, s2, sizeof(s2)), 0);
+
+    /* Server processes CH2: the cookie does not verify, so it stays stateless
+     * (re-issuing a HelloVerifyRequest) rather than accepting the ClientHello. */
+    test_memio_clear_buffer(&test_ctx, 1); /* drop anything queued to client */
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 0);
+    /* And it actually emitted a fresh HelloVerifyRequest to the client. */
+    ExpectIntGT(test_ctx.c_len, DTLS_RECORD_HEADER_SZ);
+    ExpectIntEQ(test_ctx.c_buff[0], handshake);
+    ExpectIntEQ(test_ctx.c_buff[DTLS_RECORD_HEADER_SZ], hello_verify_request);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Clearing the DTLS 1.2 secondary secret (NULL/0) makes a cookie issued under
+ * it stop verifying again. */
+int test_dtls12_cookie_secret_secondary_cleared(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[16];
+    byte s2[16];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0xA5, sizeof(s2));
+
+    ExpectIntEQ(test_dtls12_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* Rotate primary to s2 and install s1 as the secondary - this alone would
+     * make the s1 cookie verify - then clear the secondary again. */
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(ssl_s, s2, sizeof(s2)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, s1, sizeof(s1)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, NULL, 0), 0);
+
+    /* Server processes CH2: the s1 cookie no longer verifies (only primary s2
+     * remains), so the server stays stateless. */
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 0);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* A DTLS 1.2 cookie that matches the primary secret is accepted on the normal
+ * fast path even when a (different) secondary secret is configured. */
+int test_dtls12_cookie_secret_primary_wins(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[16];
+    byte s2[16];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+    XMEMSET(s2, 0xA5, sizeof(s2));
+
+    ExpectIntEQ(test_dtls12_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    /* Primary still s1 (matches the cookie); a different secondary is present
+     * but must not be needed. */
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, s2, sizeof(s2)), 0);
+
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 1);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Setting the DTLS 1.2 secondary secret equal to the primary is harmless
+ * (guards against duplication/double-free regressions). */
+int test_dtls12_cookie_secret_same_as_primary(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte s1[16];
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(s1, 0x5A, sizeof(s1));
+
+    ExpectIntEQ(test_dtls12_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, s1, sizeof(s1)), TEST_SUCCESS);
+
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, s1, sizeof(s1)), 0);
+
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 1);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Replacing the DTLS 1.2 secondary secret keeps only the most recent value:
+ * the old secondary is discarded and the new one is active. */
+int test_dtls12_cookie_secret_secondary_replaced(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte sP[16];
+    byte sA[16];
+    byte sB[16];
+
+    XMEMSET(sP, 0x11, sizeof(sP));
+    XMEMSET(sA, 0x5A, sizeof(sA));
+    XMEMSET(sB, 0xA5, sizeof(sB));
+
+    /* Replacing secondary sA with sB discards sA: a cookie signed with sA is
+     * then not accepted (neither primary sP nor secondary sB). */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls12_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, sA, sizeof(sA)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(ssl_s, sP, sizeof(sP)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, sA, sizeof(sA)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, sB, sizeof(sB)), 0);
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 0);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+    ssl_c = NULL; ctx_c = NULL; ssl_s = NULL; ctx_s = NULL;
+
+    /* The replacement value sB is active: a cookie signed with sB verifies. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls12_cookie_pump_to_ch2(&test_ctx, &ctx_c, &ctx_s,
+        &ssl_c, &ssl_s, sB, sizeof(sB)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(ssl_s, sP, sizeof(sP)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, sA, sizeof(sA)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, sB, sizeof(sB)), 0);
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 1);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* The DTLS 1.2 secondary secret is verify-only: cookies are always issued with
+ * the primary, never the secondary. */
+int test_dtls12_cookie_secret_issue_uses_primary(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && \
+    !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX *ctx_c = NULL;
+    WOLFSSL_CTX *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL;
+    WOLFSSL *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte p[16];
+    byte q[16];
+
+    XMEMSET(p, 0x5A, sizeof(p));
+    XMEMSET(q, 0xA5, sizeof(q));
+
+    /* Control: with primary=p, secondary=q at issue time, dropping the
+     * secondary and keeping only the primary p still verifies the cookie -
+     * confirming the cookie is valid under p. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls12_cookie_issue_with_secondary(&test_ctx, &ctx_c,
+        &ctx_s, &ssl_c, &ssl_s, p, sizeof(p), q, sizeof(q)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, NULL, 0), 0);
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 1);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+    ssl_c = NULL; ctx_c = NULL; ssl_s = NULL; ctx_s = NULL;
+
+    /* Test: making the secondary value q the only secret stops the cookie from
+     * verifying.  If issuance had (incorrectly) used the secondary q, the
+     * cookie would now verify - so rejection proves it was signed with the
+     * primary p. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_dtls12_cookie_issue_with_secondary(&test_ctx, &ctx_c,
+        &ctx_s, &ssl_c, &ssl_s, p, sizeof(p), q, sizeof(q)), TEST_SUCCESS);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(ssl_s, q, sizeof(q)), 0);
+    ExpectIntEQ(wolfSSL_DTLS_SetCookieSecretSecondary(ssl_s, NULL, 0), 0);
+    ExpectIntEQ(wolfSSL_negotiate(ssl_s), -1);
+    ExpectIntEQ(wolfSSL_get_error(ssl_s, -1), WOLFSSL_ERROR_WANT_READ);
+    ExpectIntEQ(ssl_s->options.dtlsStateful, 0);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
+
 int test_dtls12_missing_finished(void)
 {
     EXPECT_DECLS;
@@ -5489,7 +8259,129 @@ int test_wolfSSL_dtls_create_free_peer(void)
     ExpectIntEQ(wolfSSL_dtls_free_peer(peer), WOLFSSL_SUCCESS);
 
     /* Invalid address string returns NULL. */
-    ExpectNull(wolfSSL_dtls_create_peer(11111, (char*)"not-an-ip-address"));
+    ExpectNull(peer = wolfSSL_dtls_create_peer(11111,
+                                               (char*)"not-an-ip-address"));
+    wolfSSL_dtls_free_peer(peer);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* wolfSSL_dtls13_do_scheduled_work() and wolfSSL_dtls13_pending_work() exist
+ * so an application whose read thread cannot transmit can send it itself.
+ * Cover the contract in every build, not just the threaded one: the pump is
+ * always safe to call, and the predicate must not claim work it cannot do. */
+int test_wolfSSL_dtls_scheduled_work(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_DTLS13) && !defined(WOLFSSL_LEANPSK) && \
+    defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES)
+    struct test_memio_ctx test_ctx;
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    int prevLen = 0;
+
+    /* Bad arguments. */
+    ExpectIntEQ(wolfSSL_dtls13_do_scheduled_work(NULL), WOLFSSL_FATAL_ERROR);
+    ExpectIntEQ(wolfSSL_dtls13_pending_work(NULL), 0);
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_3_client_method, wolfDTLSv1_3_server_method), 0);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    /* Idle connection: nothing to do, and pumping is still a success. */
+    ExpectIntEQ(wolfSSL_dtls13_do_scheduled_work(ssl_s), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_dtls13_pending_work(ssl_s), 0);
+
+    /* Pumping must be idempotent, and must not invent traffic when there is
+     * nothing scheduled. Compare against what is already queued rather than
+     * clearing it, which would drop records the peer still needs. */
+    prevLen = test_ctx.c_len;
+    ExpectIntEQ(wolfSSL_dtls13_do_scheduled_work(ssl_s), WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_ctx.c_len, prevLen);
+
+    /* The connection still works in both directions after being pumped. */
+    ExpectIntEQ(test_dtls_communication(ssl_s, ssl_c), TEST_SUCCESS);
+
+    /* Positive path. Schedule a key update the way Dtls13CheckAEADFailLimit()
+     * does when the AEAD failure limit is reached, then require the predicate
+     * to report it, the pump to perform it, and both to settle afterwards. */
+    if (ssl_s != NULL) {
+        ssl_s->dtls13DoKeyUpdate = 1;
+    }
+    ExpectIntEQ(wolfSSL_dtls13_pending_work(ssl_s), 1);
+    prevLen = test_ctx.c_len;
+    ExpectIntEQ(wolfSSL_dtls13_do_scheduled_work(ssl_s), WOLFSSL_SUCCESS);
+    /* The update was performed, and it put a record on the wire. */
+    if (ssl_s != NULL) {
+        ExpectIntEQ(ssl_s->dtls13DoKeyUpdate, 0);
+    }
+    ExpectIntGT(test_ctx.c_len, prevLen);
+    /* Waiting for the peer's ACK is not work we can do, so the predicate must
+     * report nothing rather than making a drain loop spin. */
+    if (ssl_s != NULL) {
+        ExpectIntEQ(ssl_s->dtls13WaitKeyUpdateAck, 1);
+    }
+    ExpectIntEQ(wolfSSL_dtls13_pending_work(ssl_s), 0);
+
+    /* The peer asking for a KeyUpdate while one of ours is unacknowledged is
+     * the state that wedges a drain loop: DTLS must not put two in flight, so
+     * the pump declines, and the predicate must decline to report it too.
+     * Pump and predicate have to agree, or the documented loop never ends. */
+    if (ssl_s != NULL) {
+        ssl_s->options.sendKeyUpdate = 1;
+    }
+    ExpectIntEQ(wolfSSL_dtls13_pending_work(ssl_s), 0);
+    prevLen = test_ctx.c_len;
+    ExpectIntEQ(wolfSSL_dtls13_do_scheduled_work(ssl_s), WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_ctx.c_len, prevLen);
+    /* The request is kept, not silently dropped, for when it can be sent. */
+    if (ssl_s != NULL) {
+        ExpectIntEQ(ssl_s->options.sendKeyUpdate, 1);
+        /* Once nothing is outstanding the pair agrees it is sendable. */
+        ssl_s->dtls13WaitKeyUpdateAck = 0;
+    }
+    ExpectIntEQ(wolfSSL_dtls13_pending_work(ssl_s), 1);
+    ExpectIntEQ(wolfSSL_dtls13_do_scheduled_work(ssl_s), WOLFSSL_SUCCESS);
+    if (ssl_s != NULL) {
+        ExpectIntEQ(ssl_s->options.sendKeyUpdate, 0);
+    }
+    ExpectIntGT(test_ctx.c_len, prevLen);
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+    ssl_c = NULL;
+    ssl_s = NULL;
+    ctx_c = NULL;
+    ctx_s = NULL;
+
+    /* A DTLS 1.2 object is out of scope: the pump must say so rather than
+     * quietly succeed, and the predicate must not claim work. */
+#ifndef WOLFSSL_NO_TLS12
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    ExpectIntEQ(wolfSSL_dtls13_do_scheduled_work(ssl_s), WOLFSSL_FATAL_ERROR);
+    ExpectIntEQ(wolfSSL_dtls13_pending_work(ssl_s), 0);
+    /* Refusing the object must not record an error against the connection.
+     * ssl->error is sticky, and wolfSSL_write() skips its write-dup drain
+     * while it is set, so a rejected call has to leave it alone. */
+    if (ssl_s != NULL) {
+        ExpectIntEQ(ssl_s->error, 0);
+    }
+    /* And the connection must still be usable afterwards. */
+    ExpectIntEQ(test_dtls_communication(ssl_s, ssl_c), TEST_SUCCESS);
+#endif
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
 #endif
     return EXPECT_RESULT();
 }
@@ -5741,7 +8633,7 @@ int test_wolfSSL_dtls_srtp_keying_material(void)
 
 #if defined(WOLFSSL_DTLS) && defined(WOLFSSL_MULTICAST) && \
     (defined(WOLFSSL_TLS13) || defined(WOLFSSL_SNIFFER)) && \
-    !defined(NO_WOLFSSL_CLIENT)
+    !defined(NO_WOLFSSL_CLIENT) && !defined(WOLFSSL_NO_TLS12)
 static int test_dtls_mcast_highwater_cb(unsigned short peerId,
     unsigned int maxSeq, unsigned int curSeq, void* ctx)
 {
@@ -5758,7 +8650,7 @@ int test_wolfSSL_mcast_peers(void)
     EXPECT_DECLS;
 #if defined(WOLFSSL_DTLS) && defined(WOLFSSL_MULTICAST) && \
     (defined(WOLFSSL_TLS13) || defined(WOLFSSL_SNIFFER)) && \
-    !defined(NO_WOLFSSL_CLIENT)
+    !defined(NO_WOLFSSL_CLIENT) && !defined(WOLFSSL_NO_TLS12)
     WOLFSSL_CTX* ctx = NULL;
     WOLFSSL* ssl = NULL;
     int hwCtx = 0;
@@ -6003,7 +8895,7 @@ int test_wolfSSL_set_mtu_compat(void)
     EXPECT_DECLS;
 #if defined(WOLFSSL_DTLS) && defined(OPENSSL_EXTRA) && \
     (defined(WOLFSSL_SCTP) || defined(WOLFSSL_DTLS_MTU)) && \
-    !defined(NO_WOLFSSL_CLIENT)
+    !defined(NO_WOLFSSL_CLIENT) && !defined(WOLFSSL_NO_TLS12)
     WOLFSSL_CTX* ctx = NULL;
     WOLFSSL* ssl = NULL;
 
@@ -6056,7 +8948,7 @@ int test_wolfSSL_CTX_mcast_set_member_id(void)
     EXPECT_DECLS;
 #if defined(WOLFSSL_DTLS) && defined(WOLFSSL_MULTICAST) && \
     (defined(WOLFSSL_TLS13) || defined(WOLFSSL_SNIFFER)) && \
-    !defined(NO_WOLFSSL_CLIENT)
+    !defined(NO_WOLFSSL_CLIENT) && !defined(WOLFSSL_NO_TLS12)
     WOLFSSL_CTX* ctx = NULL;
 
     ExpectIntEQ(wolfSSL_CTX_mcast_set_member_id(NULL, 0),
@@ -6079,7 +8971,7 @@ int test_wolfSSL_mcast_read(void)
     EXPECT_DECLS;
 #if defined(WOLFSSL_DTLS) && defined(WOLFSSL_MULTICAST) && \
     (defined(WOLFSSL_TLS13) || defined(WOLFSSL_SNIFFER)) && \
-    !defined(NO_WOLFSSL_CLIENT)
+    !defined(NO_WOLFSSL_CLIENT) && !defined(WOLFSSL_NO_TLS12)
     WOLFSSL_CTX* ctx = NULL;
     WOLFSSL* ssl = NULL;
     word16 id = 0;
@@ -6192,8 +9084,16 @@ int test_wolfSSL_dtls_got_timeout(void)
 int test_wolfSSL_DTLS_SetCookieSecret(void)
 {
     EXPECT_DECLS;
+/* Only the argument handling is under test, which is the same in either DTLS
+ * version, so run whichever one the build has. */
 #if defined(WOLFSSL_DTLS) && !defined(NO_WOLFSSL_SERVER) && \
+    (!defined(WOLFSSL_NO_TLS12) || defined(WOLFSSL_DTLS13)) && \
     (defined(NO_CERTS) || !defined(NO_RSA))
+#ifdef WOLFSSL_NO_TLS12
+    #define TEST_DTLS_COOKIE_METHOD wolfDTLSv1_3_server_method
+#else
+    #define TEST_DTLS_COOKIE_METHOD wolfDTLSv1_2_server_method
+#endif
     WOLFSSL_CTX* ctx = NULL;
     WOLFSSL* ssl = NULL;
     byte secret1[32];
@@ -6206,7 +9106,7 @@ int test_wolfSSL_DTLS_SetCookieSecret(void)
     ExpectIntEQ(wolfSSL_DTLS_SetCookieSecret(NULL, secret1, sizeof(secret1)),
         WC_NO_ERR_TRACE(BAD_FUNC_ARG));
 
-    ExpectNotNull(ctx = wolfSSL_CTX_new(wolfDTLSv1_2_server_method()));
+    ExpectNotNull(ctx = wolfSSL_CTX_new(TEST_DTLS_COOKIE_METHOD()));
 #ifndef NO_CERTS
     /* A server WOLFSSL needs a key and certificate set on the context. */
     ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_file(ctx, svrKeyFile, CERT_FILETYPE),
@@ -6229,6 +9129,7 @@ int test_wolfSSL_DTLS_SetCookieSecret(void)
 
     wolfSSL_free(ssl);
     wolfSSL_CTX_free(ctx);
+#undef TEST_DTLS_COOKIE_METHOD
 #endif
     return EXPECT_RESULT();
 }
@@ -6238,7 +9139,7 @@ int test_wolfSSL_set_secret(void)
     EXPECT_DECLS;
 #if defined(WOLFSSL_DTLS) && defined(WOLFSSL_MULTICAST) && \
     (defined(WOLFSSL_TLS13) || defined(WOLFSSL_SNIFFER)) && \
-    !defined(NO_WOLFSSL_CLIENT)
+    !defined(NO_WOLFSSL_CLIENT) && !defined(WOLFSSL_NO_TLS12)
     WOLFSSL_CTX* ctx = NULL;
     WOLFSSL* ssl = NULL;
     byte preMasterSecret[16];
@@ -6266,3 +9167,1692 @@ int test_wolfSSL_set_secret(void)
     return EXPECT_RESULT();
 }
 
+
+/* ---------------------------------------------------------------------------
+ * DTLS handshakes corrupted, replayed, dropped and reordered in flight.
+ *
+ * The TLS version of this (test_tls_wire_mangle in test_ssl_hs.c) flips a bit
+ * at a fixed offset. Pointed at DTLS it measured nothing, for two reasons
+ * worth recording because both are DTLS-specific:
+ *
+ *   1. The offsets were wrong. A DTLS record header is thirteen bytes, not
+ *      five -- type, version, epoch, a six-byte sequence number, length -- and
+ *      the handshake header carries a further message sequence, fragment
+ *      offset and fragment length. Offsets picked for TLS framing land in the
+ *      middle of the sequence number and hit nothing interesting.
+ *
+ *   2. DTLS is *designed* to tolerate a corrupted record: it drops it and
+ *      waits for the retransmission. Corrupting bytes at random therefore
+ *      exercises the discard path and stops. What reaches the interesting code
+ *      -- the replay window, the retransmit pool, the fragment reassembler --
+ *      is a record that is well-formed but arrives twice, out of order, or
+ *      claiming an epoch or sequence number it should not.
+ *
+ * So this sweep targets the DTLS header fields by name, and leans on replay
+ * and reordering rather than corruption. Same fixture as the TLS version:
+ * test_memio, credentials from certs/, no socket and no second process.
+ * ------------------------------------------------------------------------- */
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES_BUILD) && \
+    defined(WOLFSSL_DTLS) &&                               \
+    !defined(NO_WOLFSSL_WIRE_MANGLE_TESTS)
+
+/* Offsets into a DTLS record, by field rather than by guess. */
+#define DW_TYPE        0
+#define DW_VERSION     1
+#define DW_EPOCH       3
+#define DW_SEQ_HI      5
+#define DW_SEQ_LO     10
+#define DW_RECLEN     11
+#define DW_HS_TYPE    13
+#define DW_HS_LEN     14
+#define DW_MSG_SEQ    17
+#define DW_FRAG_OFF   19
+#define DW_FRAG_LEN   22
+#define DW_BODY       26
+/* The extension block of a DTLS 1.3 ClientHello starts well past the fixed
+ * header: two version bytes, a 32-byte random, a session id, a cookie, the
+ * cipher suite list and the compression list come first. Flips inside the
+ * first sixty bytes never reach it, which is why the first version of this
+ * sweep left SendStatelessReplyDtls13 -- where every remaining condition in
+ * dtls.c lives -- completely untouched. */
+#define DW_EXTS      110
+
+enum dtls_wire_op {
+    DW_FLIP,        /* corrupt one named header field                     */
+    DW_REPLAY,      /* deliver the same record a second time              */
+    DW_DROP,        /* lose a record, so the peer must retransmit         */
+    DW_REORDER,     /* deliver records out of order                       */
+    DW_TRUNC,       /* claim a longer fragment than is carried            */
+    DW_OP_COUNT
+};
+
+static int test_dtls_wire_one(method_provider mc, method_provider ms,
+                              int round, int op, int off, byte mask)
+{
+    struct test_memio_ctx test_ctx;
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    int i;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    if (test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s, mc, ms)
+            != 0) {
+        wolfSSL_free(ssl_c);
+        wolfSSL_free(ssl_s);
+        wolfSSL_CTX_free(ctx_c);
+        wolfSSL_CTX_free(ctx_s);
+        return 0;
+    }
+
+    /* Step the two endpoints by hand rather than through
+     * test_memio_do_handshake. That helper runs the client AND the server in
+     * one round, so by the time it returns the buffer has already been
+     * drained and there is nothing left in flight to corrupt -- which is why
+     * the first version of this test ran for two seconds, passed, and
+     * measured nothing. Here each half-round leaves exactly one peer's flight
+     * sitting in the buffer, and the mangle is applied to that flight before
+     * the other side is allowed to read it. */
+    for (i = 0; i < 16; i++) {
+        int isClientTurn = ((i % 2) == 0);
+        byte* buf;
+        int*  len;
+
+        if (isClientTurn)
+            (void)wolfSSL_connect(ssl_c);   /* client writes into s_buff */
+        else
+            (void)wolfSSL_accept(ssl_s);    /* server writes into c_buff */
+
+        /* the flight that was just produced, still unread by its peer */
+        buf = isClientTurn ? test_ctx.s_buff : test_ctx.c_buff;
+        len = isClientTurn ? &test_ctx.s_len : &test_ctx.c_len;
+
+        if (i != round || *len <= 0)
+            continue;
+
+        switch (op) {
+            case DW_FLIP:
+                if (*len > off)
+                    buf[off] ^= mask;
+                break;
+            case DW_REPLAY: {
+                /* The same record delivered twice is what the replay window
+                 * exists to refuse, and a conforming peer never sends it. */
+                char copy[2048];
+                int  copySz = (int)sizeof(copy);
+
+                if (test_memio_copy_message(&test_ctx, isClientTurn, copy,
+                                            &copySz, 0) == 0) {
+                    (void)test_memio_inject_message(&test_ctx, isClientTurn,
+                                                    copy, copySz);
+                }
+                break;
+            }
+            case DW_DROP:
+                /* A lost flight: the peer's retransmit timer and pool are the
+                 * code this reaches, and nothing else does. */
+                (void)test_memio_drop_message(&test_ctx, isClientTurn, 0);
+                break;
+            case DW_REORDER:
+                (void)test_memio_move_message(&test_ctx, isClientTurn, 0, 1);
+                break;
+            case DW_TRUNC:
+                /* A fragment that claims more than it carries drives the
+                 * reassembler's bounds checks. */
+                (void)test_memio_modify_message_len(&test_ctx, isClientTurn,
+                                                    0, 4096);
+                break;
+            default:
+                break;
+        }
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+    return 0;
+}
+
+static int test_dtls_wire_sweep(method_provider mc, method_provider ms)
+{
+    /* Named header fields, plus two body offsets. */
+    static const int offsets[] = {
+        DW_TYPE, DW_VERSION, DW_EPOCH, DW_EPOCH + 1, DW_SEQ_HI, DW_SEQ_HI + 2,
+        DW_SEQ_LO, DW_RECLEN, DW_RECLEN + 1, DW_HS_TYPE, DW_HS_LEN,
+        DW_HS_LEN + 2, DW_MSG_SEQ, DW_MSG_SEQ + 1, DW_FRAG_OFF,
+        DW_FRAG_OFF + 2, DW_FRAG_LEN, DW_FRAG_LEN + 2, DW_BODY, DW_BODY + 40,
+        DW_EXTS, DW_EXTS + 32, DW_EXTS + 90
+    };
+    static const byte masks[] = { 0x01, 0xff };
+    int round, o, m, op;
+
+    /* Deliberately narrow. This sweep is a robustness guard, not a coverage
+     * win: measured against the campaign it adds ZERO MC/DC on dtls.c and
+     * dtls13.c, three separate attempts, the union landing on exactly 16/56
+     * and 70/132 each time. An identical number is the signature of code that
+     * is never entered, not of vectors that are too weak, and the reason is
+     * that dtls.c's entire residue lives in SendStatelessReplyDtls13's
+     * extension parsing -- a corrupted DTLS record is discarded by the record
+     * layer before that parser ever sees it, which is exactly the tolerance
+     * DTLS is designed for. Reaching it needs a well-formed record carrying a
+     * deliberately malformed extension block, which means building the
+     * ClientHello rather than corrupting one. Kept at this size so it costs
+     * seconds rather than minutes until that fixture exists. */
+    for (round = 0; round < 3; round++) {
+        /* the sequence-level operations, which do not need an offset */
+        for (op = DW_REPLAY; op < (int)DW_OP_COUNT; op++)
+            (void)test_dtls_wire_one(mc, ms, round, op, 0, 0);
+
+        /* and the field-level corruption */
+        for (o = 0; o < (int)(sizeof(offsets) / sizeof(offsets[0])); o++)
+            for (m = 0; m < (int)(sizeof(masks) / sizeof(masks[0])); m++)
+                (void)test_dtls_wire_one(mc, ms, round, DW_FLIP, offsets[o],
+                                         masks[m]);
+    }
+
+    /* the clean handshake, so every decision above has its partner here */
+    return test_dtls_wire_one(mc, ms, 99, DW_FLIP, 0, 0x00);
+}
+
+#endif
+
+int test_dtls12_wire_mangle(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES_BUILD) && \
+    defined(WOLFSSL_DTLS) && !defined(WOLFSSL_NO_TLS12) && !defined(NO_RSA) && \
+    !defined(NO_WOLFSSL_WIRE_MANGLE_TESTS)
+    ExpectIntEQ(test_dtls_wire_sweep(wolfDTLSv1_2_client_method,
+                                     wolfDTLSv1_2_server_method), 0);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_wire_mangle(void)
+{
+    EXPECT_DECLS;
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES_BUILD) && \
+    defined(WOLFSSL_DTLS13) && defined(WOLFSSL_TLS13) && !defined(NO_RSA) && \
+    !defined(NO_WOLFSSL_WIRE_MANGLE_TESTS)
+    ExpectIntEQ(test_dtls_wire_sweep(wolfDTLSv1_3_client_method,
+                                     wolfDTLSv1_3_server_method), 0);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* ===========================================================================
+ * A datagram FIFO transport for DTLS, with per-packet scheduling.
+ *
+ * WHY THIS AND NOT THE BYTE-BUFFER MANGLER.
+ *
+ * test_memio is a byte stream. DTLS is not: it is datagrams, and every
+ * guardrail in the protocol is about which datagram arrives, in what order,
+ * how many times, and carrying which epoch and sequence number. Editing a
+ * byte in a shared buffer cannot express "deliver this one twice", "hold that
+ * one until after the next", "drop this flight and see if it is retransmitted"
+ * -- and a byte flipped at random is simply discarded by the record layer,
+ * which is the tolerance DTLS is built to provide. Three separate sweeps of
+ * that kind measured exactly zero on dtls.c.
+ *
+ * So this replaces the transport instead. Every datagram the stack sends is
+ * captured as a discrete packet, its record header is parsed, and a policy is
+ * consulted BEFORE it is queued: deliver it, drop it, hold it for n rounds,
+ * duplicate it, rewrite a header field, coalesce it with its neighbour. The
+ * receiving side then reads whole datagrams out of the queue, exactly as a
+ * UDP socket would deliver them.
+ *
+ * That is enough to sit in the middle of the flow and see each packet before
+ * deciding its fate, with no socket, no second process and no scheduler races.
+ *
+ * ON ENCRYPTION. The record header -- content type, version, epoch, sequence
+ * number and length -- is NOT encrypted in DTLS 1.2, and in DTLS 1.3 the
+ * initial flight is plaintext. Every guardrail targeted below (replay window,
+ * epoch handling, fragment reassembly, cookie exchange, records-per-datagram)
+ * keys off those fields, so the forgeries need no key material at all. The
+ * secret callback is wired anyway, behind HAVE_SECRET_CALLBACK, for the cases
+ * that later need to read a protected body; it is not enabled in the campaign
+ * option list, so it compiles out there.
+ * ========================================================================= */
+/* The whole forgery harness drives a real client against a real server in one
+ * process, so it needs both endpoints compiled in -- NO_WOLFSSL_CLIENT and
+ * NO_WOLFSSL_SERVER each remove one of the wolfDTLSv1_*_{client,server}_method
+ * pairs the sweeps below are called with. The two test entry points carry the
+ * same condition; keep them in step.
+ *
+ * WOLFSSL_ASYNC_CRYPT is excluded because the harness drives wolfSSL_accept and
+ * wolfSSL_connect directly and never runs an async event loop, so it cannot
+ * service a WC_PENDING_E. Measured under --enable-asynccrypt --enable-all
+ * --enable-dtls13: the DTLS 1.3 sweep takes SIGSEGV inside wolfAsync_EventInit,
+ * reached from BuildTls13Message via Dtls13SendFragment during
+ * SendTls13Certificate. Whether a plain accept on a real socket ought to
+ * survive that configuration is a library question and is reported separately;
+ * the harness has no business asserting it either way. */
+#if defined(WOLFSSL_DTLS) && !defined(NO_RSA) && !defined(NO_CERTS) && \
+    !defined(NO_FILESYSTEM) && !defined(NO_WOLFSSL_CLIENT) && \
+    !defined(NO_WOLFSSL_SERVER) && !defined(WOLFSSL_ASYNC_CRYPT) && \
+    !defined(NO_WOLFSSL_WIRE_MANGLE_TESTS)
+
+#define DF_MAX_PKT 384
+#define DF_MAX_SZ  1600
+
+/* DTLS record header, by field. */
+#define DFH_TYPE     0
+#define DFH_VER      1
+#define DFH_EPOCH    3
+#define DFH_SEQ      5      /* 6 bytes, big endian */
+#define DFH_LEN      11     /* 2 bytes */
+#define DFH_HDR_SZ   13
+/* DTLS handshake header, inside the record */
+#define DFHS_TYPE    0
+#define DFHS_LEN     1      /* 3 bytes */
+#define DFHS_MSGSEQ  4      /* 2 bytes */
+#define DFHS_FRAGOFF 6      /* 3 bytes */
+#define DFHS_FRAGLEN 9      /* 3 bytes */
+#define DFHS_HDR_SZ  12
+
+/* Packets a policy actually altered since the last reset. Single-threaded,
+ * like the rest of this harness. */
+static int df_mutations;
+
+typedef struct DfPkt {
+    byte data[DF_MAX_SZ];
+    int  len;
+    int  toServer;      /* 1: client -> server, 0: server -> client */
+    int  idx;           /* production order, per direction */
+    int  hold;          /* rounds still to withhold */
+    int  taken;         /* already handed to the receiver */
+    /* parsed, for policies that want to target a specific record */
+    byte   type;
+    word16 epoch;
+    byte   hsType;
+    word16 msgSeq;
+} DfPkt;
+
+struct DfCtx;
+typedef void (*DfPolicy)(struct DfCtx* c, DfPkt* p);
+
+typedef struct DfCtx {
+    DfPkt    q[DF_MAX_PKT];
+    int      n;
+    int      seqTo[2];      /* per-direction production counter */
+    DfPolicy policy;
+    int      target;        /* which packet of that direction to act on */
+    int      nDrop, nDup, nMod, nHold, nCoalesce;
+#ifdef HAVE_SECRET_CALLBACK
+    int      nSecrets;
+#endif
+} DfCtx;
+
+static void df_parse(DfPkt* p)
+{
+    p->type = 0; p->epoch = 0; p->hsType = 0xFF; p->msgSeq = 0;
+    if (p->len < DFH_HDR_SZ)
+        return;
+    p->type  = p->data[DFH_TYPE];
+    p->epoch = (word16)((p->data[DFH_EPOCH] << 8) | p->data[DFH_EPOCH + 1]);
+    if (p->type == handshake && p->len >= DFH_HDR_SZ + DFHS_HDR_SZ) {
+        const byte* hs = p->data + DFH_HDR_SZ;
+        p->hsType = hs[DFHS_TYPE];
+        p->msgSeq = (word16)((hs[DFHS_MSGSEQ] << 8) | hs[DFHS_MSGSEQ + 1]);
+    }
+}
+
+/* ------------------------------------------------------------ IO callbacks */
+
+/* Field by field, not one XMEMCMP over the whole DfPkt: the struct mixes byte
+ * and word16 members after a run of ints, so it carries padding and has no
+ * unique object representation. Comparing it as raw memory reads those padding
+ * bytes -- which is what bugprone-suspicious-memory-comparison rejects, and
+ * they carry no meaning anyway. Only data[] up to the declared length matters.
+ */
+static int df_pkt_differs(const DfPkt* a, const DfPkt* b)
+{
+    int n;
+
+    if (a->len != b->len || a->toServer != b->toServer || a->idx != b->idx ||
+            a->hold != b->hold || a->taken != b->taken ||
+            a->type != b->type || a->epoch != b->epoch ||
+            a->hsType != b->hsType || a->msgSeq != b->msgSeq) {
+        return 1;
+    }
+
+    n = a->len;
+    if (n < 0) {
+        n = 0;
+    }
+    if (n > DF_MAX_SZ) {
+        n = DF_MAX_SZ;
+    }
+    return XMEMCMP(a->data, b->data, (size_t)n) != 0;
+}
+
+static int df_send(WOLFSSL* ssl, char* buf, int sz, void* ctx)
+{
+    DfCtx* c = (DfCtx*)ctx;
+    DfPkt* p;
+    int toServer = (wolfSSL_GetSide(ssl) != WOLFSSL_SERVER_END);
+
+    if (c->n >= DF_MAX_PKT || sz <= 0 || sz > DF_MAX_SZ)
+        return sz;          /* silently absorb: a full queue is not a failure */
+
+    p = &c->q[c->n];
+    XMEMSET(p, 0, sizeof(*p));
+    XMEMCPY(p->data, buf, (size_t)sz);
+    p->len = sz;
+    p->toServer = toServer;
+    p->idx = c->seqTo[toServer]++;
+    df_parse(p);
+    c->n++;
+
+    /* The policy sees the packet in flight, with its header parsed, and may
+     * edit it, drop it, delay it or clone it before anyone receives it.
+     *
+     * Counted, because a policy that matches no packet in a given run is
+     * indistinguishable from one that ran clean traffic: the sweep would pass
+     * having forged nothing. Comparing the whole DfPkt across the call catches
+     * an edit, a drop, a hold and a clone alike, without every policy having
+     * to report for itself. */
+    if (c->policy != NULL) {
+        DfPkt before;
+        int   acted = c->nDrop + c->nDup + c->nMod + c->nHold + c->nCoalesce;
+
+        XMEMCPY(&before, p, sizeof(before));
+        c->policy(c, p);
+        /* Both halves are needed: a policy that edits bytes changes the packet
+         * and touches no counter, while one that replays or drops leaves the
+         * packet alone and moves a counter. */
+        if (df_pkt_differs(&before, p) ||
+                c->nDrop + c->nDup + c->nMod + c->nHold + c->nCoalesce != acted)
+            df_mutations++;
+    }
+
+    return sz;
+}
+
+static int df_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx)
+{
+    DfCtx* c = (DfCtx*)ctx;
+    int wantServer = (wolfSSL_GetSide(ssl) == WOLFSSL_SERVER_END);
+    int i;
+
+    for (i = 0; i < c->n; i++) {
+        DfPkt* p = &c->q[i];
+
+        if (p->taken || p->len <= 0 || p->toServer != wantServer)
+            continue;
+        if (p->hold > 0) {
+            /* held back: a later packet may overtake it, which is the point */
+            p->hold--;
+            continue;
+        }
+        if (p->len > sz)
+            return WOLFSSL_CBIO_ERR_GENERAL;
+        XMEMCPY(buf, p->data, (size_t)p->len);
+        p->taken = 1;
+        return p->len;
+    }
+    return WOLFSSL_CBIO_ERR_WANT_READ;
+}
+
+/* ------------------------------------------------------- packet operations */
+
+static DfPkt* df_clone(DfCtx* c, const DfPkt* src)
+{
+    DfPkt* p;
+
+    if (c->n >= DF_MAX_PKT)
+        return NULL;
+    p = &c->q[c->n++];
+    XMEMCPY(p, src, sizeof(*p));
+    p->taken = 0;
+    p->hold = 0;
+    return p;
+}
+
+static void df_set_seq(DfPkt* p, word32 hi, word32 lo)
+{
+    if (p->len < DFH_HDR_SZ)
+        return;
+    p->data[DFH_SEQ + 0] = (byte)((hi >> 8) & 0xff);
+    p->data[DFH_SEQ + 1] = (byte)(hi & 0xff);
+    p->data[DFH_SEQ + 2] = (byte)((lo >> 24) & 0xff);
+    p->data[DFH_SEQ + 3] = (byte)((lo >> 16) & 0xff);
+    p->data[DFH_SEQ + 4] = (byte)((lo >> 8) & 0xff);
+    p->data[DFH_SEQ + 5] = (byte)(lo & 0xff);
+}
+
+static void df_set_epoch(DfPkt* p, word16 e)
+{
+    if (p->len < DFH_HDR_SZ)
+        return;
+    p->data[DFH_EPOCH]     = (byte)(e >> 8);
+    p->data[DFH_EPOCH + 1] = (byte)(e & 0xff);
+}
+
+static void df_set_u24(byte* at, word32 v)
+{
+    at[0] = (byte)((v >> 16) & 0xff);
+    at[1] = (byte)((v >> 8) & 0xff);
+    at[2] = (byte)(v & 0xff);
+}
+
+/* ============================ the forgeries ==============================
+ *
+ * Each one names the protocol guardrail it exists to provoke. All of them
+ * are things a conforming peer never does and a network or an attacker
+ * routinely does, which is exactly the set the handshake tests cannot reach.
+ */
+
+/* Replay window: the same datagram delivered twice. RFC 6347 4.1.2.6. */
+static void df_pol_replay(DfCtx* c, DfPkt* p)
+{
+    if (p->idx == c->target && df_clone(c, p) != NULL)
+        c->nDup++;
+}
+
+/* Replay window, far future: a sequence number beyond the window's right
+ * edge, which must slide the window rather than be accepted blindly. */
+static void df_pol_seq_future(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target) return;
+    df_set_seq(p, 0, 0x000FFFFFU);
+    c->nMod++;
+}
+
+/* Replay window, far past: a sequence number below the window's left edge,
+ * which must be discarded. */
+static void df_pol_seq_past(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target) return;
+    df_set_seq(p, 0, 0);
+    c->nMod++;
+}
+
+/* Epoch handling: a record claiming an epoch whose keys do not exist. */
+static void df_pol_epoch_future(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target) return;
+    df_set_epoch(p, (word16)(p->epoch + 3));
+    c->nMod++;
+}
+
+/* Epoch handling: a record claiming epoch 0 -- i.e. unprotected -- after the
+ * epoch has advanced. This is the plaintext-injection case. */
+static void df_pol_epoch_zero(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target) return;
+    df_set_epoch(p, 0);
+    c->nMod++;
+}
+
+/* Loss: the flight never arrives, so the peer must retransmit it. */
+static void df_pol_drop(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target) return;
+    p->len = 0;
+    c->nDrop++;
+}
+
+/* Reordering: hold this datagram so the next one overtakes it. */
+static void df_pol_reorder(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target) return;
+    p->hold = 2;
+    c->nHold++;
+}
+
+/* Fragment reassembly: a fragment offset past the end of the message. */
+static void df_pol_frag_beyond(DfCtx* c, DfPkt* p)
+{
+    byte* hs;
+
+    if (p->idx != c->target || p->type != handshake) return;
+    if (p->len < DFH_HDR_SZ + DFHS_HDR_SZ) return;
+    hs = p->data + DFH_HDR_SZ;
+    df_set_u24(hs + DFHS_FRAGOFF, 0x00FFFFU);
+    c->nMod++;
+}
+
+/* Fragment reassembly: a fragment longer than the message it belongs to. */
+static void df_pol_frag_over(DfCtx* c, DfPkt* p)
+{
+    byte* hs;
+
+    if (p->idx != c->target || p->type != handshake) return;
+    if (p->len < DFH_HDR_SZ + DFHS_HDR_SZ) return;
+    hs = p->data + DFH_HDR_SZ;
+    df_set_u24(hs + DFHS_FRAGLEN, 0x00FFFFU);
+    c->nMod++;
+}
+
+/* Fragment reassembly: two fragments that overlap, claiming the same bytes
+ * of the message with different content. */
+static void df_pol_frag_overlap(DfCtx* c, DfPkt* p)
+{
+    DfPkt* dup;
+    byte* hs;
+
+    if (p->idx != c->target || p->type != handshake) return;
+    if (p->len < DFH_HDR_SZ + DFHS_HDR_SZ + 8) return;
+
+    dup = df_clone(c, p);
+    if (dup == NULL) return;
+    hs = dup->data + DFH_HDR_SZ;
+    /* same offset, shorter length, different body */
+    df_set_u24(hs + DFHS_FRAGLEN, 4);
+    dup->data[DFH_HDR_SZ + DFHS_HDR_SZ] ^= 0xff;
+    c->nDup++;
+}
+
+/* Handshake ordering: a message sequence number from the future, which the
+ * receiver must buffer rather than process. */
+static void df_pol_msgseq_jump(DfCtx* c, DfPkt* p)
+{
+    byte* hs;
+
+    if (p->idx != c->target || p->type != handshake) return;
+    if (p->len < DFH_HDR_SZ + DFHS_HDR_SZ) return;
+    hs = p->data + DFH_HDR_SZ;
+    hs[DFHS_MSGSEQ]     = (byte)((p->msgSeq + 7) >> 8);
+    hs[DFHS_MSGSEQ + 1] = (byte)((p->msgSeq + 7) & 0xff);
+    c->nMod++;
+}
+
+/* Handshake ordering: a message sequence already processed. */
+static void df_pol_msgseq_back(DfCtx* c, DfPkt* p)
+{
+    byte* hs;
+
+    if (p->idx != c->target || p->type != handshake) return;
+    if (p->len < DFH_HDR_SZ + DFHS_HDR_SZ) return;
+    hs = p->data + DFH_HDR_SZ;
+    hs[DFHS_MSGSEQ] = 0;
+    hs[DFHS_MSGSEQ + 1] = 0;
+    c->nMod++;
+}
+
+/* Record framing: a length field longer than the datagram carries. */
+static void df_pol_reclen_long(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target || p->len < DFH_HDR_SZ) return;
+    p->data[DFH_LEN]     = 0x0f;
+    p->data[DFH_LEN + 1] = 0xff;
+    c->nMod++;
+}
+
+/* Record framing: a length field shorter than the datagram carries, leaving
+ * a trailing stub the receiver must treat as a second record. */
+static void df_pol_reclen_short(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target || p->len < DFH_HDR_SZ + 4) return;
+    p->data[DFH_LEN]     = 0;
+    p->data[DFH_LEN + 1] = 2;
+    c->nMod++;
+}
+
+/* Content type confusion: handshake bytes announced as application data,
+ * alert or ack. */
+static void df_pol_type_swap(DfCtx* c, DfPkt* p)
+{
+    static const byte types[3] = { application_data, alert, change_cipher_spec };
+
+    if (p->idx != c->target || p->len < DFH_HDR_SZ) return;
+    p->data[DFH_TYPE] = types[p->idx % 3];
+    c->nMod++;
+}
+
+/* Datagram packing: two records in one datagram, which DTLS permits and the
+ * single-record path must therefore handle. */
+static void df_pol_coalesce(DfCtx* c, DfPkt* p)
+{
+    DfPkt* prev;
+    int i;
+
+    if (p->idx != c->target || c->n < 2) return;
+    for (i = c->n - 2; i >= 0; i--) {
+        prev = &c->q[i];
+        if (prev->toServer != p->toServer || prev->len <= 0 || prev->taken)
+            continue;
+        if (prev->len + p->len > DF_MAX_SZ)
+            return;
+        XMEMCPY(prev->data + prev->len, p->data, (size_t)p->len);
+        prev->len += p->len;
+        p->len = 0;             /* it now travels inside its predecessor */
+        c->nCoalesce++;
+        return;
+    }
+}
+
+/* Truncation: the datagram is cut in half in flight. */
+static void df_pol_truncate(DfCtx* c, DfPkt* p)
+{
+    if (p->idx != c->target || p->len < 8) return;
+    p->len /= 2;
+    c->nMod++;
+}
+
+#ifdef HAVE_SECRET_CALLBACK
+/* Wired so a later forgery can read a protected record. Every forgery above
+ * works on the plaintext record header and needs none of this. */
+/* Must match TlsSecretCb exactly:
+ *     int (*)(WOLFSSL* ssl, void* secret, int secretSz, void* ctx)
+ * an earlier version added an `id` parameter and a const qualifier that the
+ * typedef does not have, which -Werror=incompatible-pointer-types rejects. */
+static int df_secret_cb(WOLFSSL* ssl, void* secret, int secretSz, void* ctx)
+{
+    DfCtx* c = (DfCtx*)ctx;
+
+    (void)ssl; (void)secret; (void)secretSz;
+    if (c != NULL)
+        c->nSecrets++;
+    return 0;
+}
+#endif
+
+
+/* Body corruption with the framing left intact.
+ *
+ * The header forgeries above cannot reach SendStatelessReplyDtls13, where
+ * every remaining condition in dtls.c lives: that code parses the
+ * ClientHello's EXTENSIONS, and a record whose header has been tampered with
+ * is discarded by the record layer long before the extension parser runs.
+ *
+ * These policies therefore leave type, epoch, sequence and length untouched
+ * and corrupt only the message body, at depths that land in the extension
+ * block -- past the two version bytes, the 32-byte random, the session id,
+ * the cookie, the cipher suite list and the compression list. The datagram
+ * stays well-formed, so it is accepted, parsed, and rejected on its contents
+ * rather than its framing. That is the difference between exercising the
+ * discard path and exercising the guardrail.
+ */
+static void df_pol_body_at(DfCtx* c, DfPkt* p, int depth)
+{
+    int at = DFH_HDR_SZ + DFHS_HDR_SZ + depth;
+
+    if (p->idx != c->target || p->type != handshake) return;
+    if (p->hsType != client_hello) return;
+    if (p->len <= at) return;
+    p->data[at] ^= 0xff;
+    c->nMod++;
+}
+
+static void df_pol_body_exts(DfCtx* c, DfPkt* p)   { df_pol_body_at(c, p, 80); }
+static void df_pol_body_exts2(DfCtx* c, DfPkt* p)  { df_pol_body_at(c, p, 96); }
+static void df_pol_body_exts3(DfCtx* c, DfPkt* p)  { df_pol_body_at(c, p, 120); }
+static void df_pol_body_exts4(DfCtx* c, DfPkt* p)  { df_pol_body_at(c, p, 150); }
+static void df_pol_body_exts5(DfCtx* c, DfPkt* p)  { df_pol_body_at(c, p, 190); }
+static void df_pol_body_exts6(DfCtx* c, DfPkt* p)  { df_pol_body_at(c, p, 240); }
+
+/* The cookie a DTLS 1.3 server issued in its HelloRetryRequest, corrupted in
+ * the ClientHello that echoes it back. This is the `!cookieGood` operand, and
+ * it is the whole reason the stateless path has a rejection branch: a client
+ * that echoes the cookie correctly never takes it. The cookie sits early in
+ * the extension block of the second ClientHello, so a sweep of the first
+ * hundred body bytes of CH2 covers it without having to locate it exactly. */
+static void df_pol_cookie(DfCtx* c, DfPkt* p)
+{
+    int i;
+    int base = DFH_HDR_SZ + DFHS_HDR_SZ + 40;
+
+    if (p->type != handshake || p->hsType != client_hello) return;
+    if (p->msgSeq == 0) return;         /* only the second ClientHello */
+    for (i = 0; i < 24 && p->len > base + i; i++)
+        p->data[base + i] ^= 0x5a;
+    c->nMod++;
+}
+
+
+/* ======================= ClientHello surgery ==============================
+ *
+ * The forgeries above corrupt bytes. That reaches the parsers' reject paths
+ * and stops, because a corrupted extension block fails to parse and the
+ * function returns before the decisions that matter are evaluated. The
+ * coverage export is unambiguous about it: dtls.c is 85% line covered and 20%
+ * MC/DC covered, and SendStatelessReplyDtls13 is entered on every run. Reach
+ * was never the problem. Independence pairs are.
+ *
+ * The operands that remain need a ClientHello that is WELL-FORMED but says
+ * something specific: one with no supported_versions extension at all, one
+ * whose key share names a group the server does not have, one offering only
+ * PSK_KE or only PSK_DHE_KE, one echoing a cookie that does not verify. None
+ * of those is a corrupted hello -- each is a valid hello a hostile or merely
+ * different client could legitimately send, and no conforming test peer ever
+ * does.
+ *
+ * So rather than build a hello from nothing, this takes the real one in
+ * flight and performs surgery on its extension block, fixing up every length
+ * above it -- extensions, handshake, fragment, record -- so the result parses
+ * cleanly and is rejected on its meaning rather than its framing.
+ * ========================================================================= */
+
+#define DFX_PRE_SHARED_KEY     41
+#define DFX_SUPPORTED_VERSIONS 43
+#define DFX_COOKIE             44
+#define DFX_PSK_MODES          45
+#define DFX_KEY_SHARE          51
+
+/* Walk the ClientHello to its extension block. Returns the offset of the
+ * first extension and sets *extsLen, or -1 if this is not a hello we can
+ * parse -- a fragment, or one whose fields do not add up. */
+static int df_ch_exts(const DfPkt* p, int* extsLen, int* extsLenAt)
+{
+    int o = DFH_HDR_SZ + DFHS_HDR_SZ;
+    int end = p->len;
+    int n;
+
+    if (p->type != handshake || p->hsType != client_hello)
+        return -1;
+    if (o + 2 + RAN_LEN + 1 > end)
+        return -1;
+    o += 2 + RAN_LEN;                       /* legacy_version + random */
+    n = p->data[o]; o += 1 + n;             /* legacy_session_id */
+    if (o + 1 > end) return -1;
+    n = p->data[o]; o += 1 + n;             /* DTLS cookie field */
+    if (o + 2 > end) return -1;
+    n = (p->data[o] << 8) | p->data[o + 1];
+    o += 2 + n;                             /* cipher_suites */
+    if (o + 1 > end) return -1;
+    n = p->data[o]; o += 1 + n;             /* compression_methods */
+    if (o + 2 > end) return -1;
+    *extsLen   = (p->data[o] << 8) | p->data[o + 1];
+    *extsLenAt = o;
+    o += 2;
+    if (o + *extsLen > end) return -1;
+    return o;
+}
+
+/* Find one extension by type. Returns its header offset, or -1. */
+static int df_ch_find_ext(const DfPkt* p, word16 want, int* bodyAt, int* bodyLen)
+{
+    int extsLen = 0, extsLenAt = 0;
+    int o = df_ch_exts(p, &extsLen, &extsLenAt);
+    int end;
+
+    if (o < 0) return -1;
+    end = o + extsLen;
+    while (o + 4 <= end) {
+        word16 t  = (word16)((p->data[o] << 8) | p->data[o + 1]);
+        int    ln = (p->data[o + 2] << 8) | p->data[o + 3];
+
+        if (o + 4 + ln > end) return -1;
+        if (t == want) {
+            *bodyAt = o + 4;
+            *bodyLen = ln;
+            return o;
+        }
+        o += 4 + ln;
+    }
+    return -1;
+}
+
+/* Every length above the extension block, adjusted together. Getting one of
+ * these wrong turns a semantic test back into a framing test. */
+static void df_ch_adjust(DfPkt* p, int extsLenAt, int delta)
+{
+    byte*  hs = p->data + DFH_HDR_SZ;
+    word16 rl = (word16)((p->data[DFH_LEN] << 8) | p->data[DFH_LEN + 1]);
+    word32 hl = ((word32)hs[DFHS_LEN] << 16) | ((word32)hs[DFHS_LEN + 1] << 8) |
+                hs[DFHS_LEN + 2];
+    word32 fl = ((word32)hs[DFHS_FRAGLEN] << 16) |
+                ((word32)hs[DFHS_FRAGLEN + 1] << 8) | hs[DFHS_FRAGLEN + 2];
+    int    el = (p->data[extsLenAt] << 8) | p->data[extsLenAt + 1];
+
+    rl = (word16)(rl + delta);
+    hl = (word32)((int)hl + delta);
+    fl = (word32)((int)fl + delta);
+    el = el + delta;
+
+    p->data[DFH_LEN]     = (byte)(rl >> 8);
+    p->data[DFH_LEN + 1] = (byte)(rl & 0xff);
+    df_set_u24(hs + DFHS_LEN, hl);
+    df_set_u24(hs + DFHS_FRAGLEN, fl);
+    p->data[extsLenAt]     = (byte)(el >> 8);
+    p->data[extsLenAt + 1] = (byte)(el & 0xff);
+}
+
+/* Remove an extension entirely, leaving a hello that is structurally perfect
+ * and simply does not offer that thing. */
+static int df_ch_drop_ext(DfCtx* c, DfPkt* p, word16 type)
+{
+    int extsLen = 0, extsLenAt = 0, bodyAt = 0, bodyLen = 0;
+    int at, total;
+
+    if (df_ch_exts(p, &extsLen, &extsLenAt) < 0) return 0;
+    at = df_ch_find_ext(p, type, &bodyAt, &bodyLen);
+    if (at < 0) return 0;
+
+    total = 4 + bodyLen;
+    XMEMMOVE(p->data + at, p->data + at + total,
+             (size_t)(p->len - at - total));
+    p->len -= total;
+    df_ch_adjust(p, extsLenAt, -total);
+    c->nMod++;
+    return 1;
+}
+
+/* Rewrite bytes inside one extension without changing any length. */
+static int df_ch_poke_ext(DfCtx* c, DfPkt* p, word16 type, int off, byte val,
+                          int xorNotSet)
+{
+    int bodyAt = 0, bodyLen = 0;
+
+    if (df_ch_find_ext(p, type, &bodyAt, &bodyLen) < 0) return 0;
+    if (off >= bodyLen) return 0;
+    if (xorNotSet)
+        p->data[bodyAt + off] ^= val;
+    else
+        p->data[bodyAt + off] = val;
+    c->nMod++;
+    return 1;
+}
+
+/* --- the semantically specific hellos ----------------------------------- */
+
+/* No supported_versions at all: `!tlsxFound || tlsxSupportedVersions.elements
+ * == NULL`. A DTLS 1.3 client always sends it, so this operand has no false
+ * case from any conforming peer. */
+static void df_pol_ch_no_supported_versions(DfCtx* c, DfPkt* p)
+{
+    /* every ClientHello, not just one: the cookie and PSK operands live in
+     * the SECOND hello, which a target index tuned to the first never sees. */
+    (void)c->target;
+    (void)df_ch_drop_ext(c, p, DFX_SUPPORTED_VERSIONS);
+}
+
+/* No key share: `cs.clientKSE == NULL && searched`. */
+static void df_pol_ch_no_key_share(DfCtx* c, DfPkt* p)
+{
+    /* every ClientHello, not just one: the cookie and PSK operands live in
+     * the SECOND hello, which a target index tuned to the first never sees. */
+    (void)c->target;
+    (void)df_ch_drop_ext(c, p, DFX_KEY_SHARE);
+}
+
+/* A key share for a group the server does not have. The first two bytes of
+ * the key_share body are the list length, then each entry starts with its
+ * group id -- so offsets 2 and 3 are the named group. */
+static void df_pol_ch_bad_group(DfCtx* c, DfPkt* p)
+{
+    /* every ClientHello, not just one: the cookie and PSK operands live in
+     * the SECOND hello, which a target index tuned to the first never sees. */
+    (void)c->target;
+    if (df_ch_poke_ext(c, p, DFX_KEY_SHARE, 2, 0xEE, 0))
+        (void)df_ch_poke_ext(c, p, DFX_KEY_SHARE, 3, 0xEE, 0);
+}
+
+/* No PSK modes offered at all. */
+static void df_pol_ch_no_psk_modes(DfCtx* c, DfPkt* p)
+{
+    /* every ClientHello, not just one: the cookie and PSK operands live in
+     * the SECOND hello, which a target index tuned to the first never sees. */
+    (void)c->target;
+    (void)df_ch_drop_ext(c, p, DFX_PSK_MODES);
+}
+
+/* psk_key_exchange_modes body is a one-byte list length then the modes.
+ * Forcing it to PSK_KE only, and to PSK_DHE_KE only, gives the two operands
+ * of `(modes & (1 << PSK_DHE_KE))` and `(modes & (1 << PSK_KE)) == 0` their
+ * pairs -- a build offers one fixed set, so neither has one otherwise. */
+static void df_pol_ch_psk_ke_only(DfCtx* c, DfPkt* p)
+{
+    /* every ClientHello, not just one: the cookie and PSK operands live in
+     * the SECOND hello, which a target index tuned to the first never sees. */
+    (void)c->target;
+    (void)df_ch_poke_ext(c, p, DFX_PSK_MODES, 1, 0 /* PSK_KE */, 0);
+}
+
+static void df_pol_ch_psk_dhe_only(DfCtx* c, DfPkt* p)
+{
+    /* every ClientHello, not just one: the cookie and PSK operands live in
+     * the SECOND hello, which a target index tuned to the first never sees. */
+    (void)c->target;
+    (void)df_ch_poke_ext(c, p, DFX_PSK_MODES, 1, 1 /* PSK_DHE_KE */, 0);
+}
+
+/* A cookie that will not verify: `!cookieGood`. The cookie extension is
+ * present only in the second ClientHello, which is why this is the operand a
+ * single-flight test can never pair. */
+static void df_pol_ch_bad_cookie(DfCtx* c, DfPkt* p)
+{
+    int bodyAt = 0, bodyLen = 0;
+
+    if (df_ch_find_ext(p, DFX_COOKIE, &bodyAt, &bodyLen) < 0) return;
+    (void)df_ch_poke_ext(c, p, DFX_COOKIE, bodyLen / 2, 0x5a, 1);
+}
+
+/* The extension block claiming more bytes than the hello carries:
+ * `idx > exts.size`. */
+static void df_pol_ch_exts_overrun(DfCtx* c, DfPkt* p)
+{
+    int extsLen = 0, extsLenAt = 0;
+
+    if (p->idx != c->target) return;
+    if (df_ch_exts(p, &extsLen, &extsLenAt) < 0) return;
+    p->data[extsLenAt]     = (byte)((extsLen + 64) >> 8);
+    p->data[extsLenAt + 1] = (byte)((extsLen + 64) & 0xff);
+    c->nMod++;
+}
+
+/* And the drop of pre_shared_key while leaving its modes, which is the
+ * inconsistent-hello case: `usePSK && pskInfo.isValid`. */
+static void df_pol_ch_no_psk(DfCtx* c, DfPkt* p)
+{
+    /* every ClientHello, not just one: the cookie and PSK operands live in
+     * the SECOND hello, which a target index tuned to the first never sees. */
+    (void)c->target;
+    (void)df_ch_drop_ext(c, p, DFX_PRE_SHARED_KEY);
+}
+
+
+/* ================= the ClientHello factory ================================
+ *
+ * The named hellos above are known-answer cases: each says one specific
+ * wrong thing. That is not the same as testing the parser's limits, which is
+ * where the rest of the residue lives -- an extension block that declares a
+ * length off by one, a duplicated extension, a zero-length body, forty
+ * unknown extensions, a session id claiming 33 bytes when the field allows
+ * 32, a cipher suite list whose length is not a multiple of two.
+ *
+ * These are generated rather than enumerated: one policy, one mutation id,
+ * driven from a loop. Each mutation keeps the datagram a datagram -- the
+ * record still frames the handshake, the handshake still frames the hello --
+ * and breaks exactly one invariant inside it, so the parser reaches the check
+ * that invariant belongs to instead of bailing at the door.
+ * ========================================================================= */
+
+/* Offsets of every length field in a ClientHello, so a mutation can poke one
+ * without walking the message again. */
+typedef struct DfChMap {
+    int sidLenAt;
+    int cookieLenAt;
+    int suitesLenAt;
+    int compLenAt;
+    int extsLenAt;
+    int extsAt;
+    int extsLen;
+} DfChMap;
+
+static int df_ch_map(const DfPkt* p, DfChMap* m)
+{
+    int o = DFH_HDR_SZ + DFHS_HDR_SZ;
+    int end = p->len;
+    int n;
+
+    if (p->type != handshake || p->hsType != client_hello) return -1;
+    if (o + 2 + RAN_LEN + 1 > end) return -1;
+    o += 2 + RAN_LEN;
+    m->sidLenAt = o;    n = p->data[o]; o += 1 + n;
+    if (o + 1 > end) return -1;
+    m->cookieLenAt = o; n = p->data[o]; o += 1 + n;
+    if (o + 2 > end) return -1;
+    m->suitesLenAt = o;
+    n = (p->data[o] << 8) | p->data[o + 1]; o += 2 + n;
+    if (o + 1 > end) return -1;
+    m->compLenAt = o;   n = p->data[o]; o += 1 + n;
+    if (o + 2 > end) return -1;
+    m->extsLenAt = o;
+    m->extsLen = (p->data[o] << 8) | p->data[o + 1];
+    m->extsAt = o + 2;
+    if (m->extsAt + m->extsLen > end) return -1;
+    return 0;
+}
+
+/* Append an extension of the given type and body size at the end of the
+ * block, adjusting every length above it. Used both to add one unknown
+ * extension and to add enough of them to strain the parser's limits. */
+static int df_ch_append_ext(DfCtx* c, DfPkt* p, word16 type, int bodyLen)
+{
+    DfChMap m;
+    int at, need = 4 + bodyLen;
+
+    if (df_ch_map(p, &m) != 0) return 0;
+    at = m.extsAt + m.extsLen;
+    if (p->len + need > DF_MAX_SZ) return 0;
+    if (at > p->len) return 0;
+
+    XMEMMOVE(p->data + at + need, p->data + at, (size_t)(p->len - at));
+    p->data[at]     = (byte)(type >> 8);
+    p->data[at + 1] = (byte)(type & 0xff);
+    p->data[at + 2] = (byte)(bodyLen >> 8);
+    p->data[at + 3] = (byte)(bodyLen & 0xff);
+    XMEMSET(p->data + at + 4, 0xA5, (size_t)bodyLen);
+    p->len += need;
+    df_ch_adjust(p, m.extsLenAt, need);
+    c->nMod++;
+    return 1;
+}
+
+/* Duplicate an extension in place: the same type twice in one hello, which a
+ * conforming client never sends and the parser must refuse. */
+static int df_ch_dup_ext(DfCtx* c, DfPkt* p, word16 type)
+{
+    DfChMap m;
+    int at, bodyAt = 0, bodyLen = 0, total;
+
+    if (df_ch_map(p, &m) != 0) return 0;
+    at = df_ch_find_ext(p, type, &bodyAt, &bodyLen);
+    if (at < 0) return 0;
+    total = 4 + bodyLen;
+    if (p->len + total > DF_MAX_SZ) return 0;
+
+    XMEMMOVE(p->data + at + total, p->data + at, (size_t)(p->len - at));
+    p->len += total;
+    df_ch_adjust(p, m.extsLenAt, total);
+    c->nMod++;
+    return 1;
+}
+
+enum {
+    DFM_EXT_LEN_PLUS1 = 0,   /* extension block one byte too long          */
+    DFM_EXT_LEN_MINUS1,      /* one byte too short                         */
+    DFM_EXT_LEN_ZERO,        /* declares no extensions, carries some       */
+    DFM_EXT_ONE_UNKNOWN,     /* a type nobody implements                   */
+    DFM_EXT_EIGHT_UNKNOWN,
+    DFM_EXT_FORTY_UNKNOWN,   /* strain the extension count                 */
+    DFM_EXT_HUGE_UNKNOWN,    /* one extension with a very large body       */
+    DFM_EXT_EMPTY_BODY,      /* a known extension with a zero-length body  */
+    DFM_DUP_SUPPORTED_VER,   /* the same extension twice                   */
+    DFM_DUP_KEY_SHARE,
+    DFM_DUP_COOKIE,
+    DFM_SID_LEN_33,          /* session id longer than the field allows    */
+    DFM_SID_LEN_ZERO,
+    DFM_SID_LEN_MAX,
+    DFM_COOKIE_LEN_ZERO,
+    DFM_COOKIE_LEN_MAX,
+    DFM_SUITES_LEN_ODD,      /* not a whole number of cipher suites        */
+    DFM_SUITES_LEN_ZERO,
+    DFM_SUITES_LEN_HUGE,
+    DFM_COMP_LEN_ZERO,       /* no compression method offered at all       */
+    DFM_COMP_LEN_HUGE,
+    DFM_VERSION_ZERO,        /* legacy_version at both extremes            */
+    DFM_VERSION_MAX,
+    DFM_COUNT
+};
+
+static void df_pol_ch_factory(DfCtx* c, DfPkt* p)
+{
+    DfChMap m;
+    int i;
+
+    if (df_ch_map(p, &m) != 0)
+        return;
+
+    switch (c->target) {
+        case DFM_EXT_LEN_PLUS1:
+            p->data[m.extsLenAt + 1] = (byte)((m.extsLen + 1) & 0xff);
+            p->data[m.extsLenAt]     = (byte)((m.extsLen + 1) >> 8);
+            break;
+        case DFM_EXT_LEN_MINUS1:
+            if (m.extsLen > 0) {
+                p->data[m.extsLenAt + 1] = (byte)((m.extsLen - 1) & 0xff);
+                p->data[m.extsLenAt]     = (byte)((m.extsLen - 1) >> 8);
+            }
+            break;
+        case DFM_EXT_LEN_ZERO:
+            p->data[m.extsLenAt] = 0;
+            p->data[m.extsLenAt + 1] = 0;
+            break;
+        case DFM_EXT_ONE_UNKNOWN:
+            (void)df_ch_append_ext(c, p, 0x9A9A, 4);
+            break;
+        case DFM_EXT_EIGHT_UNKNOWN:
+            for (i = 0; i < 8; i++)
+                (void)df_ch_append_ext(c, p, (word16)(0x9A00 + i), 2);
+            break;
+        case DFM_EXT_FORTY_UNKNOWN:
+            for (i = 0; i < 40; i++)
+                (void)df_ch_append_ext(c, p, (word16)(0x9B00 + i), 1);
+            break;
+        case DFM_EXT_HUGE_UNKNOWN:
+            (void)df_ch_append_ext(c, p, 0x9C9C, 900);
+            break;
+        case DFM_EXT_EMPTY_BODY: {
+            int bodyAt = 0, bodyLen = 0;
+            int at = df_ch_find_ext(p, DFX_SUPPORTED_VERSIONS, &bodyAt,
+                                    &bodyLen);
+            if (at >= 0 && bodyLen > 0) {
+                XMEMMOVE(p->data + bodyAt, p->data + bodyAt + bodyLen,
+                         (size_t)(p->len - bodyAt - bodyLen));
+                p->len -= bodyLen;
+                p->data[at + 2] = 0;
+                p->data[at + 3] = 0;
+                df_ch_adjust(p, m.extsLenAt, -bodyLen);
+            }
+            break;
+        }
+        case DFM_DUP_SUPPORTED_VER:
+            (void)df_ch_dup_ext(c, p, DFX_SUPPORTED_VERSIONS); break;
+        case DFM_DUP_KEY_SHARE:
+            (void)df_ch_dup_ext(c, p, DFX_KEY_SHARE); break;
+        case DFM_DUP_COOKIE:
+            (void)df_ch_dup_ext(c, p, DFX_COOKIE); break;
+
+        /* Sub-length fields poked without moving bytes: the message stays the
+         * size it claims at the record layer, and the inconsistency is inside,
+         * which is where the bounds checks are. */
+        case DFM_SID_LEN_33:     p->data[m.sidLenAt] = 33; break;
+        case DFM_SID_LEN_ZERO:   p->data[m.sidLenAt] = 0; break;
+        case DFM_SID_LEN_MAX:    p->data[m.sidLenAt] = 0xff; break;
+        case DFM_COOKIE_LEN_ZERO: p->data[m.cookieLenAt] = 0; break;
+        case DFM_COOKIE_LEN_MAX:  p->data[m.cookieLenAt] = 0xff; break;
+        case DFM_SUITES_LEN_ODD:
+            p->data[m.suitesLenAt + 1] =
+                (byte)(p->data[m.suitesLenAt + 1] ^ 1);
+            break;
+        case DFM_SUITES_LEN_ZERO:
+            p->data[m.suitesLenAt] = 0; p->data[m.suitesLenAt + 1] = 0; break;
+        case DFM_SUITES_LEN_HUGE:
+            p->data[m.suitesLenAt] = 0x0f; p->data[m.suitesLenAt + 1] = 0xff;
+            break;
+        case DFM_COMP_LEN_ZERO:  p->data[m.compLenAt] = 0; break;
+        case DFM_COMP_LEN_HUGE:  p->data[m.compLenAt] = 0xff; break;
+        case DFM_VERSION_ZERO:
+            p->data[DFH_HDR_SZ + DFHS_HDR_SZ] = 0;
+            p->data[DFH_HDR_SZ + DFHS_HDR_SZ + 1] = 0;
+            break;
+        case DFM_VERSION_MAX:
+            p->data[DFH_HDR_SZ + DFHS_HDR_SZ] = 0xff;
+            p->data[DFH_HDR_SZ + DFHS_HDR_SZ + 1] = 0xff;
+            break;
+        default: return;
+    }
+    c->nMod++;
+}
+
+/* ------------------------------------------------------------- the harness */
+
+static int df_run_ex(method_provider mc, method_provider ms,
+                     DfPolicy policy, int target, int resume, int mtu,
+                     int useCid)
+{
+    DfCtx* c = NULL;
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    int i;
+    int ret = -1;
+
+    c = (DfCtx*)XMALLOC(sizeof(DfCtx), NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (c == NULL)
+        return -1;
+    XMEMSET(c, 0, sizeof(*c));
+    c->policy = policy;
+    c->target = target;
+
+    ctx_c = wolfSSL_CTX_new(mc());
+    ctx_s = wolfSSL_CTX_new(ms());
+    if (ctx_c == NULL || ctx_s == NULL)
+        goto out;
+
+    wolfSSL_CTX_set_verify(ctx_c, WOLFSSL_VERIFY_NONE, NULL);
+    if (wolfSSL_CTX_load_verify_locations(ctx_c, caCertFile, NULL)
+            != WOLFSSL_SUCCESS)
+        goto out;
+    if (wolfSSL_CTX_use_certificate_file(ctx_s, svrCertFile,
+            WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS)
+        goto out;
+    if (wolfSSL_CTX_use_PrivateKey_file(ctx_s, svrKeyFile,
+            WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS)
+        goto out;
+
+    wolfSSL_CTX_SetIOSend(ctx_c, df_send);
+    wolfSSL_CTX_SetIORecv(ctx_c, df_recv);
+    wolfSSL_CTX_SetIOSend(ctx_s, df_send);
+    wolfSSL_CTX_SetIORecv(ctx_s, df_recv);
+
+    ssl_c = wolfSSL_new(ctx_c);
+    ssl_s = wolfSSL_new(ctx_s);
+    if (ssl_c == NULL || ssl_s == NULL)
+        goto out;
+
+#ifdef HAVE_SESSION_TICKET
+    /* A first, clean handshake purely to obtain a session, then a second one
+     * that resumes it. Only a resuming ClientHello carries pre_shared_key and
+     * psk_key_exchange_modes, so without this pass the PSK operands in
+     * SendStatelessReplyDtls13 have no vector at all -- the extensions the
+     * decisions read are simply not in the message. */
+    if (resume) {
+        WOLFSSL* w_c = wolfSSL_new(ctx_c);
+        WOLFSSL* w_s = wolfSSL_new(ctx_s);
+        DfCtx* warm = (DfCtx*)XMALLOC(sizeof(DfCtx), NULL,
+                                      DYNAMIC_TYPE_TMP_BUFFER);
+
+        if (w_c != NULL && w_s != NULL && warm != NULL) {
+            int k;
+
+            XMEMSET(warm, 0, sizeof(*warm));
+            wolfSSL_SetIOWriteCtx(w_c, warm); wolfSSL_SetIOReadCtx(w_c, warm);
+            wolfSSL_SetIOWriteCtx(w_s, warm); wolfSSL_SetIOReadCtx(w_s, warm);
+            for (k = 0; k < 40; k++) {
+                (void)wolfSSL_connect(w_c);
+                (void)wolfSSL_accept(w_s);
+                if (wolfSSL_is_init_finished(w_c) &&
+                        wolfSSL_is_init_finished(w_s))
+                    break;
+                (void)wolfSSL_dtls_got_timeout(w_c);
+                (void)wolfSSL_dtls_got_timeout(w_s);
+            }
+            if (wolfSSL_is_init_finished(w_c)) {
+                WOLFSSL_SESSION* sess = wolfSSL_get1_session(w_c);
+                if (sess != NULL) {
+                    (void)wolfSSL_set_session(ssl_c, sess);
+                    wolfSSL_SESSION_free(sess);
+                }
+            }
+        }
+        wolfSSL_free(w_c);
+        wolfSSL_free(w_s);
+        XFREE(warm, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    }
+#else
+    (void)resume;
+#endif
+
+#ifdef WOLFSSL_DTLS_CID
+    /* Connection ID must be NEGOTIATED, not merely compiled in. Nineteen of
+     * the conditions left in dtls.c are in the CID functions --
+     * TLSX_ConnectionID_Parse, DtlsCidGet, DtlsCidGet0, DtlsCIDCheck,
+     * DtlsCidReplaceTx -- and none of them is entered unless both endpoints
+     * ask for a CID. No amount of packet forgery substitutes for turning the
+     * feature on: this is configuration, not payload. */
+    if (useCid) {
+        static const byte cidC[] = { 0xC1, 0xC2, 0xC3, 0xC4 };
+        static const byte cidS[] = { 0x51, 0x52, 0x53, 0x54, 0x55, 0x56 };
+
+        (void)wolfSSL_dtls_cid_use(ssl_c);
+        (void)wolfSSL_dtls_cid_use(ssl_s);
+        (void)wolfSSL_dtls_cid_set(ssl_c, (byte*)cidC, (word32)sizeof(cidC));
+        (void)wolfSSL_dtls_cid_set(ssl_s, (byte*)cidS, (word32)sizeof(cidS));
+    }
+#else
+    (void)useCid;
+#endif
+/* Needs BOTH: CH fragmentation to make the oversized hello interesting, and
+ * the MTU setter to exist at all. wolfSSL_dtls_set_mtu is declared under
+ * (WOLFSSL_SCTP || WOLFSSL_DTLS_MTU) && WOLFSSL_DTLS -- guarding only on
+ * WOLFSSL_DTLS_CH_FRAG left it undeclared in configs that fragment but have
+ * neither MTU macro. */
+#if defined(WOLFSSL_DTLS_CH_FRAG) && defined(WOLFSSL_DTLS) && \
+    (defined(WOLFSSL_SCTP) || defined(WOLFSSL_DTLS_MTU))
+    /* A ClientHello larger than the MTU is fragmented by the stack itself,
+     * which is the only way to reach `isFirstCHFrag && extStart < helloSz`.
+     * Editing bytes cannot produce it: the fragmentation has to be real. */
+    if (mtu > 0) {
+        (void)wolfSSL_dtls_set_mtu(ssl_c, (word16)mtu);
+        (void)wolfSSL_dtls_set_mtu(ssl_s, (word16)mtu);
+    }
+#else
+    (void)mtu;
+#endif
+    wolfSSL_SetIOWriteCtx(ssl_c, c);
+    wolfSSL_SetIOReadCtx(ssl_c, c);
+    wolfSSL_SetIOWriteCtx(ssl_s, c);
+    wolfSSL_SetIOReadCtx(ssl_s, c);
+#ifdef HAVE_SECRET_CALLBACK
+    (void)wolfSSL_set_secret_cb(ssl_c, df_secret_cb, c);
+    (void)wolfSSL_set_secret_cb(ssl_s, df_secret_cb, c);
+#endif
+
+    /* Each side gets many turns: a dropped or held flight has to be given
+     * time to be retransmitted, which is the behaviour under test. */
+    for (i = 0; i < 40; i++) {
+        (void)wolfSSL_connect(ssl_c);
+        (void)wolfSSL_accept(ssl_s);
+        if (wolfSSL_is_init_finished(ssl_c) && wolfSSL_is_init_finished(ssl_s))
+            break;
+        /* let the retransmit timers fire rather than waiting on a clock */
+        (void)wolfSSL_dtls_got_timeout(ssl_c);
+        (void)wolfSSL_dtls_got_timeout(ssl_s);
+    }
+    /* Report whether the handshake actually completed, rather than whether
+     * the loop ran. An unconditional success here is how a transport that
+     * never connects still passes -- which is exactly what the first version
+     * of this harness did, in a third of a second, covering nothing. */
+    ret = (wolfSSL_is_init_finished(ssl_c) && wolfSSL_is_init_finished(ssl_s))
+          ? 0 : -1;
+
+out:
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+    XFREE(c, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    return ret;
+}
+
+static int df_run(method_provider mc, method_provider ms,
+                  DfPolicy policy, int target)
+{
+    return df_run_ex(mc, ms, policy, target, 0, 0, 0);
+}
+
+static int df_sweep(method_provider mc, method_provider ms)
+{
+    int vacuous = 0;
+    static const DfPolicy pols[] = {
+        df_pol_replay, df_pol_seq_future, df_pol_seq_past,
+        df_pol_epoch_future, df_pol_epoch_zero, df_pol_drop, df_pol_reorder,
+        df_pol_frag_beyond, df_pol_frag_over, df_pol_frag_overlap,
+        df_pol_msgseq_jump, df_pol_msgseq_back, df_pol_reclen_long,
+        df_pol_reclen_short, df_pol_type_swap, df_pol_coalesce,
+        df_pol_truncate,
+        df_pol_body_exts, df_pol_body_exts2, df_pol_body_exts3,
+        df_pol_body_exts4, df_pol_body_exts5, df_pol_body_exts6,
+        df_pol_cookie,
+        /* the built hellos: well-formed, and each says something specific */
+        df_pol_ch_no_supported_versions, df_pol_ch_no_key_share,
+        df_pol_ch_bad_group, df_pol_ch_no_psk_modes, df_pol_ch_psk_ke_only,
+        df_pol_ch_psk_dhe_only, df_pol_ch_bad_cookie,
+        df_pol_ch_exts_overrun, df_pol_ch_no_psk
+    };
+    size_t i;
+    int t;
+
+    /* target 0..3 selects which datagram of that direction is acted on, so
+     * each forgery is tried against the ClientHello, the server's flight, the
+     * client's second flight and the finished exchange. */
+    /* A policy that matches no packet forges nothing, and a sweep made only of
+     * those would report success having sent clean traffic throughout. Some
+     * are legitimately inapplicable -- df_pol_ch_bad_group needs a key_share,
+     * which DTLS 1.2 has no reason to send, and the deepest body pokes fall
+     * past the end of a short ClientHello -- so a vacuous policy is named
+     * rather than failed, and the sweep as a whole is required to have forged
+     * something. */
+    df_mutations = 0;
+    for (i = 0; i < sizeof(pols) / sizeof(pols[0]); i++) {
+        int before = df_mutations;
+
+        for (t = 0; t < 4; t++)
+            (void)df_run(mc, ms, pols[i], t);
+        if (df_mutations == before) {
+            fprintf(stderr, "  df_sweep: policy %d matched no packet\n",
+                    (int)i);
+            vacuous++;
+        }
+    }
+    if (df_mutations == 0) {
+        fprintf(stderr, "df_sweep: no policy altered anything\n");
+        return -1;
+    }
+    if (vacuous > 0) {
+        fprintf(stderr, "  df_sweep: %d of %d policies did not apply here\n",
+                vacuous, (int)(sizeof(pols) / sizeof(pols[0])));
+    }
+
+    /* the same policies again over a resuming handshake, where the hello
+     * carries the PSK extensions the operands above read */
+    for (i = 0; i < sizeof(pols) / sizeof(pols[0]); i++)
+        (void)df_run_ex(mc, ms, pols[i], 0, 1, 0, 0);
+    (void)df_run_ex(mc, ms, NULL, 0, 1, 0, 0);
+
+    /* the generated hellos: one run per mutation */
+    for (t = 0; t < (int)DFM_COUNT; t++)
+        (void)df_run_ex(mc, ms, df_pol_ch_factory, t, 0, 0, 0);
+
+    /* and every mutation again over a fragmented ClientHello, where the
+     * parser sees the hello in pieces */
+    for (t = 0; t < (int)DFM_COUNT; t++)
+        (void)df_run_ex(mc, ms, df_pol_ch_factory, t, 0, 512, 0);
+    (void)df_run_ex(mc, ms, NULL, 0, 0, 256, 0);
+    (void)df_run_ex(mc, ms, NULL, 0, 0, 512, 0);
+
+    /* With Connection ID negotiated: a clean run to enter the CID code at
+     * all, then every header forgery and every generated hello again, since
+     * a CID changes where the record body starts and therefore what each
+     * mutation lands on. */
+    (void)df_run_ex(mc, ms, NULL, 0, 0, 0, 1);
+    for (i = 0; i < sizeof(pols) / sizeof(pols[0]); i++)
+        for (t = 0; t < 2; t++)
+            (void)df_run_ex(mc, ms, pols[i], t, 0, 0, 1);
+    for (t = 0; t < (int)DFM_COUNT; t++)
+        (void)df_run_ex(mc, ms, df_pol_ch_factory, t, 0, 0, 1);
+    (void)df_run_ex(mc, ms, NULL, 0, 0, 512, 1);
+
+    /* and the clean run through the same transport, so every decision above
+     * has its partner in this binary */
+    return df_run(mc, ms, NULL, 0);
+}
+
+#endif /* WOLFSSL_DTLS */
+
+int test_dtls12_packet_forgeries(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_DTLS) && !defined(WOLFSSL_NO_TLS12) && !defined(NO_RSA) \
+    && !defined(NO_CERTS) && !defined(NO_FILESYSTEM) \
+    && !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER) \
+    && !defined(WOLFSSL_ASYNC_CRYPT) && !defined(NO_WOLFSSL_WIRE_MANGLE_TESTS)
+    ExpectIntEQ(df_sweep(wolfDTLSv1_2_client_method,
+                         wolfDTLSv1_2_server_method), 0);
+#endif
+    return EXPECT_RESULT();
+}
+
+int test_dtls13_packet_forgeries(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_DTLS13) && defined(WOLFSSL_TLS13) && !defined(NO_RSA) \
+    && !defined(NO_CERTS) && !defined(NO_FILESYSTEM) \
+    && !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER) \
+    && !defined(WOLFSSL_ASYNC_CRYPT) && !defined(NO_WOLFSSL_WIRE_MANGLE_TESTS)
+    ExpectIntEQ(df_sweep(wolfDTLSv1_3_client_method,
+                         wolfDTLSv1_3_server_method), 0);
+#endif
+    return EXPECT_RESULT();
+}
+
+/* ---------------------------------------------------------------------------
+ * Connection ID argument guards.
+ *
+ * The remaining uncovered conditions in the CID code are NULL-and-zero
+ * argument guards on the public API:
+ *
+ *     if (ssl == NULL || buf == NULL)                        DtlsCidGet
+ *     if (id == NULL || id->length == 0)
+ *     if (ssl == NULL || cid == NULL)                        DtlsCidGet0
+ *     if (info == NULL || info->rx == NULL || !info->rx->length) DtlsCIDCheck
+ *     if (ssl == NULL || cid == NULL || size == 0)           DtlsCidReplaceTx
+ *     if (msg == NULL || cidSz == 0 || msgSz < OPAQUE8_LEN + cidSz)
+ *
+ * No handshake passes NULL and no forged datagram can produce one, so these
+ * operands are only reachable by calling the functions directly. The other
+ * CID tests all drive a working connection, which takes every guard the same
+ * way on every call.
+ *
+ * Three ssl states are needed, because "no CID info", "info but no id" and
+ * "an id of length zero" are distinct operands: no ssl at all, an ssl with
+ * CID compiled but not enabled, and one with CID enabled but not negotiated.
+ * ------------------------------------------------------------------------- */
+int test_wolfSSL_dtls_cid_arg_guards(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_DTLS_CID) && defined(WOLFSSL_DTLS) && !defined(NO_RSA) && \
+    !defined(NO_CERTS) && !defined(NO_FILESYSTEM) && !defined(NO_WOLFSSL_CLIENT) && \
+    !defined(WOLFSSL_NO_TLS12)
+    WOLFSSL_CTX* ctx = NULL;
+    WOLFSSL* plain = NULL;      /* CID never enabled */
+    WOLFSSL* enabled = NULL;    /* CID enabled, never negotiated */
+    unsigned char buf[DTLS_CID_MAX_SIZE + 4];
+    unsigned char* p = NULL;
+    unsigned int sz = 0;
+    byte cid[4];
+
+    XMEMSET(buf, 0, sizeof(buf));
+    XMEMSET(cid, 0xC1, sizeof(cid));
+
+    ExpectNotNull(ctx = wolfSSL_CTX_new(wolfDTLSv1_2_client_method()));
+    ExpectNotNull(plain = wolfSSL_new(ctx));
+    ExpectNotNull(enabled = wolfSSL_new(ctx));
+    if (enabled != NULL)
+        (void)wolfSSL_dtls_cid_use(enabled);
+
+    /* ssl == NULL: the first operand of every guard */
+    (void)(wolfSSL_dtls_cid_use(NULL));
+    (void)(wolfSSL_dtls_cid_is_enabled(NULL));
+    (void)(wolfSSL_dtls_cid_set(NULL, cid, (word32)sizeof(cid)));
+    (void)(wolfSSL_dtls_cid_get_rx_size(NULL, &sz));
+    (void)(wolfSSL_dtls_cid_get_tx_size(NULL, &sz));
+    ExpectIntNE(wolfSSL_dtls_cid_get_rx(NULL, buf, (unsigned int)sizeof(buf)),
+                WOLFSSL_SUCCESS);
+    ExpectIntNE(wolfSSL_dtls_cid_get_tx(NULL, buf, (unsigned int)sizeof(buf)),
+                WOLFSSL_SUCCESS);
+    (void)(wolfSSL_dtls_cid_get0_rx(NULL, &p));
+    (void)(wolfSSL_dtls_cid_get0_tx(NULL, &p));
+
+    /* the second operand: a valid ssl with a NULL buffer */
+    (void)(wolfSSL_dtls_cid_set(enabled, NULL, (word32)sizeof(cid)));
+    (void)(wolfSSL_dtls_cid_get_rx_size(enabled, NULL));
+    (void)(wolfSSL_dtls_cid_get_tx_size(enabled, NULL));
+    (void)(wolfSSL_dtls_cid_get_rx(enabled, NULL,
+                (unsigned int)sizeof(buf)));
+    (void)(wolfSSL_dtls_cid_get_tx(enabled, NULL,
+                (unsigned int)sizeof(buf)));
+    (void)(wolfSSL_dtls_cid_get0_rx(enabled, NULL));
+    (void)(wolfSSL_dtls_cid_get0_tx(enabled, NULL));
+
+    /* size == 0, and a size past the maximum: the third operand of
+     * DtlsCidReplaceTx, which a caller with a real CID never supplies */
+    (void)(wolfSSL_dtls_cid_set(enabled, cid, 0));
+    ExpectIntNE(wolfSSL_dtls_cid_set(enabled, cid, DTLS_CID_MAX_SIZE + 1),
+                WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_dtls_cid_set(enabled, cid, (word32)sizeof(cid)),
+                WOLFSSL_SUCCESS);
+
+    /* CID compiled but never enabled on this ssl: info == NULL, which is a
+     * different operand from "info exists but carries no id" */
+    (void)(wolfSSL_dtls_cid_is_enabled(plain));
+    (void)(wolfSSL_dtls_cid_get_rx_size(plain, &sz));
+    (void)(wolfSSL_dtls_cid_get_rx(plain, buf,
+                (unsigned int)sizeof(buf)));
+    (void)(wolfSSL_dtls_cid_get0_rx(plain, &p));
+
+    /* enabled but not negotiated: the id is present and zero-length, which is
+     * the `id->length == 0` operand */
+    (void)(wolfSSL_dtls_cid_is_enabled(enabled));
+    (void)(wolfSSL_dtls_cid_get_rx_size(enabled, &sz));
+    (void)(wolfSSL_dtls_cid_get_rx(enabled, buf,
+                (unsigned int)sizeof(buf)));
+    (void)(wolfSSL_dtls_cid_get0_rx(enabled, &p));
+
+    /* a buffer smaller than the CID it must hold */
+    (void)(wolfSSL_dtls_cid_get_tx(enabled, buf, 1));
+
+    /* wolfSSL_dtls_cid_parse: three operands, and a message that is one byte
+     * short of the CID it claims */
+    (void)(wolfSSL_dtls_cid_parse(NULL, 16, 4));
+    (void)(wolfSSL_dtls_cid_parse(buf, 16, 0));
+    (void)(wolfSSL_dtls_cid_parse(buf, 4, 4));
+    (void)(wolfSSL_dtls_cid_parse(buf, 0, 4));
+    buf[0] = dtls12_cid;
+    (void)(wolfSSL_dtls_cid_parse(buf, (unsigned int)sizeof(buf), 4));
+    buf[0] = handshake;     /* not a CID record: the type test's partner */
+    (void)(wolfSSL_dtls_cid_parse(buf, (unsigned int)sizeof(buf), 4));
+
+    ExpectIntGT(wolfSSL_dtls_cid_max_size(), 0);
+
+    wolfSSL_free(plain);
+    wolfSSL_free(enabled);
+    wolfSSL_CTX_free(ctx);
+
+    #endif
+    return EXPECT_RESULT();
+}
+
+/* The DTLS send path has to bound application records by the configured MTU.
+ * WOLFSSL_SCTP raises that MTU well above MAX_MTU, so a build that ignores the
+ * configured value and falls back to MAX_MTU rejects records it should accept.
+ * The record between the two bounds is what catches that. */
+int test_dtls_sctp_app_data_size(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_SCTP) && defined(WOLFSSL_DTLS) && \
+    !defined(WOLFSSL_NO_TLS12) && !defined(WOLFSSL_NO_DTLS_SIZE_CHECK) && \
+    defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    ((WOLFSSL_MAX_MTU + 1024) <= MAX_RECORD_SIZE)
+    /* Sized from the datagram MTU so the relationships hold for any
+     * WOLFSSL_MAX_MTU: FITS is above it, the configured MTU is above FITS plus
+     * record overhead, and OVER is above the configured MTU. The guard above
+     * keeps the configured MTU within what wolfSSL_dtls_set_mtu() accepts. */
+    #define TEST_SCTP_FITS  (WOLFSSL_MAX_MTU + 512)
+    #define TEST_SCTP_MTU   (TEST_SCTP_FITS + 512)
+    #define TEST_SCTP_OVER  (TEST_SCTP_MTU + 512)
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    byte* msg = NULL;
+    byte* readBuf = NULL;
+    int   i;
+
+    ExpectNotNull(msg = (byte*)XMALLOC(TEST_SCTP_OVER, NULL,
+        DYNAMIC_TYPE_TMP_BUFFER));
+    ExpectNotNull(readBuf = (byte*)XMALLOC(TEST_SCTP_OVER, NULL,
+        DYNAMIC_TYPE_TMP_BUFFER));
+    if (msg != NULL) {
+        for (i = 0; i < TEST_SCTP_OVER; i++)
+            msg[i] = (byte)(i & 0xFF);
+    }
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    test_ctx.sctp = 1;
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(wolfSSL_dtls_set_sctp(ssl_c), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_dtls_set_sctp(ssl_s), WOLFSSL_SUCCESS);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+
+    /* Set after the handshake so only the application record path is bound. */
+    ExpectIntEQ(wolfSSL_dtls_set_mtu(ssl_c, TEST_SCTP_MTU), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_dtls_set_mtu(ssl_s, TEST_SCTP_MTU), WOLFSSL_SUCCESS);
+
+    /* Within the configured MTU, beyond MAX_MTU: accepted. */
+    ExpectIntEQ(wolfSSL_write(ssl_c, msg, TEST_SCTP_FITS), TEST_SCTP_FITS);
+    ExpectIntEQ(wolfSSL_read(ssl_s, readBuf, TEST_SCTP_FITS), TEST_SCTP_FITS);
+    ExpectIntEQ(XMEMCMP(msg, readBuf, TEST_SCTP_FITS), 0);
+
+    /* Beyond the configured MTU: still refused. CheckAvailableSize() bounds
+     * this independently, so this does not isolate the send path - it is here
+     * so a change that widens the limit instead of reading it is not silently
+     * accepted end to end. */
+    ExpectIntEQ(wolfSSL_write(ssl_c, msg, TEST_SCTP_OVER),
+        WC_NO_ERR_TRACE(WOLFSSL_FATAL_ERROR));
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, WOLFSSL_FATAL_ERROR),
+        WC_NO_ERR_TRACE(DTLS_SIZE_ERROR));
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+    ssl_c = NULL; ssl_s = NULL; ctx_c = NULL; ctx_s = NULL;
+
+    /* Same build, ordinary UDP DTLS object: compiling SCTP support in must not
+     * lift the datagram bound for a connection that never enabled SCTP. */
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfDTLSv1_2_client_method, wolfDTLSv1_2_server_method), 0);
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+#if defined(WOLFSSL_DTLS_MTU)
+    /* Where the MTU is configurable it governs this object too, and the CTX
+     * default is the SCTP record size for the whole build, so give it the
+     * datagram MTU it would otherwise have. */
+    ExpectIntEQ(wolfSSL_dtls_set_mtu(ssl_c, WOLFSSL_MAX_MTU), WOLFSSL_SUCCESS);
+#endif
+    ExpectIntEQ(wolfSSL_write(ssl_c, msg, TEST_SCTP_FITS),
+        WC_NO_ERR_TRACE(WOLFSSL_FATAL_ERROR));
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, WOLFSSL_FATAL_ERROR),
+        WC_NO_ERR_TRACE(DTLS_SIZE_ERROR));
+
+    wolfSSL_free(ssl_s);
+    wolfSSL_free(ssl_c);
+    wolfSSL_CTX_free(ctx_s);
+    wolfSSL_CTX_free(ctx_c);
+    XFREE(msg, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(readBuf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    #undef TEST_SCTP_MTU
+    #undef TEST_SCTP_FITS
+    #undef TEST_SCTP_OVER
+#endif
+    return EXPECT_RESULT();
+}

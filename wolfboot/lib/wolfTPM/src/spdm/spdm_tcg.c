@@ -1,8 +1,8 @@
 /* spdm_tcg.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -194,6 +194,14 @@ int wolfSPDM_BuildVendorDefined(
     if (vdCode == NULL || outBuf == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
+    if (payload == NULL && payloadSz != 0) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    /* Reject a payload that would overflow the 16-bit request-length field */
+    if (payloadSz > (word32)(0xFFFF - WOLFSPDM_VDCODE_LEN)) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
 
     /* SPDM VENDOR_DEFINED_REQUEST format:
      * SPDMVersion(1) + reqRspCode(1) + param1(1) + param2(1) +
@@ -290,6 +298,35 @@ int wolfSPDM_ParseVendorDefined(
 
 /* ----- Shared TCG SPDM Functions ----- */
 
+static int wolfSPDM_TCG_CheckPubKey(WOLFSPDM_CTX* ctx,
+    const byte* pubKey, word32 pubKeySz)
+{
+    const byte* pubKeyX;
+    const byte* pubKeyY;
+    int rc;
+
+    if (!ctx->flags.hasRspPubKey) {
+        return WOLFSPDM_SUCCESS;
+    }
+    if (ctx->rspPubKeyLen != WOLFSPDM_ECC_POINT_SIZE) {
+        return WOLFSPDM_E_BAD_STATE;
+    }
+
+    rc = wolfSPDM_ExtractEccPoint(pubKey, pubKeySz, &pubKeyX, &pubKeyY);
+    if (rc != WOLFSPDM_SUCCESS) {
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+
+    if (XMEMCMP(pubKeyX, ctx->rspPubKey, WOLFSPDM_ECC_KEY_SIZE) != 0 ||
+        XMEMCMP(pubKeyY, ctx->rspPubKey + WOLFSPDM_ECC_KEY_SIZE,
+            WOLFSPDM_ECC_KEY_SIZE) != 0) {
+        wolfSPDM_DebugPrint(ctx, "GET_PUBK: Responder key mismatch\n");
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+
+    return WOLFSPDM_SUCCESS;
+}
+
 int wolfSPDM_TCG_GetPubKey(
     WOLFSPDM_CTX* ctx,
     byte* pubKey, word32* pubKeySz)
@@ -319,18 +356,16 @@ int wolfSPDM_TCG_GetPubKey(
     wolfSPDM_DebugPrint(ctx, "GET_PUBK: Got TPMT_PUBLIC (%u bytes)\n",
         rsp.payloadSz);
 
+    rc = wolfSPDM_TCG_CheckPubKey(ctx, rsp.payload, rsp.payloadSz);
+    if (rc != WOLFSPDM_SUCCESS) {
+        return rc;
+    }
+
     if (*pubKeySz < rsp.payloadSz) {
         return WOLFSPDM_E_BUFFER_SMALL;
     }
     XMEMCPY(pubKey, rsp.payload, rsp.payloadSz);
     *pubKeySz = rsp.payloadSz;
-
-    /* Store for cert_chain_buffer_hash computation */
-    if (rsp.payloadSz <= sizeof(ctx->rspPubKey)) {
-        XMEMCPY(ctx->rspPubKey, rsp.payload, rsp.payloadSz);
-        ctx->rspPubKeyLen = rsp.payloadSz;
-        ctx->flags.hasRspPubKey = 1;
-    }
 
     return WOLFSPDM_SUCCESS;
 }
@@ -364,6 +399,118 @@ int wolfSPDM_TCG_GivePubKey(
 
 /* ----- Shared GET_CAPABILITIES + NEGOTIATE_ALGORITHMS ----- */
 
+#define WOLFSPDM_TCG_CAPABILITIES_RSP       0x61
+#define WOLFSPDM_TCG_ALGORITHMS_RSP         0x63
+#define WOLFSPDM_TCG_CAPABILITIES_RSP_SZ    20
+#define WOLFSPDM_TCG_ALGORITHMS_RSP_SZ      52
+#define WOLFSPDM_TCG_MIN_DATA_TRANSFER_SZ   42
+
+#define WOLFSPDM_TCG_CAP_ENCRYPT            0x00000040UL
+#define WOLFSPDM_TCG_CAP_MAC                0x00000080UL
+#define WOLFSPDM_TCG_CAP_KEY_EX             0x00000200UL
+#define WOLFSPDM_TCG_CAP_PSK                0x00000400UL
+#define WOLFSPDM_TCG_CAP_PSK_WITH_CONTEXT   0x00000800UL
+#define WOLFSPDM_TCG_CAP_PSK_MASK           0x00000C00UL
+#define WOLFSPDM_TCG_CAP_PUB_KEY_ID         0x00010000UL
+
+static int wolfSPDM_TCG_CheckResponse(WOLFSPDM_CTX* ctx, const byte* rsp,
+    word32 rspSz, word32 minRspSz, byte expectedCode)
+{
+    int errorCode;
+
+    if (rspSz < 4) {
+        return WOLFSPDM_E_BUFFER_SMALL;
+    }
+    if (wolfSPDM_CheckError(rsp, rspSz, &errorCode)) {
+        wolfSPDM_DebugPrint(ctx, "SPDM error: 0x%02x\n", errorCode);
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+    if (rspSz < minRspSz) {
+        return WOLFSPDM_E_BUFFER_SMALL;
+    }
+    if (rsp[0] != ctx->spdmVersion) {
+        return WOLFSPDM_E_VERSION_MISMATCH;
+    }
+    if (rsp[1] != expectedCode) {
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+
+    return WOLFSPDM_SUCCESS;
+}
+
+static int wolfSPDM_TCG_CheckCapabilities(WOLFSPDM_CTX* ctx,
+    const byte* rsp, word32 rspSz, word32 capsFlags)
+{
+    word32 requiredFlags;
+    word32 rspFlags;
+    word32 dataTransferSz;
+    word32 maxSpdmMsgSz;
+    int rc;
+
+    rc = wolfSPDM_TCG_CheckResponse(ctx, rsp, rspSz,
+        WOLFSPDM_TCG_CAPABILITIES_RSP_SZ, WOLFSPDM_TCG_CAPABILITIES_RSP);
+    if (rc != WOLFSPDM_SUCCESS) {
+        return rc;
+    }
+    if (rspSz != WOLFSPDM_TCG_CAPABILITIES_RSP_SZ) {
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+
+    requiredFlags = WOLFSPDM_TCG_CAP_ENCRYPT | WOLFSPDM_TCG_CAP_MAC |
+        WOLFSPDM_TCG_CAP_PUB_KEY_ID;
+    if ((capsFlags & WOLFSPDM_TCG_CAP_PSK) == 0) {
+        requiredFlags |= WOLFSPDM_TCG_CAP_KEY_EX;
+    }
+
+    rspFlags = SPDM_Get32LE(rsp + 8);
+    dataTransferSz = SPDM_Get32LE(rsp + 12);
+    maxSpdmMsgSz = SPDM_Get32LE(rsp + 16);
+    if ((rspFlags & requiredFlags) != requiredFlags ||
+        ((capsFlags & WOLFSPDM_TCG_CAP_PSK) != 0 &&
+         (rspFlags & WOLFSPDM_TCG_CAP_PSK_MASK) != WOLFSPDM_TCG_CAP_PSK &&
+         (rspFlags & WOLFSPDM_TCG_CAP_PSK_MASK) !=
+             WOLFSPDM_TCG_CAP_PSK_WITH_CONTEXT) ||
+        dataTransferSz < WOLFSPDM_TCG_MIN_DATA_TRANSFER_SZ ||
+        maxSpdmMsgSz < dataTransferSz) {
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+
+    return WOLFSPDM_SUCCESS;
+}
+
+static int wolfSPDM_TCG_CheckAlgorithms(WOLFSPDM_CTX* ctx,
+    const byte* rsp, word32 rspSz)
+{
+    static const byte expectedAlgStructs[16] = {
+        0x02, 0x20, 0x10, 0x00,
+        0x03, 0x20, 0x02, 0x00,
+        0x04, 0x20, 0x80, 0x00,
+        0x05, 0x20, 0x01, 0x00
+    };
+    int rc;
+
+    rc = wolfSPDM_TCG_CheckResponse(ctx, rsp, rspSz,
+        WOLFSPDM_TCG_ALGORITHMS_RSP_SZ, WOLFSPDM_TCG_ALGORITHMS_RSP);
+    if (rc != WOLFSPDM_SUCCESS) {
+        return rc;
+    }
+    if (rspSz != WOLFSPDM_TCG_ALGORITHMS_RSP_SZ ||
+        SPDM_Get16LE(rsp + 4) != rspSz || rsp[2] != 4 || rsp[3] != 0 ||
+        rsp[6] != 0 || rsp[7] != 0x02 ||
+        SPDM_Get32LE(rsp + 8) != 0 ||
+        SPDM_Get32LE(rsp + 12) != 0x00000080UL ||
+        SPDM_Get32LE(rsp + 16) != 0x00000002UL ||
+        SPDM_Get32LE(rsp + 20) != 0 || SPDM_Get32LE(rsp + 24) != 0 ||
+        SPDM_Get32LE(rsp + 28) != 0 || rsp[32] != 0 || rsp[33] != 0 ||
+        rsp[34] != 0 || rsp[35] != 0 ||
+        XMEMCMP(rsp + 36, expectedAlgStructs,
+            sizeof(expectedAlgStructs)) != 0) {
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+
+    return WOLFSPDM_SUCCESS;
+}
+
 int wolfSPDM_TCG_GetCapabilities(WOLFSPDM_CTX* ctx, word32 capsFlags)
 {
     byte capsReq[20];
@@ -371,6 +518,10 @@ int wolfSPDM_TCG_GetCapabilities(WOLFSPDM_CTX* ctx, word32 capsFlags)
     word32 capsRspSz = sizeof(capsRsp);
     word32 off = 0;
     int rc;
+
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
 
     capsReq[off++] = ctx->spdmVersion;
     capsReq[off++] = 0xE1; /* GET_CAPABILITIES */
@@ -393,6 +544,9 @@ int wolfSPDM_TCG_GetCapabilities(WOLFSPDM_CTX* ctx, word32 capsFlags)
     if (rc == WOLFSPDM_SUCCESS)
         rc = wolfSPDM_SendReceive(ctx, capsReq, off, capsRsp, &capsRspSz);
     if (rc == WOLFSPDM_SUCCESS)
+        rc = wolfSPDM_TCG_CheckCapabilities(ctx, capsRsp, capsRspSz,
+            capsFlags);
+    if (rc == WOLFSPDM_SUCCESS)
         rc = wolfSPDM_TranscriptAdd(ctx, capsRsp, capsRspSz);
     if (rc != WOLFSPDM_SUCCESS) {
         ctx->state = WOLFSPDM_STATE_ERROR;
@@ -408,6 +562,10 @@ int wolfSPDM_TCG_NegotiateAlgorithms(WOLFSPDM_CTX* ctx)
     word32 algRspSz = sizeof(algRsp);
     word32 off = 0;
     int rc;
+
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
 
     algReq[off++] = ctx->spdmVersion;
     algReq[off++] = 0xE3; /* NEGOTIATE_ALGORITHMS */
@@ -441,6 +599,8 @@ int wolfSPDM_TCG_NegotiateAlgorithms(WOLFSPDM_CTX* ctx)
     if (rc == WOLFSPDM_SUCCESS)
         rc = wolfSPDM_SendReceive(ctx, algReq, off, algRsp, &algRspSz);
     if (rc == WOLFSPDM_SUCCESS)
+        rc = wolfSPDM_TCG_CheckAlgorithms(ctx, algRsp, algRspSz);
+    if (rc == WOLFSPDM_SUCCESS)
         rc = wolfSPDM_TranscriptAdd(ctx, algRsp, algRspSz);
     if (rc != WOLFSPDM_SUCCESS) {
         ctx->state = WOLFSPDM_STATE_ERROR;
@@ -463,6 +623,13 @@ int wolfSPDM_ConnectTCG(WOLFSPDM_CTX* ctx)
     }
 
     if (!ctx->flags.initialized) {
+        return WOLFSPDM_E_BAD_STATE;
+    }
+
+    if (!ctx->flags.hasRspPubKey ||
+        ctx->rspPubKeyLen != WOLFSPDM_ECC_POINT_SIZE) {
+        wolfSPDM_DebugPrint(ctx,
+            "TCG: Trusted responder public key is not configured\n");
         return WOLFSPDM_E_BAD_STATE;
     }
 
@@ -500,25 +667,21 @@ int wolfSPDM_ConnectTCG(WOLFSPDM_CTX* ctx)
     }
     ctx->state = WOLFSPDM_STATE_CERT;
 
-    /* Compute Ct = SHA-384(TPMT_PUBLIC) and add to transcript */
-    if (ctx->flags.hasRspPubKey && ctx->rspPubKeyLen > 0) {
-        wolfSPDM_DebugPrint(ctx, "TCG: Computing Ct = SHA-384(TPMT_PUBLIC[%u])\n",
-            ctx->rspPubKeyLen);
-        rc = wolfSPDM_Sha384Hash(ctx->certChainHash,
-            ctx->rspPubKey, ctx->rspPubKeyLen, NULL, 0, NULL, 0);
-        if (rc != WOLFSPDM_SUCCESS) {
-            ctx->state = WOLFSPDM_STATE_ERROR;
-            return rc;
-        }
-        rc = wolfSPDM_TranscriptAdd(ctx, ctx->certChainHash,
-            WOLFSPDM_HASH_SIZE);
-        if (rc != WOLFSPDM_SUCCESS) {
-            ctx->state = WOLFSPDM_STATE_ERROR;
-            return rc;
-        }
-    } else {
-        wolfSPDM_DebugPrint(ctx,
-            "TCG: Warning - no responder public key for Ct\n");
+    /* Compute Ct from the fetched wire object after its public point has
+     * matched the separately configured responder key. */
+    wolfSPDM_DebugPrint(ctx, "TCG: Computing Ct = SHA-384(GET_PUBK[%u])\n",
+        pubKeySz);
+    rc = wolfSPDM_Sha384Hash(ctx->certChainHash,
+        pubKey, pubKeySz, NULL, 0, NULL, 0);
+    if (rc != WOLFSPDM_SUCCESS) {
+        ctx->state = WOLFSPDM_STATE_ERROR;
+        return rc;
+    }
+    rc = wolfSPDM_TranscriptAdd(ctx, ctx->certChainHash,
+        WOLFSPDM_HASH_SIZE);
+    if (rc != WOLFSPDM_SUCCESS) {
+        ctx->state = WOLFSPDM_STATE_ERROR;
+        return rc;
     }
 
     /* Step 5: KEY_EXCHANGE */

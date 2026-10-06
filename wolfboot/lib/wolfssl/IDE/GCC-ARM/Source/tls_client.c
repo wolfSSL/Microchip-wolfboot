@@ -74,7 +74,8 @@ static int tls_client(void)
 
     if ((ctx = wolfSSL_CTX_new(wolfTLSv1_2_client_method())) == NULL) {
         printf("CTXnew failed.\n");
-        goto fail;
+        ret = -1;
+        goto cleanup;
     }
 
     /*------------------------------------------------------------------------*/
@@ -95,9 +96,9 @@ static int tls_client(void)
     /* end peer auth option*/
     /*---------------------*/
     if ((ret = wolfSSL_CTX_set_cipher_list(ctx, "ECDHE-ECDSA-AES128-SHA256")) != WOLFSSL_SUCCESS) {
-        wolfSSL_CTX_free(ctx);
         printf("CTXset_cipher_list failed, error: %d\n", ret);
-        goto fail;
+        ret = -1;
+        goto cleanup;
     }
     /*------------------------------------------------------------------------*/
     /* END CIPHER SUITE OPTIONS */
@@ -108,8 +109,8 @@ static int tls_client(void)
     if ((ssl = wolfSSL_new(ctx)) == NULL) {
         error = wolfSSL_get_error(ssl, 0);
         printf("wolfSSL_new failed %d\n", error);
-        wolfSSL_CTX_free(ctx);
-        return -1;
+        ret = -1;
+        goto cleanup;
     }
 
     /* non blocking accept and connect */
@@ -123,7 +124,8 @@ static int tls_client(void)
             if (error != WOLFSSL_ERROR_WANT_READ && error != WOLFSSL_ERROR_WANT_WRITE) {
                 /* Fail */
                 printf("wolfSSL connect failed with return code %d\n", error);
-                goto fail;
+                ret = -1;
+                goto cleanup;
             }
         }
         /* Success */
@@ -138,7 +140,8 @@ static int tls_client(void)
         if (ret != msgSz) {
             if (error != WOLFSSL_ERROR_WANT_READ && error != WOLFSSL_ERROR_WANT_WRITE) {
                 /* Write failed */
-                goto fail;
+                ret = -1;
+                goto cleanup;
             }
         }
         /* Write succeeded */
@@ -153,7 +156,8 @@ static int tls_client(void)
                 /* Can put print here, the server enters a loop waiting to read
                  * a confirmation message at this point */
                 // printf("client read failed\n");
-                goto fail;
+                ret = -1;
+                goto cleanup;
             }
             continue;
         }
@@ -167,14 +171,14 @@ static int tls_client(void)
 
     }
 
-    return 0;
+    ret = 0;
 
-fail:
+cleanup:
     wolfSSL_shutdown(ssl);
     wolfSSL_free(ssl);
     wolfSSL_CTX_free(ctx);
 
-    return -1;
+    return ret;
 }
 #endif /* !WOLFCRYPT_ONLY && !NO_WOLFSSL_CLIENT */
 

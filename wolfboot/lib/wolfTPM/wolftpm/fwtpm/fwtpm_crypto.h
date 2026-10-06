@@ -1,8 +1,8 @@
 /* fwtpm_crypto.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -116,7 +116,7 @@ TPM_RC FwGenerateEccKey(WC_RNG* rng,
 #ifdef HAVE_ECC
 TPM_RC FwDeriveEccPrimaryKey(TPMI_ALG_HASH nameAlg,
     const byte* seed, const byte* hashUnique, int hashUniqueSz,
-    UINT16 curveId, TPMS_ECC_POINT* pubOut,
+    UINT16 curveId, WC_RNG* rng, TPMS_ECC_POINT* pubOut,
     byte* privKeyDer, int privKeyDerBufSz, int* privKeyDerSz);
 #endif
 
@@ -200,6 +200,15 @@ TPM_RC FwVerifyMldsaMessage(TPMI_MLDSA_PARAMETER_SET parameterSet,
     const byte* msg, int msgSz,
     const byte* sig, int sigSz);
 
+TPM_RC FwSignMldsaMu(WC_RNG* rng,
+    TPMI_MLDSA_PARAMETER_SET parameterSet,
+    const byte* seedXi, const byte* mu, int muSz,
+    TPM2B_MLDSA_SIGNATURE* sigOut);
+
+TPM_RC FwVerifyMldsaMu(TPMI_MLDSA_PARAMETER_SET parameterSet,
+    const TPM2B_PUBLIC_KEY_MLDSA* pubIn,
+    const byte* mu, int muSz, const byte* sig, int sigSz);
+
 TPM_RC FwSignMldsaHash(WC_RNG* rng,
     TPMI_MLDSA_PARAMETER_SET parameterSet,
     const byte* seedXi,
@@ -218,8 +227,10 @@ TPM_RC FwVerifyMldsaHash(TPMI_MLDSA_PARAMETER_SET parameterSet,
 
 /* --- Key wrapping --- */
 
-int FwDeriveWrapKey(const FWTPM_Object* parent,
-    byte* aesKey, byte* aesIV);
+int FwComputePublicName(TPMT_PUBLIC* pub, TPM2B_NAME* name);
+
+int FwDeriveWrapKey(const FWTPM_Object* parent, const TPM2B_NAME* name,
+    byte* aesKey, byte* macKey);
 
 int FwMarshalSensitive(byte* buf, int bufSz,
     UINT16 sensitiveType, const TPM2B_AUTH* auth,
@@ -233,24 +244,33 @@ int FwUnmarshalSensitive(const byte* buf, int bufSz,
     UINT16* sensitiveType, TPM2B_AUTH* auth,
     byte* privKeyDer, int* privKeyDerSz);
 
-int FwWrapPrivate(FWTPM_Object* parent,
+int FwWrapPrivate(FWTPM_Object* parent, WC_RNG* rng,
+    const TPM2B_NAME* name,
     UINT16 sensitiveType, const TPM2B_AUTH* auth,
     const byte* privKeyDer, int privKeyDerSz,
     TPM2B_PRIVATE* outPriv);
 
-int FwUnwrapPrivate(FWTPM_Object* parent,
+int FwUnwrapPrivate(FWTPM_Object* parent, const TPM2B_NAME* name,
     const TPM2B_PRIVATE* inPriv,
     UINT16* sensitiveType, TPM2B_AUTH* auth,
     byte* privKeyDer, int* privKeyDerSz);
 
 /* --- Context blob wrap/unwrap (ContextSave/Load) --- */
 
-int FwWrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
+#ifndef FWTPM_NO_CONTEXT
+/* Domain-separation tag bound into the blob MAC so an object blob cannot be
+ * verified through the session path or vice versa. */
+#define FWTPM_CTX_TYPE_SESSION 0x01
+#define FWTPM_CTX_TYPE_OBJECT  0x02
+#define FWTPM_CTX_TYPE_SEQUENCE 0x03
+
+int FwWrapContextBlob(FWTPM_CTX* ctx, UINT64 seq, byte ctxType,
     const byte* plain, int plainSz,
     byte* out, int outBufSz, int* outSz);
-int FwUnwrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
+int FwUnwrapContextBlob(FWTPM_CTX* ctx, UINT64 seq, byte ctxType,
     const byte* in, int inSz,
     byte* out, int outBufSz, int* outSz);
+#endif /* !FWTPM_NO_CONTEXT */
 
 /* --- Seed encrypt/decrypt --- */
 
@@ -303,7 +323,7 @@ int FwGetRsaHashOid(UINT16 hashAlg);
 int FwImportEccKeyFromDer(const FWTPM_Object* obj, ecc_key* key);
 int FwImportEccPubFromPublic(const TPMT_PUBLIC* pub, ecc_key* key);
 int FwImportEccKey(const FWTPM_Object* obj, ecc_key* key);
-int FwEccSharedPoint(ecc_key* priv, ecc_key* peer,
+int FwEccSharedPoint(ecc_key* priv, ecc_key* peer, WC_RNG* rng,
     byte* xBuf, word32* xSz, byte* yBuf, word32* ySz);
 #endif /* HAVE_ECC */
 
@@ -351,6 +371,7 @@ TPM_RC FwCredentialDeriveKeys(
 TPM_RC FwCredentialWrap(
     const byte* symKey, int symKeySz,
     const byte* hmacKey, int hmacKeySz,
+    TPMI_ALG_HASH nameAlg,
     const byte* credential, UINT16 credSz,
     const byte* name, int nameSz,
     byte* encCred, word32* encCredSz,
@@ -359,6 +380,7 @@ TPM_RC FwCredentialWrap(
 TPM_RC FwCredentialUnwrap(
     const byte* symKey, int symKeySz,
     const byte* hmacKey, int hmacKeySz,
+    TPMI_ALG_HASH nameAlg,
     const byte* blobBuf, UINT16 blobSz,
     const byte* name, int nameSz,
     byte* credOut, int credBufSz, UINT16* credSzOut);

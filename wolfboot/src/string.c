@@ -33,6 +33,7 @@
 #endif
 
 #include <stddef.h>
+#include <stdint.h>
 #if !defined(TARGET_library) && defined(__STDC_HOSTED__) && __STDC_HOSTED__ \
     && !defined(__CCRX__)
 #include <string.h>
@@ -88,9 +89,29 @@ int isalpha(int c)
 void *memset(void *s, int c, size_t n)
 {
     unsigned char *d = (unsigned char *)s;
+    unsigned char uc = (unsigned char)c;
+
+#ifdef FAST_MEMCPY
+    /* Write bytes until the pointer is 4-byte aligned */
+    while (n > 0 && ((uintptr_t)d & 3U)) {
+        *d++ = uc;
+        n--;
+    }
+
+    if (n >= 4) {
+        uint32_t w = ((uint32_t)uc) | ((uint32_t)uc << 8) |
+                     ((uint32_t)uc << 16) | ((uint32_t)uc << 24);
+        volatile uint32_t *dw = (volatile uint32_t *)d;
+        while (n >= 4) {
+            *dw++ = w;
+            n -= 4;
+        }
+        d = (unsigned char *)dw;
+    }
+#endif /* FAST_MEMCPY */
 
     while (n--) {
-        *d++ = (unsigned char)c;
+        *d++ = uc;
     }
 
     return s;
@@ -257,6 +278,15 @@ size_t strlen(const char *s)
  #define RAMFUNCTION
  #pragma section FRAM
 #endif
+#if defined(__TMS320C28XX__)
+ /* On the C28x, the C-runtime device init copies the .TI.ramfunc section into
+  * RAM using memcpy() at startup.  memcpy() must therefore stay in flash - if
+  * it were a RAMFUNCTION it would live in the not-yet-copied .TI.ramfunc region
+  * and the copy would call an uninitialized RAM address, ITRAPing on a cold
+  * flash boot (a JTAG load masks this by pre-copying every section). */
+ #undef  RAMFUNCTION
+ #define RAMFUNCTION
+#endif
 void RAMFUNCTION *memcpy(void *dst, const void *src, size_t n)
 {
     size_t i;
@@ -342,7 +372,8 @@ static void uart_writenum_emit(char *buf, int bufsize, int i, int sz,
     uart_write(buf, i + sz);
 }
 
-void uart_writenum(int num, int base, int zeropad, int maxdigits)
+void uart_writenum(int num, int base, int zeropad, int maxdigits,
+    int is_signed)
 {
     int i = 0, sz = 0;
     /* Sized for decimal (3 chars/byte) plus sign -- wider than hex. */
@@ -351,7 +382,7 @@ void uart_writenum(int num, int base, int zeropad, int maxdigits)
     if (maxdigits == 0)
         maxdigits = 8;
     memset(buf, 0, sizeof(buf));
-    if (base == 10 && num < 0) {
+    if (base == 10 && is_signed && num < 0) {
         buf[i++] = '-';
         /* Negate in unsigned space so INT_MIN does not overflow. */
         val = 0U - (unsigned int)num;
@@ -409,7 +440,7 @@ static void uart_writenum_ll(unsigned long long val, int is_negative,
 void uart_vprintf(const char* fmt, va_list argp)
 {
     char* fmtp = (char*)fmt;
-    int zeropad, maxdigits, precision, leftjust, islong;
+    int zeropad, maxdigits, precision, leftjust, islong, iszl;
     while (fmtp != NULL && *fmtp != '\0') {
         /* print non formatting characters */
         if (*fmtp != '%') {
@@ -419,7 +450,7 @@ void uart_vprintf(const char* fmt, va_list argp)
         fmtp++; /* skip % */
 
         /* find formatters */
-        zeropad = maxdigits = leftjust = islong = 0;
+        zeropad = maxdigits = leftjust = islong = iszl = 0;
         precision = -1; /* -1 = not specified */
         /* check for left-justify flag */
         if (*fmtp == '-') {
@@ -430,6 +461,11 @@ void uart_vprintf(const char* fmt, va_list argp)
             if (*fmtp == '*') {
                 /* width from argument */
                 maxdigits = va_arg(argp, int);
+                if (maxdigits < 0) {
+                    /* F-11048: a negative width would become a huge
+                     * size_t in the zero-pad memset below. */
+                    maxdigits = 0;
+                }
                 fmtp++;
             }
             else if (*fmtp >= '0' && *fmtp <= '9') {
@@ -460,7 +496,8 @@ void uart_vprintf(const char* fmt, va_list argp)
                 fmtp++;
             }
             else if (*fmtp == 'z') {
-                /* auto type - skip */
+                /* size_t - consume as long */
+                iszl = 1;
                 fmtp++;
             }
             else {
@@ -498,11 +535,38 @@ void uart_vprintf(const char* fmt, va_list argp)
                     }
                     uart_writenum_ll(val, is_neg, 10, zeropad, maxdigits);
                 }
+                else if (islong == 1 || iszl) {
+                    /* %ld / %lu / %zd / %zu: long is 64-bit here */
+                    int is_neg = 0;
+                    unsigned long long val;
+                    if (*fmtp != 'u') {
+                        long sl = va_arg(argp, long);
+                        if (sl < 0) {
+                            is_neg = 1;
+                            val = 0ULL - (unsigned long long)sl;
+                        }
+                        else {
+                            val = (unsigned long long)sl;
+                        }
+                    }
+                    else {
+                        val = (unsigned long long)va_arg(argp,
+                            unsigned long);
+                    }
+                    uart_writenum_ll(val, is_neg, 10, zeropad, maxdigits);
+                }
                 else
             #endif
                 {
-                    int n = (int)va_arg(argp, int);
-                    uart_writenum(n, 10, zeropad, maxdigits);
+                    int n;
+                    if (*fmtp == 'u') {
+                        n = (int)va_arg(argp, unsigned int);
+                        uart_writenum(n, 10, zeropad, maxdigits, 0);
+                    }
+                    else {
+                        n = (int)va_arg(argp, int);
+                        uart_writenum(n, 10, zeropad, maxdigits, 1);
+                    }
                 }
                 break;
             }
@@ -519,11 +583,31 @@ void uart_vprintf(const char* fmt, va_list argp)
                         va_arg(argp, unsigned long long);
                     uart_writenum_ll(val, 0, 16, zeropad, maxdigits);
                 }
+                else if (islong == 1 || iszl || *fmtp == 'p') {
+                    /* %lx / %zx / %p: consume at the type's natural width
+                     * via va_arg, then widen to 64 bits for the printer */
+                    unsigned long long val;
+                    if (*fmtp == 'p') {
+                        val = (unsigned long long)(uintptr_t)
+                            va_arg(argp, void *);
+                    }
+                    else {
+                        val = (unsigned long long)va_arg(argp,
+                            unsigned long);
+                    }
+                    uart_writenum_ll(val, 0, 16, zeropad, maxdigits);
+                }
                 else
             #endif
                 {
-                    int n = (int)va_arg(argp, int);
-                    uart_writenum(n, 16, zeropad, maxdigits);
+                    int n;
+                    if (*fmtp == 'p') {
+                        n = (int)(uintptr_t)va_arg(argp, void *);
+                    }
+                    else {
+                        n = (int)va_arg(argp, int);
+                    }
+                    uart_writenum(n, 16, zeropad, maxdigits, 0);
                 }
                 break;
             }
@@ -570,7 +654,7 @@ void uart_vprintf(const char* fmt, va_list argp)
 
                 /* integer part */
                 ipart = (unsigned int)val;
-                uart_writenum((int)ipart, 10, 0, 0);
+                uart_writenum((int)ipart, 10, 0, 0, 0);
 
                 /* fractional part */
                 if (prec > 0) {

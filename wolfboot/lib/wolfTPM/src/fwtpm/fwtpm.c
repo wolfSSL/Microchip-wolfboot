@@ -1,8 +1,8 @@
 /* fwtpm.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -22,6 +22,7 @@
 #endif
 
 #include <wolftpm/fwtpm/fwtpm.h>
+#include <wolftpm/fwtpm/fwtpm_command.h>
 #include <wolftpm/fwtpm/fwtpm_nv.h>
 #include <string.h>
 
@@ -29,8 +30,12 @@ int FWTPM_Init(FWTPM_CTX* ctx)
 {
     int rc;
     int rngInit = 0;
+    int wcInit = 0;
     FWTPM_NV_HAL savedNvHal;
     struct FWTPM_CLOCK_HAL_S savedClockHal;
+#ifndef FWTPM_NO_PP
+    struct FWTPM_PP_HAL_S savedPpHal;
+#endif
 #ifdef WOLFTPM_FWTPM_TIS
     FWTPM_TIS_HAL savedTisHal;
 #endif
@@ -42,6 +47,9 @@ int FWTPM_Init(FWTPM_CTX* ctx)
     /* Save any pre-configured HALs before zeroing context */
     XMEMCPY(&savedNvHal, &ctx->nvHal, sizeof(savedNvHal));
     XMEMCPY(&savedClockHal, &ctx->clockHal, sizeof(savedClockHal));
+#ifndef FWTPM_NO_PP
+    XMEMCPY(&savedPpHal, &ctx->ppHal, sizeof(savedPpHal));
+#endif
 #ifdef WOLFTPM_FWTPM_TIS
     XMEMCPY(&savedTisHal, &ctx->tisHal, sizeof(savedTisHal));
 #endif
@@ -55,6 +63,11 @@ int FWTPM_Init(FWTPM_CTX* ctx)
     if (savedClockHal.get_ms != NULL) {
         XMEMCPY(&ctx->clockHal, &savedClockHal, sizeof(savedClockHal));
     }
+#ifndef FWTPM_NO_PP
+    if (savedPpHal.get_pp != NULL) {
+        XMEMCPY(&ctx->ppHal, &savedPpHal, sizeof(savedPpHal));
+    }
+#endif
 #ifdef WOLFTPM_FWTPM_TIS
     if (savedTisHal.init != NULL) {
         XMEMCPY(&ctx->tisHal, &savedTisHal, sizeof(savedTisHal));
@@ -74,12 +87,14 @@ int FWTPM_Init(FWTPM_CTX* ctx)
     /* Initialize wolfCrypt RNG */
     rc = wolfCrypt_Init();
     if (rc == 0) {
+        wcInit = 1;
         rc = wc_InitRng(&ctx->rng);
         if (rc == 0) {
             rngInit = 1;
         }
     }
 
+#ifndef FWTPM_NO_CONTEXT
     /* Generate per-boot context protection key (volatile only) for
      * ContextSave/ContextLoad HMAC + AES-CFB session blob protection. */
     if (rc == 0) {
@@ -89,6 +104,7 @@ int FWTPM_Init(FWTPM_CTX* ctx)
             ctx->ctxProtectKeyValid = 1;
         }
     }
+#endif
 
     /* Initialize NV storage - loads existing state or creates fresh seeds */
 #ifndef FWTPM_NO_NV
@@ -117,7 +133,9 @@ int FWTPM_Init(FWTPM_CTX* ctx)
         if (rngInit) {
             wc_FreeRng(&ctx->rng);
         }
-        wolfCrypt_Cleanup();
+        if (wcInit) {
+            wolfCrypt_Cleanup();
+        }
     }
 
     return rc;
@@ -137,6 +155,11 @@ int FWTPM_Cleanup(FWTPM_CTX* ctx)
 #else
     rc = TPM_RC_SUCCESS;
 #endif
+
+    /* Release transient objects, sessions, and hash/sign sequence slots first.
+     * ForceZero alone would drop the live wc_HashAlg / Hmac contexts they own,
+     * leaking their heap allocations under WOLFTPM_SMALL_STACK. */
+    FWTPM_ResetCommandClient(ctx);
 
     wc_FreeRng(&ctx->rng);
     wolfCrypt_Cleanup();
@@ -174,5 +197,18 @@ UINT64 FWTPM_Clock_GetMs(FWTPM_CTX* ctx)
     }
     return now + ctx->clockOffset;
 }
+
+#ifndef FWTPM_NO_PP
+int FWTPM_PP_SetHAL(FWTPM_CTX* ctx,
+    int (*get_pp)(void* halCtx), void* halCtx)
+{
+    if (ctx == NULL) {
+        return BAD_FUNC_ARG;
+    }
+    ctx->ppHal.get_pp = get_pp;
+    ctx->ppHal.ctx = halCtx;
+    return 0;
+}
+#endif /* !FWTPM_NO_PP */
 
 #endif /* WOLFTPM_FWTPM */

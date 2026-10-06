@@ -326,6 +326,18 @@ my @slhdsa_shake_256f = (2, 16, 840, 1, 101, 3, 4, 3, 31);
 my @hss_lms = ( 1, 2, 840, 113549, 1, 9, 16, 3, 17 );
 my @xmss = ( 1, 3, 6, 1, 5, 5, 7, 6, 34 );
 my @xmssmt = ( 1, 3, 6, 1, 5, 5, 7, 6, 35 );
+# FrodoKEM / eFrodoKEM key OIDs (ISO/IEC 18033-2, arc 1.0.18033.2.2.7.x).
+# The old-scheme byte sums (434..441) collide with the SLH-DSA key OIDs, so an
+# add_sum offset gives them distinct old-scheme values (100434..100441); the new
+# XOR-hash scheme has no collision. Only 976/1344 are standardised (no 640).
+my @frodokem_976_shake  = ( 1, 0, 18033, 2, 2, 7, 1 );
+my @frodokem_1344_shake = ( 1, 0, 18033, 2, 2, 7, 2 );
+my @efrodokem_976_shake  = ( 1, 0, 18033, 2, 2, 7, 3 );
+my @efrodokem_1344_shake = ( 1, 0, 18033, 2, 2, 7, 4 );
+my @frodokem_976_aes  = ( 1, 0, 18033, 2, 2, 7, 5 );
+my @frodokem_1344_aes = ( 1, 0, 18033, 2, 2, 7, 6 );
+my @efrodokem_976_aes  = ( 1, 0, 18033, 2, 2, 7, 7 );
+my @efrodokem_1344_aes = ( 1, 0, 18033, 2, 2, 7, 8 );
 
 my @keys = (
     { name => "ANON",                 oid => \@anon            },
@@ -363,6 +375,14 @@ my @keys = (
     { name => "HSS_LMS",              oid => \@hss_lms         },
     { name => "XMSS",                 oid => \@xmss            },
     { name => "XMSSMT",               oid => \@xmssmt          },
+    { name => "FRODOKEM_976_SHAKE",   oid => \@frodokem_976_shake,   add_sum => 100000 },
+    { name => "FRODOKEM_1344_SHAKE",  oid => \@frodokem_1344_shake,  add_sum => 100000 },
+    { name => "EFRODOKEM_976_SHAKE",  oid => \@efrodokem_976_shake,  add_sum => 100000 },
+    { name => "EFRODOKEM_1344_SHAKE", oid => \@efrodokem_1344_shake, add_sum => 100000 },
+    { name => "FRODOKEM_976_AES",     oid => \@frodokem_976_aes,     add_sum => 100000 },
+    { name => "FRODOKEM_1344_AES",    oid => \@frodokem_1344_aes,    add_sum => 100000 },
+    { name => "EFRODOKEM_976_AES",    oid => \@efrodokem_976_aes,    add_sum => 100000 },
+    { name => "EFRODOKEM_1344_AES",   oid => \@efrodokem_1344_aes,   add_sum => 100000 },
 );
 
 print_sum_enum("Key", "k", \@keys);
@@ -928,6 +948,7 @@ my @eku_ocsp_sign = ( 1, 3, 6, 1, 5, 5, 7, 3, 9 );
 my @eku_ssh_client_auth = ( 1, 3, 6, 1, 5, 5, 7, 3, 21 );
 my @eku_ssh_mscl = ( 1, 3, 6, 1, 4, 1, 311, 20, 2, 2 );
 my @eku_ssh_kp_client_auth = ( 1, 3, 6, 1, 5, 2, 3, 4 );
+my @eku_ssh_server_auth = ( 1, 3, 6, 1, 5, 5, 7, 3, 22 );
 
 my @ekus = (
     { name => "EKU_ANY",                oid => \@eku_any                },
@@ -940,6 +961,7 @@ my @ekus = (
     { name => "EKU_SSH_CLIENT_AUTH",    oid => \@eku_ssh_client_auth    },
     { name => "EKU_SSH_MSCL",           oid => \@eku_ssh_mscl           },
     { name => "EKU_SSH_KP_CLIENT_AUTH", oid => \@eku_ssh_kp_client_auth },
+    { name => "EKU_SSH_SERVER_AUTH",    oid => \@eku_ssh_server_auth    },
 );
 
 print_sum_enum("ExtKeyUsage", "_OID", \@ekus);
@@ -1199,6 +1221,7 @@ my @p7t_encrypted_data = ( 1, 2, 840, 113549, 1, 7, 6 );
 my @p7t_compressed_data = ( 1, 2, 840, 113549, 1, 9, 16, 1, 9 );
 my @p7t_firmware_pkg_data = ( 1, 2, 840, 113549, 1, 9, 16, 1, 16 );
 my @p7t_auth_env_data = ( 1, 2, 840, 113549, 1, 9, 16, 1, 23 );
+my @p7t_tstinfo_data = ( 1, 2, 840, 113549, 1, 9, 16, 1, 4 );
 my @p7t_encrypted_key_package = ( 2, 16, 840, 1, 101, 2, 1, 2, 78, 2 );
 
 my @pkcs7_types = (
@@ -1212,6 +1235,7 @@ my @pkcs7_types = (
     { name => "ENCRYPTED_DATA",             oid => \@p7t_encrypted_data     },
     { name => "FIRMWARE_PKG_DATA",          oid => \@p7t_firmware_pkg_data  },
     { name => "AUTH_ENVELOPED_DATA",        oid => \@p7t_auth_env_data      },
+    { name => "TSTINFO_DATA",               oid => \@p7t_tstinfo_data       },
     { name => "ENCRYPTED_KEY_PACKAGE",      oid => \@p7t_encrypted_key_package },
 );
 
@@ -1255,6 +1279,7 @@ my @name_title = ( 2, 5, 4, 9, 12 );
 my @name_description = ( 2, 5, 4, 13 );
 my @name_business_cat = ( 2, 5, 4, 15 );
 my @name_postal_code = ( 2, 5, 4, 17 );
+my @name_x500_unique_id = ( 2, 5, 4, 45 );
 my @name_pkcs9_email = ( 1, 2, 840, 113549, 1, 9, 1 );;
 my @name_rfc822_mailbox = ( 0, 9, 2342, 19200300, 100, 1, 3 );
 my @name_fav_drink = ( 0, 9, 2342, 19200300, 100, 1, 5 );
@@ -1285,6 +1310,7 @@ my @cert_names = (
                                             same => 1                         },
     { name => "WC_NAME_INITIALIS",          oid => \@csr_initials,
                                             same => 1                         },
+    { name => "WC_NAME_X500_UNIQUE_ID",     oid => \@name_x500_unique_id      },
     { name => "WC_NAME_EMAIL_ADDRESS",      oid => \@name_pkcs9_email         },
     { name => "WC_NAME_USER_ID",            oid => \@csr_user_id,
                                             same => 1                         },

@@ -1,0 +1,383 @@
+name: MISRA C 2012
+
+# MISRA C:2012 compliance check via cppcheck --addon=misra.
+# Reports violations via GitHub Issue (auto-created/updated).
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  misra-cppcheck:
+    name: MISRA C 2012 (cppcheck)
+    runs-on: ubuntu-24.04
+
+    env:
+      WOLFSSL_REF: ac01707f552c611fbd135cc723b2682b3e7f80f2
+
+    permissions:
+      issues: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install cppcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck autoconf automake libtool
+        CPPCHECK_VERSION=$(cppcheck --version)
+        if [ "$CPPCHECK_VERSION" != "Cppcheck 2.13.0" ]; then
+          echo "::error::expected Cppcheck 2.13.0, got $CPPCHECK_VERSION"
+          exit 1
+        fi
+
+    - name: Cache wolfSSL
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-ubuntu-24.04-v6-lms-hpke-${{ env.WOLFSSL_REF }}
+
+    - name: Build wolfSSL
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git init wolfssl
+        cd wolfssl
+        git remote add origin https://github.com/wolfSSL/wolfssl.git
+        git fetch --depth 1 origin "$WOLFSSL_REF"
+        git checkout --detach FETCH_HEAD
+        ./autogen.sh
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-chacha --enable-poly1305 \
+                    --enable-mldsa --enable-lms --enable-hpke \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    - name: Run MISRA C 2012 check
+      id: misra-analysis
+      run: |
+        # Define wolfSSL capability inputs so cppcheck checks the full
+        # code path instead of enumerating thousands of wolfSSL platform #ifdef
+        # combinations (which takes 3+ hours with --force).
+        #
+        # wolfSSL algorithm/feature macros (match our ./configure flags):
+        #   Signing: ECC, Ed25519, Ed448, RSA-PSS, ML-DSA
+        #   Encryption: AES-GCM, AES-CCM, ChaCha20-Poly1305
+        #   MAC: HMAC (enabled by default, NO_HMAC must NOT be defined)
+        #   Hashing: SHA-384, SHA-512
+        #   Key distribution: AES Key Wrap, HKDF, ECDH
+        #
+        # Let settings.h derive wolfCOSE's internal feature macros exactly as
+        # a full production build does. Only true user inputs are supplied.
+        cc -std=c99 -Wall -Wextra -Wpedantic -Werror \
+           -DWOLFCOSE_FLOAT -DWOLFCOSE_ENABLE_EXT_SIGN \
+           -DWOLFCOSE_EXPERIMENTAL \
+           -DWOLFCOSE_ENABLE_HPKE_0_ENCRYPT \
+           -DWOLFCOSE_ENABLE_HPKE_0_DECRYPT \
+           -DWOLFCOSE_ENABLE_HPKE_0_KE_ENCRYPT \
+           -DWOLFCOSE_ENABLE_HPKE_0_KE_DECRYPT \
+           -DWOLFCOSE_ENABLE_EAT_PSA \
+           -DWOLFCOSE_ENABLE_EAT_PSA_CURRENT \
+           -DWOLFCOSE_ENABLE_EAT_PSA_SIGN1 \
+           -DWOLFCOSE_ENABLE_EAT_PSA_MAC0 \
+           -DWOLFCOSE_ENABLE_EAT_PSA_ISSUE \
+           -DWOLFCOSE_ENABLE_EAT_PSA_SIGN1_ISSUE \
+           -DWOLFCOSE_ENABLE_EAT_PSA_MAC0_ISSUE \
+           -DWOLFCOSE_ENABLE_EAT_PSA_LEGACY \
+           -DWOLFCOSE_ENABLE_EAT_PSA_UEID_RESOLVER \
+           -DWOLFCOSE_ENABLE_EAT_PSA_COMPONENT_ITERATOR \
+           -DWOLFCOSE_ENABLE_DEPRECATED_ALGS \
+           -I include -I "$HOME/wolfssl-install/include" \
+           -fsyntax-only src/wolfcose_eat_psa.c tests/misra_consumer.c
+
+        set +e
+        cppcheck --addon=misra \
+                 --enable=all \
+                 --suppress=unmatchedSuppression \
+                 --suppress=missingIncludeSystem \
+                 --suppress=unusedFunction \
+                 --suppress=*:$HOME/wolfssl-install/include/* \
+                 -DHAVE_ECC \
+                 -DHAVE_ED25519 \
+                 -DHAVE_ED448 \
+                 -DWC_RSA_PSS \
+                 -DWOLFSSL_HAVE_MLDSA \
+                 -DWOLFSSL_HAVE_LMS \
+                 -DHAVE_AESGCM \
+                 -DHAVE_AESCCM \
+                 -DHAVE_CHACHA \
+                 -DHAVE_POLY1305 \
+                 -DWOLFSSL_SHA384 \
+                 -DWOLFSSL_SHA512 \
+                 -DHAVE_AES_KEYWRAP \
+                 -DWOLFSSL_AES_DIRECT \
+                 -DHAVE_HKDF \
+                 -DHAVE_AES_CBC \
+                 -DHAVE_HPKE \
+                 -DWOLFCOSE_ENABLE_DEPRECATED_ALGS \
+                 -DWOLFCOSE_ENABLE_EAT_PSA \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_CURRENT \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_SIGN1 \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_MAC0 \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_ISSUE \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_SIGN1_ISSUE \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_MAC0_ISSUE \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_LEGACY \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_UEID_RESOLVER \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_COMPONENT_ITERATOR \
+                 -DWOLFCOSE_FLOAT \
+                 -DWOLFCOSE_ENABLE_EXT_SIGN \
+                 -DWOLFCOSE_EXPERIMENTAL \
+                 -DWOLFCOSE_ENABLE_HPKE_0_ENCRYPT \
+                 -DWOLFCOSE_ENABLE_HPKE_0_DECRYPT \
+                 -DWOLFCOSE_ENABLE_HPKE_0_KE_ENCRYPT \
+                 -DWOLFCOSE_ENABLE_HPKE_0_KE_DECRYPT \
+                 -DWOLFCOSE_ENABLE_DEPRECATED_ALGS \
+                 -I include -I src -I $HOME/wolfssl-install/include \
+                 src/*.c \
+                 tests/misra_consumer.c \
+                 2>&1 | tee misra-report-raw.txt
+        CPPCHECK_STATUS=${PIPESTATUS[0]}
+        set -e
+        if [ "$CPPCHECK_STATUS" -ne 0 ]; then
+          echo "::error::cppcheck failed with status $CPPCHECK_STATUS"
+          exit "$CPPCHECK_STATUS"
+        fi
+        # Keep only MISRA findings in wolfCOSE code. Generic cppcheck findings
+        # are enforced by static-analysis.yml.
+        grep -E '^(src/|include/wolfcose/).*\[misra-c2012-[0-9]+\.[0-9]+\]' \
+          misra-report-raw.txt > misra-report-all.txt || true
+        grep -E '^tests/misra_consumer\.c:.*\[misra-c2012-[0-9]+\.[0-9]+\]' \
+          misra-report-raw.txt > misra-report-consumer.txt || true
+        # A broken analyzer must never be mistaken for a clean report.
+        if grep -q 'error:.*\[preprocessorErrorDirective\]\|Failed to execute addon\|Bailing out' misra-report-raw.txt; then
+          echo "::error::cppcheck encountered tool errors; review raw report"
+          exit 1
+        fi
+
+        set +e
+        python3 scripts/classify_misra.py \
+          --input misra-report-all.txt \
+          --unresolved misra-report.txt \
+          --deviated misra-report-deviated.txt \
+          --limitations misra-report-limitations.txt
+        CLASSIFIER_STATUS=$?
+        set -e
+        echo "$CLASSIFIER_STATUS" > misra-classifier-status.txt
+        if [ "$CLASSIFIER_STATUS" -gt 1 ]; then
+          echo "::error::MISRA classifier failed with status $CLASSIFIER_STATUS"
+          exit "$CLASSIFIER_STATUS"
+        fi
+        if [ -s misra-report-consumer.txt ]; then
+          echo "::error::MISRA consumer harness has violations"
+          cat misra-report-consumer.txt
+          exit 1
+        fi
+        if [ "$CLASSIFIER_STATUS" -ne 0 ]; then
+          exit "$CLASSIFIER_STATUS"
+        fi
+
+    - name: MISRA report summary
+      if: always()
+      run: |
+        echo "## MISRA C 2012 Report" >> $GITHUB_STEP_SUMMARY
+        if [ ! -f misra-classifier-status.txt ]; then
+          echo "**MISRA analysis did not reach classification.**" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+        CLASSIFIER_STATUS=$(cat misra-classifier-status.txt)
+        if [ "$CLASSIFIER_STATUS" != "0" ] && \
+           [ "$CLASSIFIER_STATUS" != "1" ]; then
+          echo "**MISRA classifier failed with status ${CLASSIFIER_STATUS}.**" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+        CONSUMER=$(wc -l < misra-report-consumer.txt)
+        echo "Analyzer-consumer violations: ${CONSUMER}." >> $GITHUB_STEP_SUMMARY
+        if [ "$CONSUMER" -ne 0 ]; then
+          echo "**MISRA consumer analysis failed.**" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+        if [ -s misra-report.txt ]; then
+          TOTAL=$(wc -l < misra-report.txt)
+          echo "**Total violations: ${TOTAL}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -50 misra-report.txt >> $GITHUB_STEP_SUMMARY
+          if [ "$TOTAL" -gt 50 ]; then
+            echo "... (${TOTAL} total, showing first 50)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit 1
+        else
+          DEVIATED=$(wc -l < misra-report-deviated.txt)
+          LIMITATIONS=$(wc -l < misra-report-limitations.txt)
+          echo "No undeviated MISRA violations found." >> $GITHUB_STEP_SUMMARY
+          echo "Approved deviations observed: ${DEVIATED}." >> $GITHUB_STEP_SUMMARY
+          echo "Analyzer limitations resolved with source evidence: ${LIMITATIONS}." >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Upload MISRA report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: misra-compliance-report
+        path: |
+          misra-report-raw.txt
+          misra-report-all.txt
+          misra-report.txt
+          misra-report-deviated.txt
+          misra-report-limitations.txt
+          misra-report-consumer.txt
+          misra-classifier-status.txt
+
+    - name: Report results via GitHub Issue
+      if: always() && github.event_name == 'push'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const title = 'MISRA C 2012 Compliance Report';
+          const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+          let body = '';
+          let hasViolations = false;
+          let deviationCount = 0;
+
+          let classifierStatus = '';
+          try {
+            classifierStatus = fs.readFileSync(
+              'misra-classifier-status.txt', 'utf8').trim();
+          } catch (e) {
+            core.setFailed(
+              'MISRA classification did not complete; issue left unchanged');
+            return;
+          }
+          if ((classifierStatus !== '0') && (classifierStatus !== '1')) {
+            core.setFailed(
+              `MISRA classifier failed with status ${classifierStatus}; ` +
+              'issue left unchanged');
+            return;
+          }
+
+          try {
+            const deviations = fs.readFileSync('misra-report-deviated.txt', 'utf8').trim();
+            deviationCount = deviations.length > 0 ? deviations.split('\n').length : 0;
+          } catch (e) {
+            core.setFailed(
+              'MISRA deviation report is missing; issue left unchanged');
+            return;
+          }
+
+          try {
+            const consumerReport = fs.readFileSync(
+              'misra-report-consumer.txt', 'utf8').trim();
+            if (consumerReport.length > 0) {
+              core.setFailed(
+                'MISRA consumer analysis failed; issue left unchanged');
+              return;
+            }
+          } catch (e) {
+            core.setFailed(
+              'MISRA consumer report is missing; issue left unchanged');
+            return;
+          }
+
+          try {
+            fs.readFileSync('misra-report-limitations.txt', 'utf8');
+          } catch (e) {
+            core.setFailed(
+              'MISRA analyzer-limitations report is missing; ' +
+              'issue left unchanged');
+            return;
+          }
+
+          try {
+            const report = fs.readFileSync('misra-report.txt', 'utf8').trim();
+            if (report.length > 0) {
+              const lines = report.split('\n');
+              hasViolations = true;
+              body = `## MISRA C 2012 Violations Found\n\n`;
+              body += `**Total violations: ${lines.length}**\n\n`;
+              body += `[Full workflow run](${runUrl})\n\n`;
+              body += '```\n';
+              body += lines.slice(0, 100).join('\n');
+              if (lines.length > 100) {
+                body += `\n... (${lines.length} total, showing first 100)`;
+              }
+              body += '\n```\n\n';
+              body += `*Updated: ${new Date().toISOString()}*`;
+            }
+          } catch (e) {
+            core.setFailed('MISRA report is missing; issue left unchanged');
+            return;
+          }
+
+          // Find existing issue
+          const issues = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'all',
+            labels: 'misra',
+            per_page: 10
+          });
+          const existing = issues.data.find(i => i.title === title);
+
+          if (hasViolations) {
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: body,
+                state: 'open'
+              });
+              core.info(`Updated issue #${existing.number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['misra']
+              });
+              core.info('Created new MISRA report issue');
+            }
+          } else {
+            // No undeviated violations; close the issue if it exists.
+            if (existing && existing.state === 'open') {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `No undeviated MISRA violations. Approved deviations observed: ${deviationCount}. [Workflow run](${runUrl})\n\n*${new Date().toISOString()}*`
+              });
+              core.info(`Closed issue #${existing.number}: no undeviated violations`);
+            }
+          }
+
+    - name: Fail if MISRA violations found
+      if: always()
+      run: |
+        if [ -s misra-report.txt ]; then
+          TOTAL=$(wc -l < misra-report.txt)
+          echo "MISRA check failed with ${TOTAL} violation(s)"
+          exit 1
+        fi

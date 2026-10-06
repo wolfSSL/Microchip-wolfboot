@@ -1,8 +1,8 @@
 /* spdm_nuvoton.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -71,6 +71,9 @@ int wolfSPDM_Nuvoton_GetStatus(
         status->spdmEnabled = 1;
         wolfSPDM_DebugPrint(ctx, "GET_STS_: SPDMOnly=%s (minimal response)\n",
             status->spdmOnlyLocked ? "LOCKED" : "unlocked");
+    }
+    else {
+        return WOLFSPDM_E_FRAMING;
     }
     return WOLFSPDM_SUCCESS;
 }

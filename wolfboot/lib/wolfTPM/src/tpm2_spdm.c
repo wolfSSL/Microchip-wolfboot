@@ -1,8 +1,8 @@
 /* tpm2_spdm.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -101,30 +101,31 @@ static int wolfTPM2_SPDM_TisIoCb(
 
     /* Ensure we have TPM locality */
     rc = TPM2_TIS_RequestLocality(tpmCtx, TPM_TIMEOUT_TRIES);
-    if (rc != TPM_RC_SUCCESS) {
-        return rc;
+    if (rc == TPM_RC_SUCCESS) {
+        /* Send through TIS FIFO and receive response */
+        rc = TPM2_TIS_SendCommand(tpmCtx, &packet);
     }
 
-    /* Send through TIS FIFO and receive response */
-    rc = TPM2_TIS_SendCommand(tpmCtx, &packet);
-    if (rc != TPM_RC_SUCCESS) {
-        return rc;
+    if (rc == TPM_RC_SUCCESS) {
+        /* Extract response size from header bytes [2..5] (big-endian).
+         * Both TPM headers and TCG SPDM binding headers store the total
+         * message size at this offset in the same format. */
+        XMEMCPY(&rspSz, &ioBuf[2], sizeof(UINT32));
+        rspSz = TPM2_Packet_SwapU32(rspSz);
+
+        if (wolfTPM2_SPDM_ValidateRspSz(rspSz, *rxSz, sizeof(ioBuf)) != 0) {
+            rc = -1;
+        }
     }
 
-    /* Extract response size from header bytes [2..5] (big-endian).
-     * Both TPM headers and TCG SPDM binding headers store the total
-     * message size at this offset in the same format. */
-    XMEMCPY(&rspSz, &ioBuf[2], sizeof(UINT32));
-    rspSz = TPM2_Packet_SwapU32(rspSz);
-
-    if (wolfTPM2_SPDM_ValidateRspSz(rspSz, *rxSz, sizeof(ioBuf)) != 0) {
-        return -1;
+    if (rc == TPM_RC_SUCCESS) {
+        XMEMCPY(rxBuf, ioBuf, rspSz);
+        *rxSz = rspSz;
     }
 
-    XMEMCPY(rxBuf, ioBuf, rspSz);
-    *rxSz = rspSz;
+    TPM2_ForceZero(ioBuf, sizeof(ioBuf));
 
-    return 0;
+    return rc;
 }
 #endif /* WOLFTPM_SPDM_TIS_IO */
 
@@ -156,31 +157,33 @@ static int wolfTPM2_SPDM_SwtpmIoCb(
     packet.size = (int)sizeof(ioBuf);
 
     rc = TPM2_SWTPM_SendCommand(tpmCtx, &packet);
-    if (rc != TPM_RC_SUCCESS) {
-        return rc;
+
+    if (rc == TPM_RC_SUCCESS) {
+        /* TPM2_SWTPM_SendCommand validated the received length against
+         * TPM2_HEADER_SIZE, so the size field below is present. */
+
+        /* TCG SPDM Binding header and TPM2 header both carry total size at
+         * bytes [2..5] big-endian. */
+        XMEMCPY(&rspSz, &ioBuf[2], sizeof(word32));
+        rspSz = TPM2_Packet_SwapU32(rspSz);
+
+        if (rspSz < TPM2_HEADER_SIZE) {
+            rc = -1;
+        }
+        else if (wolfTPM2_SPDM_ValidateRspSz(rspSz, *rxSz,
+                sizeof(ioBuf)) != 0) {
+            rc = -1;
+        }
     }
 
-    /* Lower-bound the read so we don't index uninitialized bytes if the
-     * peer mis-frames a too-short response. Header is 6 bytes minimum. */
-    if (packet.pos < TPM2_HEADER_SIZE) {
-        return -1;
+    if (rc == TPM_RC_SUCCESS) {
+        XMEMCPY(rxBuf, ioBuf, rspSz);
+        *rxSz = rspSz;
     }
 
-    /* TCG SPDM Binding header and TPM2 header both carry total size at
-     * bytes [2..5] big-endian. */
-    XMEMCPY(&rspSz, &ioBuf[2], sizeof(word32));
-    rspSz = TPM2_Packet_SwapU32(rspSz);
+    TPM2_ForceZero(ioBuf, sizeof(ioBuf));
 
-    if (rspSz < TPM2_HEADER_SIZE) {
-        return -1;
-    }
-    if (wolfTPM2_SPDM_ValidateRspSz(rspSz, *rxSz, sizeof(ioBuf)) != 0) {
-        return -1;
-    }
-
-    XMEMCPY(rxBuf, ioBuf, rspSz);
-    *rxSz = rspSz;
-    return 0;
+    return rc;
 }
 #endif /* WOLFTPM_SPDM_SWTPM_IO */
 

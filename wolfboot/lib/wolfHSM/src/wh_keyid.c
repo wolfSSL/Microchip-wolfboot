@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -35,6 +35,14 @@ whKeyId wh_KeyId_TranslateFromClient(uint16_t type, uint16_t clientId,
     }
 #endif
 
+#ifdef WOLFHSM_CFG_HWKEYSTORE
+    /* Convert hardware-only flag to TYPE=WH_KEYTYPE_HW. Checked after
+     * the wrapped flag so HW wins if a client sets both */
+    if ((reqId & WH_KEYID_CLIENT_HW_FLAG) != 0) {
+        type = WH_KEYTYPE_HW;
+    }
+#endif
+
     return WH_MAKE_KEYID(type, user, id);
 }
 
@@ -53,6 +61,13 @@ whKeyId wh_KeyId_TranslateToClient(whKeyId serverId)
     /* Convert TYPE=WRAPPED to wrapped flag */
     if (WH_KEYID_TYPE(serverId) == WH_KEYTYPE_WRAPPED) {
         clientId |= WH_KEYID_CLIENT_WRAPPED_FLAG;
+    }
+#endif
+
+#ifdef WOLFHSM_CFG_HWKEYSTORE
+    /* Convert TYPE=HW to hardware-only flag */
+    if (WH_KEYID_TYPE(serverId) == WH_KEYTYPE_HW) {
+        clientId |= WH_KEYID_CLIENT_HW_FLAG;
     }
 #endif
 

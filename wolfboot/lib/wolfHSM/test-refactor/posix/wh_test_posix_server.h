@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -45,5 +45,11 @@ int whTestPosix_Server_Cleanup(whServerContext* server);
  * same buffers the server publishes through.
  */
 whTransportMemConfig* whTestPosix_Server_GetTransportConfig(void);
+
+/*
+ * Verify the server's configured request-authorization callback was
+ * actually invoked. Skip when authentication is disabled.
+ */
+int whTestPosix_Server_VerifyAuthCallbacks(void);
 
 #endif /* WH_TEST_POSIX_SERVER_H_ */

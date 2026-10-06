@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -71,15 +71,19 @@
  * blank device (for example installing the MASTER_ECU_KEY or BOOT_MAC at
  * production) before any key-update authorization key exists; subsequent
  * in-field updates should use the spec-compliant wh_Client_SheLoadKey(). The
- * key is scoped to the calling client via the keyId USER field.
+ * key is scoped to the calling client via the keyId USER field, or to the
+ * shared global namespace when WOLFHSM_CFG_SHE_GLOBAL_KEYS is defined.
  *
  * @param[in] c Pointer to the client context.
  * @param[in] keyId SHE key slot to write (0-15, e.g. WH_SHE_MASTER_ECU_KEY_ID).
  * @param[in] flags SHE key protection flags to store with the key
  *                  (WH_SHE_FLAG_WRITE_PROTECT, WH_SHE_FLAG_BOOT_PROTECT, etc.).
  * @param[in] key Pointer to the key material to store.
- * @param[in] keySz Length of the key material in bytes (WH_SHE_KEY_SZ, 16).
- * @return int Returns 0 on success, or a negative error code on failure.
+ * @param[in] keySz Length of the key material in bytes. Must be exactly
+ *                  WH_SHE_KEY_SZ (16); any other length is rejected.
+ * @return int Returns 0 on success, WH_ERROR_BADARGS if @p c or @p key is NULL
+ *             or @p keySz is not WH_SHE_KEY_SZ, or a negative error code on
+ *             failure.
  */
 int wh_Client_ShePreProgramKey(whClientContext* c, whNvmId keyId,
     whNvmFlags flags, uint8_t* key, whNvmSize keySz);
@@ -191,6 +195,63 @@ int wh_Client_SheGetStatusResponse(whClientContext* c, uint8_t* sreg);
  * @return int Returns 0 on success, or a negative error code on failure.
  */
 int wh_Client_SheGetStatus(whClientContext* c, uint8_t* sreg);
+
+/** SHE identity functions */
+
+/**
+ * @brief Sends a request to read the SHE module identity (CMD_GET_ID).
+ *
+ * Sends an AUTOSAR SHE CMD_GET_ID request carrying a 16-byte challenge. The
+ * server returns the ECU UID, the status register, and a CMAC over the
+ * challenge, UID, and status register computed under the MASTER_ECU_KEY
+ * (slot 1). If the MASTER_ECU_KEY slot is empty the MAC is computed with an
+ * all-zero key, per the SHE spec.
+ *
+ * @param[in] c Pointer to the client context.
+ * @param[in] challenge Pointer to the challenge bytes.
+ * @param[in] challengeSz Length of @p challenge; must be at least
+ *                        WH_SHE_KEY_SZ (16).
+ * @return int Returns 0 on success, or a negative error code on failure.
+ */
+int wh_Client_SheGetIdRequest(whClientContext* c, uint8_t* challenge,
+    uint32_t challengeSz);
+
+/**
+ * @brief Receives the SHE module identity response (CMD_GET_ID).
+ *
+ * Consumes a CMD_GET_ID response and writes out the ECU UID, status register,
+ * and identity MAC.
+ *
+ * @param[in] c Pointer to the client context.
+ * @param[out] uid Buffer that receives the WH_SHE_UID_SZ (15) byte UID.
+ * @param[out] sreg Pointer to a byte that receives the status register value.
+ * @param[out] mac Buffer that receives the WH_SHE_KEY_SZ (16) byte identity MAC.
+ * @return int Returns 0 on success, WH_ERROR_NOTREADY if no response is
+ * available yet, or a negative error code on failure.
+ */
+int wh_Client_SheGetIdResponse(whClientContext* c, uint8_t* uid, uint8_t* sreg,
+    uint8_t* mac);
+
+/**
+ * @brief Reads the SHE module identity with a blocking call (CMD_GET_ID).
+ *
+ * Sends a CMD_GET_ID request with the supplied @p challenge and busy-polls for
+ * the response, writing the ECU UID, status register, and identity MAC to
+ * @p uid, @p sreg, and @p mac respectively. The MAC is
+ * CMAC(MASTER_ECU_KEY, challenge || uid || sreg), allowing a tester to verify
+ * the module's identity.
+ *
+ * @param[in] c Pointer to the client context.
+ * @param[in] challenge Pointer to the challenge bytes.
+ * @param[in] challengeSz Length of @p challenge; must be at least
+ *                        WH_SHE_KEY_SZ (16).
+ * @param[out] uid Buffer that receives the WH_SHE_UID_SZ (15) byte UID.
+ * @param[out] sreg Pointer to a byte that receives the status register value.
+ * @param[out] mac Buffer that receives the WH_SHE_KEY_SZ (16) byte identity MAC.
+ * @return int Returns 0 on success, or a negative error code on failure.
+ */
+int wh_Client_SheGetId(whClientContext* c, uint8_t* challenge,
+    uint32_t challengeSz, uint8_t* uid, uint8_t* sreg, uint8_t* mac);
 
 /** SHE key management functions */
 

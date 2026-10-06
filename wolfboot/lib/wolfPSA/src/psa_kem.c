@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE)
 
@@ -89,9 +89,11 @@ psa_status_t psa_encapsulate(psa_key_id_t key,
     wolfpsa_trace("psa_encapsulate(key=%u alg=0x%08x)",
                   (unsigned)key, (unsigned)alg);
 
-    /* --- Argument validation --- */
-    if (output_key == NULL || ciphertext == NULL ||
-        ciphertext_length == NULL || attributes == NULL) {
+    /* --- Argument validation ---
+     * A NULL ciphertext pointer is only an error when the caller declared a
+     * nonzero capacity; (NULL, 0) must reach the size check below. */
+    if (output_key == NULL || ciphertext_length == NULL ||
+        attributes == NULL || (ciphertext == NULL && ciphertext_size != 0)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 

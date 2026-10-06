@@ -1,8 +1,8 @@
 /* spdm_internal.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -50,6 +50,23 @@ extern "C" {
 #define WOLFSPDM_STATE_FINISH       4   /* FINISH complete */
 #define WOLFSPDM_STATE_CONNECTED    5   /* Session established */
 #define WOLFSPDM_STATE_ERROR        6   /* Error state */
+
+/* ----- Supported SPDM Version Range ----- */
+
+/* Maximum SPDM version we support. Supports SPDM 1.2 through 1.4.
+ * Override with -DWOLFSPDM_MAX_SPDM_VERSION at compile time to cap
+ * at a lower version. */
+#ifndef WOLFSPDM_MAX_SPDM_VERSION
+#define WOLFSPDM_MAX_SPDM_VERSION  SPDM_VERSION_14
+#endif
+
+/* Minimum SPDM version we require. Our key derivation uses BinConcat
+ * format ("spdm1.2 " prefix) which is a 1.2+ feature. SPDM 1.1 uses
+ * a different HKDF label format and would require separate key
+ * derivation code. Override at compile time if 1.1 support is added. */
+#ifndef WOLFSPDM_MIN_SPDM_VERSION
+#define WOLFSPDM_MIN_SPDM_VERSION  SPDM_VERSION_12
+#endif
 
 /* ----- Internal Context Structure ----- */
 
@@ -128,7 +145,7 @@ struct WOLFSPDM_CTX {
     word32 sessionId;           /* Combined: reqSessionId | (rspSessionId << 16) */
 
     /* Responder's identity public key (for cert-less mode like Nuvoton) */
-    byte rspPubKey[WOLFSPDM_PUBKEY_BUF_SZ / 2]; /* TPMT_PUBLIC or raw X||Y */
+    byte rspPubKey[WOLFSPDM_PUBKEY_BUF_SZ / 2]; /* pinned raw X||Y */
     word32 rspPubKeyLen;
 
     /* Mutual auth fields from KEY_EXCHANGE_RSP */
@@ -279,6 +296,8 @@ WOLFTPM_API int wolfSPDM_ComputeSharedSecret(WOLFSPDM_CTX* ctx,
 WOLFTPM_API int wolfSPDM_GetRandom(WOLFSPDM_CTX* ctx, byte* out, word32 outSz);
 WOLFTPM_API int wolfSPDM_SignHash(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
     byte* sig, word32* sigSz);
+WOLFTPM_TEST_API int wolfSPDM_ExtractEccPoint(const byte* pubKey,
+    word32 pubKeySz, const byte** pubKeyX, const byte** pubKeyY);
 WOLFTPM_API int wolfSPDM_VerifySignature(WOLFSPDM_CTX* ctx,
     const byte* hash, word32 hashSz,
     const byte* sig, word32 sigSz);

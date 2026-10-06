@@ -1,8 +1,8 @@
 /* spdm_nations.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -64,6 +64,9 @@ int wolfSPDM_Nations_GetStatus(WOLFSPDM_CTX* ctx,
             rsp.payload[0], rsp.payload[1],
             status->pskProvisioned ? "YES" : "NO",
             rsp.payload[3]);
+    }
+    else {
+        return WOLFSPDM_E_FRAMING;
     }
 
     return WOLFSPDM_SUCCESS;

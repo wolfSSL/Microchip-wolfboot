@@ -17,8 +17,11 @@
 int test_wc_PKCS7_New(void);
 int test_wc_PKCS7_Init(void);
 int test_wc_PKCS7_InitWithCert(void);
+int test_wc_PKCS7_InitWithCert_guardrails(void);
 int test_wc_PKCS7_EncodeData(void);
 int test_wc_PKCS7_EncodeSignedData(void);
+int test_wc_PKCS7_EncodeSignedData_SKID(void);
+int test_wc_PKCS7_VerifySignedData_ExplicitSKID(void);
 int test_wc_PKCS7_EncodeSignedData_AttribOverflow(void);
 int test_wc_PKCS7_EncodeAuthEnvelopedData_AttribOverflow(void);
 #if defined(HAVE_PKCS7) && defined(WC_RSA_PSS) && !defined(NO_RSA) && \
@@ -61,10 +64,21 @@ int test_wc_PKCS7_SetOriDecryptCtx(void);
 int test_wc_PKCS7_DecodeCompressedData(void);
 int test_wc_PKCS7_DecodeEnvelopedData_multiple_recipients(void);
 int test_wc_PKCS7_DecodeEnvelopedData_forgedRecipientSetLen(void);
+int test_wc_PKCS7_DecodeEnvelopedData_constructedDefiniteOctet(void);
+int test_wc_PKCS7_DecodeAuthEnvelopedData_truncated(void);
+int test_wc_PKCS7_AuthEnvelopedData_stream_leak(void);
 int test_wc_PKCS7_VerifySignedData_PKCS7ContentSeq(void);
 int test_wc_PKCS7_VerifySignedData_IndefLenOOB(void);
 int test_wc_PKCS7_VerifySignedData_TruncEContentTag(void);
 int test_wc_PKCS7_VerifySignedData_TruncCertSetTag(void);
+int test_wc_PKCS7_VerifySignedData_DegenerateMinimal(void);
+int test_wc_PKCS7_VerifySignedData_DegenerateEmptyCertsCrls(void);
+int test_wc_PKCS7_VerifySignedData_TruncSignerInfosTag(void);
+int test_wc_PKCS7_VerifySignedData_NoSignerInfosTag(void);
+int test_wc_PKCS7_VerifySignedData_DegenerateNonEmptyDigestAlgos(void);
+int test_wc_PKCS7_VerifySignedData_DegenerateWithCert(void);
+int test_wc_PKCS7_VerifySignedData_NoDegenerateAcceptsRealSigner(void);
+int test_wc_PKCS7_VerifySignedData_NoDigestParams(void);
 
 
 #define TEST_PKCS7_DECLS                                        \
@@ -102,8 +116,11 @@ int test_wc_PKCS7_VerifySignedData_TruncCertSetTag(void);
 
 #define TEST_PKCS7_SIGNED_DATA_DECLS                                    \
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_InitWithCert),            \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_InitWithCert_guardrails), \
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_EncodeData),              \
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_EncodeSignedData),        \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_EncodeSignedData_SKID),   \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_ExplicitSKID), \
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_EncodeSignedData_AttribOverflow), \
     TEST_PKCS7_RSA_PSS_SD_DECL                                           \
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_EncodeSignedData_ex),     \
@@ -117,7 +134,15 @@ int test_wc_PKCS7_VerifySignedData_TruncCertSetTag(void);
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_PKCS7ContentSeq), \
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_IndefLenOOB), \
     TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_TruncEContentTag), \
-    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_TruncCertSetTag)
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_TruncCertSetTag), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_DegenerateMinimal), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_DegenerateEmptyCertsCrls), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_TruncSignerInfosTag), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_NoSignerInfosTag), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_DegenerateNonEmptyDigestAlgos), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_DegenerateWithCert), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_NoDegenerateAcceptsRealSigner), \
+    TEST_DECL_GROUP("pkcs7_sd", test_wc_PKCS7_VerifySignedData_NoDigestParams)
 
 #define TEST_PKCS7_ENCRYPTED_DATA_DECLS                                     \
     TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_DecodeEnvelopedData_stream),  \
@@ -135,7 +160,10 @@ int test_wc_PKCS7_VerifySignedData_TruncCertSetTag(void);
     TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_SetOriEncryptCtx),            \
     TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_SetOriDecryptCtx),            \
     TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_DecodeEnvelopedData_multiple_recipients), \
-    TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_DecodeEnvelopedData_forgedRecipientSetLen)
+    TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_DecodeEnvelopedData_forgedRecipientSetLen), \
+    TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_DecodeEnvelopedData_constructedDefiniteOctet), \
+    TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_DecodeAuthEnvelopedData_truncated), \
+    TEST_DECL_GROUP("pkcs7_ed", test_wc_PKCS7_AuthEnvelopedData_stream_leak)
 
 #define TEST_PKCS7_SIGNED_ENCRYPTED_DATA_DECLS                              \
     TEST_DECL_GROUP("pkcs7_sed", test_wc_PKCS7_signed_enveloped)

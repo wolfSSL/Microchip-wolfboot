@@ -1,8 +1,8 @@
 /* tpm2_cryptocb.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -72,7 +72,7 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
         rc = wolfTPM2_GetRandom(tlsCtx->dev, info->seed.seed, info->seed.sz);
     #endif /* !WC_NO_RNG */
     }
-#if !defined(NO_RSA) || defined(HAVE_ECC)
+#if !defined(NO_RSA) || defined(HAVE_ECC) || defined(WOLFTPM_MLDSA_SIGN)
     else if (info->algo_type == WC_ALGO_TYPE_PK) {
     #ifndef NO_RSA
         /* RSA */
@@ -291,7 +291,7 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
                     wolfTPM2_UnloadHandle(tlsCtx->dev, &key->handle);
                 }
             }
-            else if (rc & TPM_RC_CURVE) {
+            else if ((rc & RC_MAX_FMT1) == TPM_RC_CURVE) {
                 /* if the curve is not supported on TPM, then fall-back to software */
                 rc = exit_rc;
                 /* Make sure key indicates nothing loaded */
@@ -342,6 +342,7 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
             byte sigRS[MAX_ECC_BYTES*2];
             byte *r = sigRS, *s = &sigRS[MAX_ECC_BYTES];
             word32 rLen = MAX_ECC_BYTES, sLen = MAX_ECC_BYTES;
+            word32 keySz = 0;
 
             XMEMSET(&eccPub, 0, sizeof(eccPub));
             XMEMSET(sigRS, 0, sizeof(sigRS));
@@ -350,12 +351,19 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
             rc = wc_ecc_sig_to_rs(info->pk.eccverify.sig,
                 info->pk.eccverify.siglen, r, &rLen, s, &sLen);
             if (rc == 0) {
+                /* R/S larger than key size underflows the pad offset */
+                keySz = wc_ecc_size(info->pk.eccverify.key);
+                if (keySz == 0 || keySz > MAX_ECC_BYTES ||
+                        rLen > keySz || sLen > keySz) {
+                    rc = exit_rc;
+                }
+            }
+            if (rc == 0) {
                 /* load public key into TPM */
                 rc = wolfTPM2_EccKey_WolfToTpm(tlsCtx->dev,
                     info->pk.eccverify.key, &eccPub);
                 if (rc == 0) {
                     /* combine R and S at key size (zero pad leading) */
-                    word32 keySz = wc_ecc_size(info->pk.eccverify.key);
                     XMEMMOVE(&sigRS[keySz-rLen], r, rLen);
                     XMEMSET(&sigRS[0], 0, keySz-rLen);
                     XMEMMOVE(&sigRS[keySz + (keySz-sLen)], s, sLen);
@@ -364,7 +372,7 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
                         sigRS, keySz*2,
                         info->pk.eccverify.hash, info->pk.eccverify.hashlen);
                     if (info->pk.eccverify.res) {
-                        if ((rc & TPM_RC_SIGNATURE) == TPM_RC_SIGNATURE) {
+                        if ((rc & RC_MAX_FMT1) == TPM_RC_SIGNATURE) {
                             /* mark invalid signature */
                             *info->pk.eccverify.res = 0;
                             rc = 0;
@@ -375,7 +383,7 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
                     }
                     wolfTPM2_UnloadHandle(tlsCtx->dev, &eccPub.handle);
                 }
-                else if (rc & TPM_RC_CURVE) {
+                else if ((rc & RC_MAX_FMT1) == TPM_RC_CURVE) {
                     /* if the curve is not supported on TPM, then fall-back to software */
                     rc = exit_rc;
                 }
@@ -407,8 +415,56 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
         #endif /* !WOLFTPM2_USE_SW_ECDHE */
         }
     #endif /* HAVE_ECC */
+    #ifdef WOLFTPM_MLDSA_SIGN
+        if (info->pk.type == WC_PK_TYPE_PQC_SIG_SIGN) {
+            TPM_HANDLE seqHandle = 0;
+            WOLFTPM2_HANDLE seqHandleObj;
+            int sigSz;
+
+            /* Not an ML-DSA request, or no TPM key configured: software can
+             * legitimately take it. */
+            if (info->pk.pqc_sign.type != WC_PQC_SIG_TYPE_MLDSA ||
+                    tlsCtx->mldsaKey == NULL) {
+                return exit_rc;
+            }
+            /* The key lives in the TPM, so a software fallback would sign with
+             * absent private material. Fail instead of yielding. Only the pure
+             * one-shot form is supported here. */
+            if (info->pk.pqc_sign.preHashType != WC_HASH_TYPE_NONE ||
+                    info->pk.pqc_sign.out == NULL ||
+                    info->pk.pqc_sign.outlen == NULL ||
+                    (info->pk.pqc_sign.in == NULL &&
+                        info->pk.pqc_sign.inlen > 0) ||
+                    info->pk.pqc_sign.inlen > MAX_DIGEST_BUFFER) {
+                return BAD_FUNC_ARG;
+            }
+            sigSz = (int)*info->pk.pqc_sign.outlen;
+
+            rc = wolfTPM2_SignSequenceStart(tlsCtx->dev, tlsCtx->mldsaKey,
+                info->pk.pqc_sign.context, (int)info->pk.pqc_sign.contextLen,
+                &seqHandle);
+            if (rc == 0) {
+                rc = wolfTPM2_SignSequenceComplete(tlsCtx->dev, seqHandle,
+                    tlsCtx->mldsaKey, info->pk.pqc_sign.in,
+                    (int)info->pk.pqc_sign.inlen, info->pk.pqc_sign.out, &sigSz);
+                if (rc == 0) {
+                    *info->pk.pqc_sign.outlen = (word32)sigSz;
+                }
+            }
+            if (rc != 0 && seqHandle != 0) {
+                /* free seq on failure */
+                XMEMSET(&seqHandleObj, 0, sizeof(seqHandleObj));
+                seqHandleObj.hndl = seqHandle;
+                wolfTPM2_UnloadHandle(tlsCtx->dev, &seqHandleObj);
+            }
+            if (rc == BUFFER_E) {
+                /* preserve caller size-error; don't mask it as WC_HW_E */
+                return BUFFER_E;
+            }
+        }
+    #endif /* WOLFTPM_MLDSA_SIGN */
     }
-#endif /* !NO_RSA || HAVE_ECC */
+#endif /* !NO_RSA || HAVE_ECC || WOLFTPM_MLDSA_SIGN */
 #ifndef NO_AES
     else if (info->algo_type == WC_ALGO_TYPE_CIPHER) {
         if (info->cipher.type != WC_CIPHER_AES_CBC) {
@@ -554,6 +610,8 @@ int wolfTPM2_CryptoDevCb(int devId, wc_CryptoInfo* info, void* ctx)
                 hashCtx->handle = 0; /* clear hash handle */
                 if ((hashFlags & WC_HASH_FLAG_ISCOPY) == 0) {
                     if (hashCtx->cacheBuf) {
+                        TPM2_ForceZero(hashCtx->cacheBuf,
+                            hashCtx->cacheBufSz);
                         XFREE(hashCtx->cacheBuf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
                         hashCtx->cacheBuf = NULL;
                     }
@@ -731,6 +789,10 @@ static int wolfTPM2_HashUpdateCache(WOLFTPM2_HASHCTX* hashCtx,
     /* allocate new cache buffer */
     if (hashCtx->cacheBuf == NULL) {
         hashCtx->cacheSz = 0;
+        /* the block round-up below must not wrap to zero */
+        if (inSz > 0xFFFFFFFFU - (WOLFTPM2_HASH_BLOCK_SZ - 1)) {
+            return BUFFER_E;
+        }
         hashCtx->cacheBufSz = (inSz + WOLFTPM2_HASH_BLOCK_SZ - 1)
             & ~(WOLFTPM2_HASH_BLOCK_SZ - 1);
         if (hashCtx->cacheBufSz == 0)
@@ -745,11 +807,19 @@ static int wolfTPM2_HashUpdateCache(WOLFTPM2_HASHCTX* hashCtx,
     else if ((hashCtx->cacheSz + inSz) > hashCtx->cacheBufSz) {
         byte* oldIn = hashCtx->cacheBuf;
         word32 oldBufSz = hashCtx->cacheBufSz;
-        /* check for overflow */
-        if (hashCtx->cacheSz + inSz < hashCtx->cacheSz) {
+        word32 newSz;
+        /* check for overflow, including the block round-up below */
+        if (hashCtx->cacheSz + inSz < hashCtx->cacheSz ||
+            hashCtx->cacheSz + inSz >
+                0xFFFFFFFFU - (WOLFTPM2_HASH_BLOCK_SZ - 1)) {
             return BUFFER_E;
         }
-        hashCtx->cacheBufSz = (hashCtx->cacheSz + inSz +
+        newSz = hashCtx->cacheSz + inSz;
+        /* Block alignment keeps the round-up safe after doubling. */
+        if (oldBufSz <= 0xFFFFFFFFU / 2 && (oldBufSz * 2) > newSz) {
+            newSz = oldBufSz * 2;
+        }
+        hashCtx->cacheBufSz = (newSz +
             WOLFTPM2_HASH_BLOCK_SZ - 1) & ~(WOLFTPM2_HASH_BLOCK_SZ - 1);
         hashCtx->cacheBuf = (byte*)XMALLOC(hashCtx->cacheBufSz,
             NULL, DYNAMIC_TYPE_TMP_BUFFER);
@@ -760,6 +830,7 @@ static int wolfTPM2_HashUpdateCache(WOLFTPM2_HASHCTX* hashCtx,
             return MEMORY_E;
         }
         XMEMCPY(hashCtx->cacheBuf, oldIn, hashCtx->cacheSz);
+        TPM2_ForceZero(oldIn, oldBufSz);
         XFREE(oldIn, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     }
 
@@ -975,6 +1046,10 @@ static int RsaPadPss(const byte* input, word32 inputLen, byte* pkcsBlock,
     enum wc_HashType hType;
     wc_HashAlg hashCtx; /* big stack consumer */
 
+    if (pkcsBlockLen > RSA_MAX_SIZE/8) {
+        return RSA_BUFFER_E;
+    }
+
     switch (hash) {
     #ifndef NO_SHA256
         case SHA256h:
@@ -1025,6 +1100,10 @@ static int RsaPadPss(const byte* input, word32 inputLen, byte* pkcsBlock,
     if ((int)pkcsBlockLen - hLen < saltLen + 2) {
         return PSS_SALTLEN_E;
     }
+    /* Ensure M' (padding || hLen || saltLen) fits the scratch buffer */
+    if ((int)pkcsBlockLen < RSA_PSS_PAD_SZ + hLen + saltLen) {
+        return PSS_SALTLEN_E;
+    }
 
     ret = wc_HashInit_ex(&hashCtx, hType, NULL, INVALID_DEVID);
     if (ret != 0) {
@@ -1072,6 +1151,7 @@ static int RsaPadPss(const byte* input, word32 inputLen, byte* pkcsBlock,
         xorbuf(m, salt + o, (word32)saltLen);
     }
     wc_HashFree(&hashCtx, hType);
+    TPM2_ForceZero(&hashCtx, sizeof(hashCtx));
     TPM2_ForceZero(salt, sizeof(salt));
     return ret;
 }

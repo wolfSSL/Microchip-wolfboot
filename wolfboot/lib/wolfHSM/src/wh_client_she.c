@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -45,11 +45,18 @@ int wh_Client_ShePreProgramKey(whClientContext* c, whNvmId keyId,
     int32_t outRc;
     uint8_t label[WH_NVM_LABEL_LEN] = { 0 };
 
+    /* SHE slots hold exactly one AES-128 key. The server appends a 16 byte
+     * constant after the slot contents when deriving key update keys, so a
+     * longer object would overrun its kdf input buffer. */
+    if ((c == NULL) || (key == NULL) || (keySz != WH_SHE_KEY_SZ)) {
+        return WH_ERROR_BADARGS;
+    }
+
     /* Create a key with 0 counter */
     wh_She_Meta2Label(0, flags, label);
-    ret = wh_Client_NvmAddObject(c,
-            WH_MAKE_KEYID(WH_KEYTYPE_SHE, c->comm->client_id, keyId),
-            0, 0, sizeof(label), label, keySz, key, (int32_t*)&outRc);
+    ret = wh_Client_NvmAddObject(
+        c, WH_SHE_MAKE_KEYID(c->comm->client_id, keyId), 0, 0, sizeof(label),
+        label, keySz, key, (int32_t*)&outRc);
     if (ret == 0)
         ret = outRc;
     return ret;
@@ -77,7 +84,7 @@ int wh_Client_SheSetUidResponse(whClientContext* c)
 {
     uint16_t group;
     uint16_t action;
-    uint16_t dataSz;
+    uint16_t dataSz = 0;
     int ret;
     whMessageShe_SetUidResponse *resp = NULL;
 
@@ -86,7 +93,11 @@ int wh_Client_SheSetUidResponse(whClientContext* c)
     }
 
     resp = (whMessageShe_SetUidResponse*)wh_CommClient_GetDataPtr(c->comm);
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret  = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                  WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
     if (ret == WH_ERROR_OK) {
         ret = resp->rc;
     }
@@ -112,7 +123,7 @@ int wh_Client_SheSecureBoot(whClientContext* c, uint8_t* bootloader,
     uint32_t bootloaderSent = 0;
     uint16_t group;
     uint16_t action;
-    uint16_t dataSz;
+    uint16_t dataSz = 0;
     uint8_t* respBuf;
 
     whMessageShe_SecureBootInitRequest*    initReq    = NULL;
@@ -137,9 +148,13 @@ int wh_Client_SheSecureBoot(whClientContext* c, uint8_t* bootloader,
 
     if (ret == 0) {
         do {
-            ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, respBuf);
+            ret      = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                              WOLFHSM_CFG_COMM_DATA_LEN, respBuf);
             initResp = (whMessageShe_SecureBootInitResponse*)respBuf;
         } while (ret == WH_ERROR_NOTREADY);
+        if (ret == WH_ERROR_OK && dataSz < sizeof(*initResp)) {
+            ret = WH_ERROR_ABORTED;
+        }
     }
 
     /* send update sub command until we've sent the entire bootloader */
@@ -173,9 +188,14 @@ int wh_Client_SheSecureBoot(whClientContext* c, uint8_t* bootloader,
 
         if (ret == 0) {
             do {
-                ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
-                                             respBuf);
+                ret =
+                    wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                           WOLFHSM_CFG_COMM_DATA_LEN, respBuf);
             } while (ret == WH_ERROR_NOTREADY);
+            if (ret == WH_ERROR_OK &&
+                dataSz < sizeof(whMessageShe_SecureBootUpdateResponse)) {
+                ret = WH_ERROR_ABORTED;
+            }
         }
 
         /* increment sent  */
@@ -192,9 +212,13 @@ int wh_Client_SheSecureBoot(whClientContext* c, uint8_t* bootloader,
 
     if (ret == 0) {
         do {
-            ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, respBuf);
+            ret        = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                                WOLFHSM_CFG_COMM_DATA_LEN, respBuf);
             finishResp = (whMessageShe_SecureBootFinishResponse*)respBuf;
         } while (ret == WH_ERROR_NOTREADY);
+        if (ret == WH_ERROR_OK && dataSz < sizeof(*finishResp)) {
+            ret = WH_ERROR_ABORTED;
+        }
     }
 
     if (ret == 0) {
@@ -222,7 +246,7 @@ int wh_Client_SheGetStatusResponse(whClientContext* c, uint8_t* sreg)
 {
     uint16_t group;
     uint16_t action;
-    uint16_t dataSz;
+    uint16_t dataSz = 0;
     int ret;
     whMessageShe_GetStatusResponse *resp = NULL;
 
@@ -232,7 +256,11 @@ int wh_Client_SheGetStatusResponse(whClientContext* c, uint8_t* sreg)
 
     resp = (whMessageShe_GetStatusResponse*)wh_CommClient_GetDataPtr(c->comm);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
 
     /* return error or set sreg */
     if (ret == 0) {
@@ -251,6 +279,70 @@ int wh_Client_SheGetStatus(whClientContext* c, uint8_t* sreg)
     if (ret == 0) {
         do {
             ret = wh_Client_SheGetStatusResponse(c, sreg);
+        } while (ret == WH_ERROR_NOTREADY);
+    }
+    return ret;
+}
+
+int wh_Client_SheGetIdRequest(whClientContext* c, uint8_t* challenge,
+                              uint32_t challengeSz)
+{
+    whMessageShe_GetIdRequest* req = NULL;
+
+    if (c == NULL || challenge == NULL || challengeSz < WH_SHE_KEY_SZ) {
+        return WH_ERROR_BADARGS;
+    }
+
+    req = (whMessageShe_GetIdRequest*)wh_CommClient_GetDataPtr(c->comm);
+
+    memcpy(req->challenge, challenge, sizeof(req->challenge));
+
+    return wh_Client_SendRequest(c, WH_MESSAGE_GROUP_SHE, WH_SHE_GET_ID,
+                                 sizeof(*req), (uint8_t*)req);
+}
+
+int wh_Client_SheGetIdResponse(whClientContext* c, uint8_t* uid, uint8_t* sreg,
+                               uint8_t* mac)
+{
+    int                        ret;
+    uint16_t                   group;
+    uint16_t                   action;
+    uint16_t                   dataSz;
+    whMessageShe_GetIdResponse* resp = NULL;
+
+    if (c == NULL || uid == NULL || sreg == NULL || mac == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+
+    resp = (whMessageShe_GetIdResponse*)wh_CommClient_GetDataPtr(c->comm);
+
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
+    if (ret == 0) {
+        if (resp->rc != WH_SHE_ERC_NO_ERROR) {
+            ret = resp->rc;
+        }
+        else {
+            memcpy(uid, resp->uid, sizeof(resp->uid));
+            *sreg = resp->sreg;
+            memcpy(mac, resp->mac, sizeof(resp->mac));
+        }
+    }
+    return ret;
+}
+
+int wh_Client_SheGetId(whClientContext* c, uint8_t* challenge,
+                       uint32_t challengeSz, uint8_t* uid, uint8_t* sreg,
+                       uint8_t* mac)
+{
+    int ret;
+    ret = wh_Client_SheGetIdRequest(c, challenge, challengeSz);
+    if (ret == 0) {
+        do {
+            ret = wh_Client_SheGetIdResponse(c, uid, sreg, mac);
         } while (ret == WH_ERROR_NOTREADY);
     }
     return ret;
@@ -287,7 +379,7 @@ int wh_Client_SheLoadKeyResponse(whClientContext* c, uint8_t* messageFour,
     int                           ret;
     uint16_t                      group;
     uint16_t                      action;
-    uint16_t                      dataSz;
+    uint16_t                      dataSz = 0;
     whMessageShe_LoadKeyResponse* resp = NULL;
 
     if (c == NULL || messageFour == NULL || messageFive == NULL) {
@@ -296,7 +388,11 @@ int wh_Client_SheLoadKeyResponse(whClientContext* c, uint8_t* messageFour,
 
     resp = (whMessageShe_LoadKeyResponse*)wh_CommClient_GetDataPtr(c->comm);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
     if (ret == 0) {
         if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;
@@ -346,7 +442,7 @@ int wh_Client_SheLoadPlainKeyResponse(whClientContext* c)
     int                                ret;
     uint16_t                           group;
     uint16_t                           action;
-    uint16_t                           dataSz;
+    uint16_t                           dataSz = 0;
     whMessageShe_LoadPlainKeyResponse* resp = NULL;
 
     if (c == NULL) {
@@ -356,7 +452,11 @@ int wh_Client_SheLoadPlainKeyResponse(whClientContext* c)
     resp =
         (whMessageShe_LoadPlainKeyResponse*)wh_CommClient_GetDataPtr(c->comm);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
     if (ret == 0) {
         ret = resp->rc;
     }
@@ -395,7 +495,7 @@ int wh_Client_SheExportRamKeyResponse(whClientContext* c, uint8_t* messageOne,
     int                                ret;
     uint16_t                           group;
     uint16_t                           action;
-    uint16_t                           dataSz;
+    uint16_t                           dataSz = 0;
     whMessageShe_ExportRamKeyResponse* resp = NULL;
 
     if (c == NULL || messageOne == NULL || messageTwo == NULL ||
@@ -406,7 +506,11 @@ int wh_Client_SheExportRamKeyResponse(whClientContext* c, uint8_t* messageOne,
     resp =
         (whMessageShe_ExportRamKeyResponse*)wh_CommClient_GetDataPtr(c->comm);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
     if (ret == 0) {
         if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;
@@ -455,7 +559,7 @@ int wh_Client_SheInitRndResponse(whClientContext* c)
     int ret;
     uint16_t group;
     uint16_t action;
-    uint16_t dataSz;
+    uint16_t dataSz = 0;
     whMessageShe_InitRngResponse* resp = NULL;
 
     if (c == NULL) {
@@ -463,7 +567,11 @@ int wh_Client_SheInitRndResponse(whClientContext* c)
     }
 
     resp = (whMessageShe_InitRngResponse*)wh_CommClient_GetDataPtr(c->comm);
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret  = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                  WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
     if (ret == 0) {
         ret = resp->rc;
     }
@@ -497,7 +605,7 @@ int wh_Client_SheRndResponse(whClientContext* c, uint8_t* out, uint32_t* outSz)
     int ret;
     uint16_t group;
     uint16_t action;
-    uint16_t dataSz;
+    uint16_t dataSz = 0;
     whMessageShe_RndResponse* resp = NULL;
 
     if (c == NULL || out == NULL || outSz == NULL || *outSz < WH_SHE_KEY_SZ) {
@@ -506,7 +614,11 @@ int wh_Client_SheRndResponse(whClientContext* c, uint8_t* out, uint32_t* outSz)
 
     resp = (whMessageShe_RndResponse*)wh_CommClient_GetDataPtr(c->comm);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
 
     if (ret == 0) {
         if (resp->rc != WH_SHE_ERC_NO_ERROR)
@@ -558,7 +670,7 @@ int wh_Client_SheExtendSeedResponse(whClientContext* c)
     int                              ret;
     uint16_t                         group;
     uint16_t                         action;
-    uint16_t                         dataSz;
+    uint16_t                         dataSz = 0;
     whMessageShe_ExtendSeedResponse* resp = NULL;
 
     if (c == NULL) {
@@ -566,7 +678,11 @@ int wh_Client_SheExtendSeedResponse(whClientContext* c)
     }
 
     resp = (whMessageShe_ExtendSeedResponse*)wh_CommClient_GetDataPtr(c->comm);
-    ret  = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret  = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                  WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
 
     if (ret == 0) {
         ret = resp->rc;
@@ -616,7 +732,7 @@ int wh_Client_SheEncEcbResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     int                          ret;
     uint16_t                     group;
     uint16_t                     action;
-    uint16_t                     dataSz;
+    uint16_t                     dataSz = 0;
     uint8_t*                     packOut;
     whMessageShe_EncEcbResponse* resp = NULL;
 
@@ -629,10 +745,17 @@ int wh_Client_SheEncEcbResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     /* out is after fixed sized fields */
     packOut = (uint8_t*)(resp + 1);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == 0) {
-        if (resp->rc != WH_SHE_ERC_NO_ERROR) {
+        if (dataSz < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;
+        }
+        else if (resp->sz > (dataSz - sizeof(*resp))) {
+            ret = WH_ERROR_ABORTED;
         }
         else if (sz < resp->sz) {
             ret = WH_ERROR_BADARGS;
@@ -689,7 +812,7 @@ int wh_Client_SheEncCbcResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     int                          ret;
     uint16_t                     group;
     uint16_t                     action;
-    uint16_t                     dataSz;
+    uint16_t                     dataSz = 0;
     uint8_t*                     packOut;
     whMessageShe_EncCbcResponse* resp = NULL;
 
@@ -701,10 +824,17 @@ int wh_Client_SheEncCbcResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     /* out is after fixed sized fields */
     packOut = (uint8_t*)(resp + 1);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == 0) {
-        if (resp->rc != WH_SHE_ERC_NO_ERROR) {
+        if (dataSz < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;
+        }
+        else if (resp->sz > (dataSz - sizeof(*resp))) {
+            ret = WH_ERROR_ABORTED;
         }
         else if (sz < resp->sz) {
             ret = WH_ERROR_BADARGS;
@@ -757,7 +887,7 @@ int wh_Client_SheDecEcbResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     int                          ret;
     uint16_t                     group;
     uint16_t                     action;
-    uint16_t                     dataSz;
+    uint16_t                     dataSz = 0;
     uint8_t*                     packOut;
     whMessageShe_DecEcbResponse* resp = NULL;
 
@@ -769,10 +899,17 @@ int wh_Client_SheDecEcbResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     /* out is after fixed sized fields */
     packOut = (uint8_t*)(resp + 1);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == 0) {
-        if (resp->rc != WH_SHE_ERC_NO_ERROR) {
+        if (dataSz < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;
+        }
+        else if (resp->sz > (dataSz - sizeof(*resp))) {
+            ret = WH_ERROR_ABORTED;
         }
         else if (sz < resp->sz) {
             ret = WH_ERROR_BADARGS;
@@ -829,7 +966,7 @@ int wh_Client_SheDecCbcResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     int                          ret;
     uint16_t                     group;
     uint16_t                     action;
-    uint16_t                     dataSz;
+    uint16_t                     dataSz = 0;
     uint8_t*                     packOut;
     whMessageShe_DecCbcResponse* resp = NULL;
 
@@ -841,10 +978,17 @@ int wh_Client_SheDecCbcResponse(whClientContext* c, uint8_t* out, uint32_t sz)
     /* out is after fixed sized fields */
     packOut = (uint8_t*)(resp + 1);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
     if (ret == 0) {
-        if (resp->rc != WH_SHE_ERC_NO_ERROR) {
+        if (dataSz < sizeof(*resp)) {
+            ret = WH_ERROR_ABORTED;
+        }
+        else if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;
+        }
+        else if (resp->sz > (dataSz - sizeof(*resp))) {
+            ret = WH_ERROR_ABORTED;
         }
         else if (sz < resp->sz) {
             ret = WH_ERROR_BADARGS;
@@ -899,7 +1043,7 @@ int wh_Client_SheGenerateMacResponse(whClientContext* c, uint8_t* out,
     int                          ret;
     uint16_t                     group;
     uint16_t                     action;
-    uint16_t                     dataSz;
+    uint16_t                     dataSz = 0;
     whMessageShe_GenMacResponse* resp = NULL;
 
     if (c == NULL || out == NULL || sz < WH_SHE_KEY_SZ) {
@@ -908,7 +1052,11 @@ int wh_Client_SheGenerateMacResponse(whClientContext* c, uint8_t* out,
 
     resp = (whMessageShe_GenMacResponse*)wh_CommClient_GetDataPtr(c->comm);
 
-    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                 WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
     if (ret == 0) {
         if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;
@@ -972,7 +1120,7 @@ int wh_Client_SheVerifyMacResponse(whClientContext* c, uint8_t* outStatus)
     int                             ret;
     uint16_t                        group;
     uint16_t                        action;
-    uint16_t                        dataSz;
+    uint16_t                        dataSz = 0;
     whMessageShe_VerifyMacResponse* resp = NULL;
 
     if (c == NULL || outStatus == NULL) {
@@ -980,7 +1128,11 @@ int wh_Client_SheVerifyMacResponse(whClientContext* c, uint8_t* outStatus)
     }
 
     resp = (whMessageShe_VerifyMacResponse*)wh_CommClient_GetDataPtr(c->comm);
-    ret  = wh_Client_RecvResponse(c, &group, &action, &dataSz, (uint8_t*)resp);
+    ret  = wh_Client_RecvResponse(c, &group, &action, &dataSz,
+                                  WOLFHSM_CFG_COMM_DATA_LEN, (uint8_t*)resp);
+    if (ret == WH_ERROR_OK && dataSz < sizeof(*resp)) {
+        ret = WH_ERROR_ABORTED;
+    }
     if (ret == 0) {
         if (resp->rc != WH_SHE_ERC_NO_ERROR) {
             ret = resp->rc;

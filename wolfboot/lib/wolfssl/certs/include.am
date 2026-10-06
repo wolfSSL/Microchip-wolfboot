@@ -37,6 +37,17 @@ EXTRA_DIST += \
              certs/client-ca-cert.pem \
              certs/dh2048.pem \
              certs/server-cert.pem \
+             certs/server-cert-sha1.pem \
+             certs/server-cert-sha1-root.pem \
+             certs/client-cert-sha1.pem \
+             certs/tsa-bad-ku-cert.pem \
+             certs/tsa-extra-eku-cert.pem \
+             certs/tsa-chain-cert.pem \
+             certs/tsa-chain-key.pem \
+             certs/tsa-cert.pem \
+             certs/tsa-ecc-cert.pem \
+             certs/tsa-ecc-key.pem \
+             certs/tsa-key.pem \
              certs/server-ecc.pem \
              certs/server-ecc-self.pem \
              certs/server-ecc-comp.pem \
@@ -119,6 +130,14 @@ EXTRA_DIST += \
              certs/ecc-keyPub.der \
              certs/server-key.der \
              certs/server-cert.der \
+             certs/tsa-key.der \
+             certs/tsa-cert.der \
+             certs/tsa-ecc-key.der \
+             certs/tsa-ecc-cert.der \
+             certs/tsa-bad-ku-cert.der \
+             certs/tsa-extra-eku-cert.der \
+             certs/tsa-chain-cert.der \
+             certs/tsa-chain-key.der \
              certs/server-ecc-comp.der \
              certs/server-ecc.der \
              certs/server-ecc-self.der \
@@ -165,3 +184,4 @@ include certs/lms/include.am
 include certs/rpk/include.am
 include certs/acert/include.am
 include certs/mldsa/include.am
+include certs/frodokem/include.am

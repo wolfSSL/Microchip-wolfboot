@@ -9,14 +9,18 @@
  * https://www.wolfssl.com
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
-#include <wolfssl/wolfcrypt/error-crypt.h>
-
 /* Generated using (from wolfssl):
  *   cd ../scripts
  *   ruby ./sha3/sha3.rb arm64 \
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-sha3-asm.c
  */
+
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_SHA3_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
+
 #ifdef WOLFSSL_ARMASM
 #ifdef __aarch64__
 #ifdef WOLFSSL_ARMASM_INLINE
@@ -43,9 +47,7 @@ void BlockSha3_crypto(word64* state)
 {
     const word64* r = L_SHA3_transform_crypto_r;
     __asm__ __volatile__ (
-#ifdef __APPLE__
     ".arch_extension sha3\n\t"
-#endif /* __APPLE__ */
         "ld4	{v0.d, v1.d, v2.d, v3.d}[0], [%x[state]], #32\n\t"
         "ld4	{v4.d, v5.d, v6.d, v7.d}[0], [%x[state]], #32\n\t"
         "ld4	{v8.d, v9.d, v10.d, v11.d}[0], [%x[state]], #32\n\t"

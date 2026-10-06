@@ -9,7 +9,7 @@
  * https://www.wolfssl.com
  */
 
-#include "board.h"  /* provides WHAL_CFG_LAN8742A_DEV initializer */
+#include "wolfHAL_board.h"  /* provides WHAL_CFG_LAN8742A_DEV initializer */
 #include <wolfHAL/eth_phy/lan8742a_eth_phy.h>
 #include <wolfHAL/eth/eth.h>
 #include <wolfHAL/error.h>

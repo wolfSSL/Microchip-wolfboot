@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -46,7 +46,7 @@
 
 static int _whTest_CryptoHkdf(whClientContext* ctx)
 {
-    int     devId = WH_DEV_ID;
+    int     devId = WH_CLIENT_DEVID(ctx);
     int     ret   = WH_ERROR_OK;
     whKeyId keyId = WH_KEYID_ERASED;
 
@@ -210,7 +210,7 @@ static int _whTest_CryptoHkdf(whClientContext* ctx)
 
 static int _whTest_CryptoCmacKdf(whClientContext* ctx)
 {
-    int     devId = WH_DEV_ID;
+    int     devId = WH_CLIENT_DEVID(ctx);
     int     ret   = WH_ERROR_OK;
     whKeyId keyId = WH_KEYID_ERASED;
 

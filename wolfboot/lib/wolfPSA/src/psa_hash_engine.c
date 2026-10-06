@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE)
 
@@ -390,36 +390,43 @@ psa_status_t psa_hash_setup(psa_hash_operation_t *operation,
 #endif
 #ifndef NO_SHA
         case PSA_ALG_SHA_1:
-            ret = wc_InitSha(&ctx->ctx.sha1);
+            ret = wc_InitSha_ex(&ctx->ctx.sha1, NULL,
+                                wolfPSA_GetDefaultDevID());
             break;
 #endif
 #ifndef NO_SHA256
         case PSA_ALG_SHA_256:
-            ret = wc_InitSha256(&ctx->ctx.sha256);
+            ret = wc_InitSha256_ex(&ctx->ctx.sha256, NULL,
+                                   wolfPSA_GetDefaultDevID());
             break;
 #endif
 #ifdef WOLFSSL_SHA224
         case PSA_ALG_SHA_224:
-            ret = wc_InitSha224(&ctx->ctx.sha224);
+            ret = wc_InitSha224_ex(&ctx->ctx.sha224, NULL,
+                                   wolfPSA_GetDefaultDevID());
             break;
 #endif
 #ifdef WOLFSSL_SHA384
         case PSA_ALG_SHA_384:
-            ret = wc_InitSha384(&ctx->ctx.sha384);
+            ret = wc_InitSha384_ex(&ctx->ctx.sha384, NULL,
+                                   wolfPSA_GetDefaultDevID());
             break;
 #endif
 #ifdef WOLFSSL_SHA512
         case PSA_ALG_SHA_512:
-            ret = wc_InitSha512(&ctx->ctx.sha512);
+            ret = wc_InitSha512_ex(&ctx->ctx.sha512, NULL,
+                                   wolfPSA_GetDefaultDevID());
             break;
 #if !defined(WOLFSSL_NOSHA512_224)
         case PSA_ALG_SHA_512_224:
-            ret = wc_InitSha512_224(&ctx->ctx.sha512);
+            ret = wc_InitSha512_224_ex(&ctx->ctx.sha512, NULL,
+                                       wolfPSA_GetDefaultDevID());
             break;
 #endif
 #if !defined(WOLFSSL_NOSHA512_256)
         case PSA_ALG_SHA_512_256:
-            ret = wc_InitSha512_256(&ctx->ctx.sha512);
+            ret = wc_InitSha512_256_ex(&ctx->ctx.sha512, NULL,
+                                       wolfPSA_GetDefaultDevID());
             break;
 #endif
 #endif
@@ -588,7 +595,10 @@ psa_status_t psa_hash_finish(psa_hash_operation_t *operation,
     size_t expected_hash_size;
     psa_hash_operation_ctx_t *ctx = psa_hash_get_ctx(operation);
 
-    if (operation == NULL || hash == NULL || hash_length == NULL) {
+    /* A NULL hash pointer is only an error when the caller declared a
+     * nonzero capacity; (NULL, 0) must reach the size check below. */
+    if (operation == NULL || hash_length == NULL ||
+        (hash == NULL && hash_size != 0)) {
         return wolfpsa_hash_fail(operation, PSA_ERROR_INVALID_ARGUMENT);
     }
 
@@ -706,10 +716,13 @@ psa_status_t psa_hash_verify(psa_hash_operation_t *operation,
                             size_t hash_length)
 {
     psa_status_t status;
-    uint8_t computed_hash[PSA_HASH_MAX_SIZE];
+    uint8_t computed_hash[WOLFPSA_HASH_MAX_SIZE];
     size_t computed_hash_length;
 
-    if (operation == NULL || hash == NULL) {
+    /* A NULL reference is only an argument error when it claims a length;
+     * (NULL, 0) is a length mismatch, which the check below reports as
+     * INVALID_SIGNATURE, matching psa_hash_compare(). */
+    if (operation == NULL || (hash == NULL && hash_length != 0)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -946,7 +959,7 @@ psa_status_t psa_hash_compare(psa_algorithm_t alg,
                              size_t hash_length)
 {
     psa_status_t status;
-    uint8_t computed_hash[PSA_HASH_MAX_SIZE];
+    uint8_t computed_hash[WOLFPSA_HASH_MAX_SIZE];
     size_t computed_hash_length;
     size_t expected_hash_size;
 
@@ -954,8 +967,8 @@ psa_status_t psa_hash_compare(psa_algorithm_t alg,
         return PSA_ERROR_BAD_STATE;
     }
     
-    /* Check if the reference hash length is valid */
-    if (!PSA_ALG_IS_HASH(alg) || hash == NULL) {
+    /* Check if the algorithm is a supported hash */
+    if (!PSA_ALG_IS_HASH(alg)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -963,9 +976,17 @@ psa_status_t psa_hash_compare(psa_algorithm_t alg,
     if (expected_hash_size == 0) {
         return PSA_ERROR_NOT_SUPPORTED;
     }
-    
+
+    /* A zero-length reference cannot match a fixed-size digest; it is a
+     * verification mismatch, not an invalid argument. */
     if (hash_length != expected_hash_size) {
         return PSA_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* The length check above guarantees a nonzero length here, so a NULL
+     * reference pointer is a caller error. */
+    if (hash == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
     }
     
     /* Compute the hash */

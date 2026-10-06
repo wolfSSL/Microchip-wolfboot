@@ -78,6 +78,10 @@ examples/keygen/ecdh
 examples/pqc/mldsa_sign
 examples/pqc/mlkem_encap
 examples/pqc/pqc_mssim_e2e
+examples/pqc/gen_pqc_certs
+examples/pqc/pqc_ctrl
+examples/pqc/mldsa_verify_neg
+examples/pqc/mlkem_decap_neg
 examples/nvram/extend
 examples/nvram/store
 examples/nvram/read
@@ -118,6 +122,7 @@ certs/server-*.der
 certs/server-*.pem
 certs/client-*.der
 certs/client-*.pem
+certs/pq-*.der
 certs/serial.old
 certs/0*.pem
 certs/1*.pem
@@ -211,8 +216,11 @@ examples/firmware/*.MANIFESTHASH
 # Firmware TPM files
 src/fwtpm/fwtpm_server
 fwtpm_nv.bin
+fwtpm_nv.bin.key
 fwtpm_test_nv.bin
 fwtpm_test_nv.bin.key
+# Catch any NV integrity-key sidecar the fwTPM auto-generates
+*.bin.key
 
 # Fuzz artifacts (corpus generated at runtime by gen_corpus.py)
 tests/fuzz/corpus/

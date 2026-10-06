@@ -100,7 +100,19 @@ of its addressable space.
 
  - `WOLFBOOT_PARTITION_SIZE`
 
-The size of the BOOT and UPDATE partition. The size is the same for both partitions.
+The size of the BOOT and UPDATE partitions. The size is the same for both partitions unless using the monolithic
+self-update mode, in which case the UPDATE partition can optionally be sized independently.
+
+ - `WOLFBOOT_PARTITION_UPDATE_SIZE`
+
+Optional. Sizes the UPDATE partition independently of BOOT; defaults to
+`WOLFBOOT_PARTITION_SIZE`. A different value is only allowed together with
+`SELF_UPDATE_MONOLITHIC=1`, so the UPDATE partition can stage a monolithic
+payload (bootloader region + application) without inflating the BOOT
+partition. The staged payload also needs `IMAGE_HEADER_SIZE` plus one
+trailer sector of room on top — see the sizing guide in
+[firmware_update.md](firmware_update.md#independent-partition-sizing).
+Not supported with `ENCRYPT` or `PULL_LINKER_DEFINES`.
 
 ## Bootloader features
 
@@ -141,6 +153,49 @@ It's possible to disable authentication of the firmware image by explicitly usin
 
 in the Makefile commandline. This will compile a minimal bootloader with no support for public-key authenticated
 secure boot.
+
+### Auxiliary crypto algorithms
+
+Some features need crypto algorithms beyond the ones selected with `SIGN` and
+`HASH`: certificate-chain verification may meet CA certificates signed with a
+different algorithm than the leaf, and TPM support needs ECC or RSA for its
+primary key and parameter encryption even when `SIGN` is a post-quantum or
+Ed25519/Ed448 algorithm.
+
+`AUX_PK_ALGOS` and `AUX_HASH_ALGOS` compile extra wolfCrypt algorithms into
+wolfBoot for those uses. Both take a comma-separated, case-insensitive list
+(no spaces):
+
+```sh
+make SIGN=ECC256 AUX_PK_ALGOS=rsa2048,ecc384 AUX_HASH_ALGOS=sha384
+```
+
+Valid `AUX_PK_ALGOS` entries: `ecc256`, `ecc384`, `ecc521`, `rsa2048`,
+`rsa3072`, `rsa4096`, `rsapss2048`, `rsapss3072`, `rsapss4096`, `ed25519`,
+`ed448`. Valid `AUX_HASH_ALGOS` entries: `sha256`, `sha384`, `sha512`,
+`sha3`. Post-quantum algorithms (ML-DSA, LMS, XMSS) are not yet supported as
+auxiliary algorithms.
+
+Auxiliary algorithms are never used to verify the firmware image signature;
+that remains bound to `SIGN` (and `SIGN_SECONDARY` for hybrid mode). Each
+entry defines a `WOLFBOOT_AUX_PK_<ALGO>` or `WOLFBOOT_AUX_HASH_<ALGO>` macro
+and links the matching wolfCrypt objects; entries already covered by
+`SIGN`/`SIGN_SECONDARY` are no-ops.
+
+Notes:
+
+- Not compatible with `WOLFBOOT_SMALL_STACK=1`: the static memory pools are
+  sized for the primary `SIGN` algorithm only.
+- `STACK_USAGE` is not adjusted automatically. If an auxiliary algorithm with
+  larger stack needs (e.g. `rsa4096`) is actually exercised, consider
+  `WOLFBOOT_HUGE_STACK=1` (the RSA4096 cert-chain configurations already do).
+- When `WOLFTPM=1` and neither `SIGN`, `SIGN_SECONDARY`, nor `AUX_PK_ALGOS`
+  provides an ECC or RSA algorithm, `ecc256` is added automatically so the
+  TPM SRK and parameter encryption work.
+- With `CERT_CHAIN_VERIFY=1`, the generated dummy chain's CA algorithms
+  (`CERT_CHAIN_GEN_CA_ALGO`/`CERT_CHAIN_GEN_CA_HASH`) are bridged into these
+  lists automatically. Users providing `USER_CERT_CHAIN` must list their
+  chain's algorithms here themselves.
 
 ### Incremental updates
 
@@ -216,6 +271,8 @@ The associated compile-time option is
 
 `DISABLE_BACKUP=1`
 
+When the update is installed, the bootloader resets the update partition state so that the update is not re-applied on the next boot. In setups where the bootloader cannot write the update partition, the application must reset the update partition state itself (for example by erasing the update partition) after the update succeeds: otherwise wolfBoot re-attempts the update on every boot, which with `ALLOW_DOWNGRADE=1` re-flashes the boot partition on every power-up.
+
 ### Enable workaround for 'write once' flash memories
 
 On some microcontrollers, the internal flash memory does not allow subsequent writes (adding zeroes) to a
@@ -236,6 +293,22 @@ downgrades, compile with `ALLOW_DOWNGRADE=1`.
 
 Warning: this option will disable version checking before the updates, thus exposing the system to potential
 forced downgrade attacks.
+
+### Linux kernel command line (bootargs)
+
+On the FIT Linux-boot targets whose DTB comes from the signed FIT (Versal, ZynqMP, PolarFire SoC), a DTB that already carries a non-empty `/chosen/bootargs` keeps it by default - the image boots with the arguments its kernel was validated with, and wolfBoot logs `FDT: using DTB bootargs: ...`. Three macros control this:
+
+- `LINUX_BOOTARGS` - the full command line wolfBoot injects. Setting it (via `CFLAGS_EXTRA+=-DLINUX_BOOTARGS='"..."'`) replaces the DTB's value; the replaced value is logged.
+- `LINUX_BOOTARGS_ROOT` - shorthand that only swaps the `root=` device in the HAL's default command line; setting it also selects replace semantics.
+- `LINUX_BOOTARGS_OVERRIDE` - explicit polarity control: `1` forces replacement, `0` demotes `LINUX_BOOTARGS` to a fallback used only when the DTB carries no bootargs. Unset, it defaults to `1` when either macro above is configured and `0` otherwise.
+
+Upgrade note: before this behavior existed, these targets always overwrote `/chosen/bootargs`. A build that sets neither macro therefore changes on upgrade from "HAL default always wins" to "the authenticated DTB's own bootargs win". If a deployment relied on the HAL default to correct a `root=` baked into its DTB, set `LINUX_BOOTARGS_ROOT` (or `LINUX_BOOTARGS`) to restore the previous behavior.
+
+Keeping a DTB's bootargs requires the DTB to be authenticated: a FIT DTB (covered by the outer image signature) or a raw DTB with a verified `HDR_DEVICE_TREE_DIGEST`. An unauthenticated raw DTB always has its bootargs replaced regardless of these macros, so a writable DTB partition cannot inject `root=`, `init=` or console policy into a signed kernel's command line; wolfBoot logs `FDT: DTB not authenticated, forcing bootargs` when that happens. The Raspberry Pi CM4 firmware-DTB path likewise always injects wolfBoot's command line, because that DTB is firmware-provided and unverified.
+
+### Require an authenticated device tree (raw-DTB targets)
+
+On non-FIT MMU targets that load a raw device tree from flash, wolfBoot authenticates the DTB against the `HDR_DEVICE_TREE_DIGEST` TLV bound to the signed kernel (`sign --dts <board.dtb>`, see `docs/Signing.md`). A DTB carrying the digest is always verified; a raw DTB with no digest only warns and boots by default. Compile with `WOLFBOOT_REQUIRE_SIGNED_DTB=1` to make a missing digest a hard failure (fail-closed) once every raw-DTB payload is signed with `--dts`.
 
 ### Enable optional support for external flash memory
 
@@ -291,6 +364,118 @@ ChaCha20 symmetric key to access the content of the updates.
 For more details about this optional feature, please refer to the [Encrypted external partitions](encrypted_partitions.md) manual page.
 
 
+### Disk boot confirmation and rollback
+
+The disk boot path (`src/update_disk.c`) is stateless by default: it selects the highest-versioned slot, verifies it, and falls over to the other slot when *verification* fails. It writes nothing back, so an image that verifies and then fails to **boot** is retried indefinitely.
+
+`DISK_BOOT_CONFIRM=1` closes that gap using the **same partition trailer** the sector-swap flow in `src/update_flash.c` already keeps, placed in the tail of the raw boot partition:
+
+| Offset from the end of the partition | Size | Meaning |
+| --- | --- | --- |
+| -4 | 4 | Magic, the ASCII `BOOT` (`WOLFBOOT_MAGIC_TRAIL`) |
+| -5 | 1 | Partition state |
+
+The states are the `IMG_STATE_*` values: `0xFF` new, `0x70` updating, `0x10` testing, `0x00` success. They are written at their default polarity regardless of `WOLFBOOT_FLAGS_INVERT`, because a format an external tool reads must not change meaning with a build option. On a default-polarity build the bytes are identical to a flash trailer's.
+
+The magic is load-bearing rather than decorative. A freshly imaged partition tail is usually `0x00`, and `0x00` is `IMG_STATE_SUCCESS`, so without a magic to gate the read a blank slot would look already confirmed.
+
+#### The cycle
+
+1. Something writes a new image into the idle slot and marks that slot **`updating`**.
+2. wolfBoot selects it on version as usual, verifies it, and promotes `updating` to **`testing`** before handing over.
+3. Whatever comes up clears it to **`success`**.
+4. If the next boot still finds **`testing`**, that slot did not come up. wolfBoot skips it and boots the other slot.
+
+**A slot is only ever put on probation if an update was staged into it.** A slot that is `new`, or already `success`, is booted without anything being written, so a device that never stages an update is never probated and a steady-state boot performs no writes at all. This mirrors `src/update_ram.c`, which also promotes only `updating`. The consequence is deliberate: enabling this cannot strand a system whose OS does not confirm, but an integrator who writes an image with plain `dd` and never marks the slot gets no protection either.
+
+Skipping an unconfirmed slot writes nothing. Its version is dropped from the election in memory, which also removes it from the anti-rollback ceiling, and that is what lets an older confirmed slot boot. **Anti-rollback itself is not relaxed**: a slot that merely fails verification keeps its version and still blocks an older slot, exactly as before.
+
+#### Staging and confirming
+
+The `library_fs` target builds `lib-fs`, a userspace tool that speaks this format. Point it at the slot's partition device with `--dev`:
+
+```
+lib-fs --dev /dev/mmcblk1p1 stage      # after writing a new image to the slot
+lib-fs --dev /dev/mmcblk1p1 success    # once the system is known good
+lib-fs --dev /dev/mmcblk1p1 status     # read the current state
+```
+
+`update-trigger` is refused with `--dev`: it marks the separate UPDATE partition at a compile-time offset, which against a raw slot device is just somewhere in the middle of the slot. `stage` is the disk analogue.
+
+Order the `success` call after whatever the system treats as proof of a healthy boot; a systemd unit ordered after the services that matter is the usual place.
+
+The tool needs no configuration to match the loader's layout and no rebuild per slot. With `--dev` it locates the trailer from the size of the device it was handed, which is how wolfBoot locates it too, and it writes the pinned state values rather than the `IMG_STATE_*` of its own build. `include/disk_trailer.h` holds the offset, the magic and the four state values, and both the loader and the tool include it, so there is one definition to disagree with rather than two.
+
+#### Constraints
+
+- The trailer must not overlap the image, so the partition has to be larger than the signed image by at least the 8 bytes of the trailer. wolfBoot refuses the write and reports it rather than corrupting the image, and still boots: the consequence of no trailer is no confirmation, not a dead system.
+- A partition smaller than one 512-byte sector cannot carry a trailer and is likewise never armed.
+- **Raw partitions only.** A `DISK_FS` slot is a file inside a filesystem and has no partition tail to claim.
+- A slot left in `testing` is refused on every path into it, including the failover after another slot fails verification, so it stays out of the boot even in an `ALLOW_DOWNGRADE` build where the version guard is compiled out.
+
+### Disk boot from a read-only filesystem (FAT32 / ext4)
+
+Targets that boot from a disk (`DISK_SDCARD=1`, `DISK_EMMC=1`, or an x86 FSP/AHCI target) use `src/update_disk.c`, which by default reads the signed image from **raw offset 0 of a partition**: the image has to be written there with `dd`, and the partition cannot hold anything else.
+
+Setting `DISK_FS` adds an optional read-only filesystem layer. Each boot slot's partition is probed for a supported filesystem and, if one is found, the signed image is read from the file named by `BOOT_FILE_A` / `BOOT_FILE_B` instead. A partition holding no supported filesystem is read raw exactly as before, so an existing configuration that does not set `DISK_FS` is unaffected.
+
+```
+DISK_FS=both
+CFLAGS_EXTRA+=-DBOOT_FILE_A='"/boot/fitImage_A.itb"'
+CFLAGS_EXTRA+=-DBOOT_FILE_B='"/boot/fitImage_B.itb"'
+```
+
+| Option | Meaning |
+| --- | --- |
+| `DISK_FS` | `fat32`, `ext4` or `both`. Unset (the default) leaves raw partition access unchanged. |
+| `BOOT_FILE_A` / `BOOT_FILE_B` | Absolute path of the signed image within each slot's filesystem. Required once a slot's partition holds a filesystem. |
+| `BOOT_LABEL_A` / `BOOT_LABEL_B` | Select the partition by name instead of by `BOOT_PART_A` / `BOOT_PART_B` index. The GPT partition label is matched first, then the filesystem volume label. |
+| `WOLFBOOT_FS_CACHE_SIZE` | Filesystem metadata cache, in bytes. A multiple of 512; 512 is the minimum and the default. Raising it reduces metadata reads on a heavily fragmented file. |
+| `DEBUG_FS` | Verbose filesystem tracing on the boot console. |
+
+The file is an ordinary wolfBoot-signed image: the header sits at offset 0 of the file and the payload follows it, exactly as it would at the start of a raw partition. Nothing about signing or the A/B version selection changes.
+
+#### What is supported
+
+| | Supported | Refused |
+| --- | --- | --- |
+| FAT | FAT32, including VFAT long filenames | FAT12, FAT16 |
+| ext | ext4 with extent-mapped files; `64bit`, `metadata_csum`, `flex_bg` and every `ro_compat` feature | ext2 / ext3 indirect block maps, `inline_data`, `encrypt`, `casefold`, `META_BG`, `MMP`, a dirty (unreplayed) journal, volumes over 16 TiB |
+| Both | 512-byte logical sectors; sparse files (a hole reads as zeros, which is the file's true content) | 4Kn media, symbolic links, uninitialized extents |
+
+A volume created by a plain `mkfs.vfat -F 32` or `mkfs.ext4` is readable as-is.
+
+#### Byte order
+
+Every on-disk field is little-endian, in the MBR and GPT partition tables as well as in the FAT32 and ext4 structures. All of them are read byte-wise rather than by casting a sector to a packed struct, so the whole disk path works on big-endian and little-endian targets alike. `tools/fs-test` runs the same parsers as big-endian PowerPC, both under `qemu-user` in CI and natively on an NXP QorIQ T1040 RDB.
+
+Anything in the refused column produces a clear error and fails that boot slot. It never silently falls back to reading the partition raw, because doing so would parse the filesystem's own boot sector as an image header.
+
+#### Security notes
+
+Everything this layer parses is attacker-controlled and is read **before** the image signature is verified, so the parsers are written to fail closed:
+
+- The file size reported by the filesystem is bounded against `WOLFBOOT_RAMBOOT_MAX_SIZE` before it can drive any read into the load region, exactly as the raw path bounds the header's `fw_size`.
+- Volume geometry is validated at mount, so every later cluster or block to byte conversion is bounded by the partition.
+- A file's FAT cluster chain and its ext4 extent map are both walked once at open, so a cycle, a truncated chain, an out-of-range block or a hole is a clean error before any payload is loaded.
+- Directory scans, path depth and path length are all bounded by the `WOLFBOOT_FS_MAX_*` knobs in `include/disk_fs.h`.
+- ext4 `INCOMPAT` features are checked against a whitelist, so a feature added after this code was written is refused rather than ignored.
+
+#### Performance
+
+Contiguous clusters and extents are coalesced into a single media read, so an unfragmented file loads with the same number of disk transfers as a raw partition would. A badly fragmented file degrades into many small reads, which is slow on the SD targets that clock the controller conservatively -- copy the boot image onto a freshly formatted partition, and use `DEBUG_FS` to see the run count if a load is slower than expected.
+
+#### Example
+
+```sh
+# One ext4 partition per slot, populated with an ordinary cp.
+mkfs.ext4 -L boot_a /dev/sdX2
+mount /dev/sdX2 /mnt
+mkdir -p /mnt/boot
+cp fitImage_v1_signed.itb /mnt/boot/fitImage_A.itb
+umount /mnt
+```
+
 ### Executing flash access code from RAM
 
 On some platform, flash access code requires to be executed from RAM, to avoid conflict e.g. when writing
@@ -340,6 +525,25 @@ wolfBoot HAL flash erase function must be able to handle erase lengths larger th
 iterating over a range of flash sectors and erasing them one at a time. Setting the `FLASH_MULTI_SECTOR_ERASE=1` config option prevents this behavior when possible, configuring wolfBoot to instead prefer a
 single HAL flash erase invocation with a larger erase length versus the iterative approach. On targets where multi-sector erases are more performant, this option can be used to dramatically speed up the
 image swap procedure.
+
+### Building with the ARM Compiler for Embedded (armclang)
+
+wolfBoot can be built with the [ARM Compiler for Embedded](https://developer.arm.com/Tools%20and%20Software/Arm%20Compiler%20for%20Embedded)
+(AC6: `armclang`, `armlink`, `armar`, `fromelf`), the toolchain used by Keil
+MDK. No tool from the GNU or LLVM toolchains is required.
+
+At the moment, the only supported and tested target is the STM32U5
+(`config/examples/{stm32u5.config,stm32u5-wolfcrypt-tz.config}`).
+
+To use this, either have the AC6 tools in your `PATH` or set `ARMCLANG_PATH` to
+their location (including a trailing slash). Then build with USE_ARMCLANG=1:
+
+```
+cp config/examples/stm32u5.config .config
+make USE_ARMCLANG=1
+```
+
+Alternatively, append `USE_ARMCLANG=1` and/or `ARMCLANG_PATH` to your `.config`.
 
 ### Using Mac OS/X
 

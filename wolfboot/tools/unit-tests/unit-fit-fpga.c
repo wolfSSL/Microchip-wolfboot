@@ -39,7 +39,7 @@ static uint8_t  g_struct[4096];
 static uint32_t g_struct_len;
 static char     g_strings[1024];
 static uint32_t g_strings_len;
-static uint8_t  g_blob[8192];
+static uint8_t  g_blob[8192] __attribute__((aligned(4)));
 
 static void be32_put(uint8_t* p, uint32_t v)
 {
@@ -101,8 +101,12 @@ static void prop_str(const char* name, const char* val)
 }
 
 /* Assemble the header + reserve map + struct + strings into g_blob. */
-static void* fit_finish(void)
+/* Returns a validated view of the built blob, or NULL if it did not
+ * pass fdt_open() - which is itself a useful assertion for these
+ * fixtures. */
+static fdt_ctx* fit_finish(void)
 {
+    static fdt_ctx ctx;
     uint32_t off_rsv = 40;            /* header is 40 bytes (v17) */
     uint32_t off_struct = off_rsv + 16; /* one terminating rsv entry */
     uint32_t off_strings = off_struct + g_struct_len;
@@ -123,7 +127,10 @@ static void* fit_finish(void)
     /* reserve map terminator already zeroed */
     memcpy(g_blob + off_struct, g_struct, g_struct_len);
     memcpy(g_blob + off_strings, g_strings, g_strings_len);
-    return g_blob;
+    if (fdt_open(&ctx, g_blob, (uint32_t)sizeof(g_blob)) != 0) {
+        return NULL;
+    }
+    return &ctx;
 }
 
 static void fit_reset(void)
@@ -143,7 +150,7 @@ START_TEST(test_fit_fpga_via_config)
 {
     const char *kernel = NULL, *flat_dt = NULL, *ramdisk = NULL, *fpga = NULL;
     const char* comp;
-    void* fit;
+    fdt_ctx* fit;
 
     fit_reset();
     struct_u32(FDT_BEGIN_NODE); struct_str("");      /* root */
@@ -178,7 +185,7 @@ END_TEST
 START_TEST(test_fit_fpga_via_type_fallback)
 {
     const char *fpga = NULL;
-    void* fit;
+    fdt_ctx* fit;
 
     fit_reset();
     struct_u32(FDT_BEGIN_NODE); struct_str("");
@@ -201,7 +208,7 @@ END_TEST
 START_TEST(test_fit_fpga_absent)
 {
     const char *fpga = (const char*)0x1; /* poison */
-    void* fit;
+    fdt_ctx* fit;
 
     fit_reset();
     struct_u32(FDT_BEGIN_NODE); struct_str("");
@@ -223,7 +230,7 @@ END_TEST
 START_TEST(test_fit_compatible_absent)
 {
     const char* comp;
-    void* fit;
+    fdt_ctx* fit;
 
     fit_reset();
     struct_u32(FDT_BEGIN_NODE); struct_str("");

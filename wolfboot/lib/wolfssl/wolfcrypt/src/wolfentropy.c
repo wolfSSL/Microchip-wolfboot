@@ -20,11 +20,20 @@ data, use this implementation to seed and re-seed the DRBG.
 
 */
 
+#define _WC_BUILDING_WOLFENTROPY_C
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 
 #ifdef HAVE_ENTROPY_MEMUSE
 
 #include <wolfssl/wolfcrypt/wolfentropy.h>
+
+#ifdef HAVE_FIPS
+    /* for fips @wc_fips.  Named here rather than relied on through sha3.h:
+     * this file sits outside the module boundary from v7 on, and the fips.h
+     * redirect is what makes its SHA3 calls approved service calls. */
+    #include <wolfssl/wolfcrypt/fips.h>
+#endif
 
 #include <wolfssl/wolfcrypt/sha3.h>
 #if defined(__APPLE__) || defined(__MACH__)
@@ -333,10 +342,46 @@ static void Entropy_StopThread(void)
     #error "ENTROPY_NUM_64BIT_WORDS must be <= SHA3-256 digest size in bytes"
 #endif
 
-#if ENTROPY_BLOCK_SZ < ENTROPY_NUM_UPDATES_BITS
-#define EXTRA_ENTROPY_WORDS             ENTROPY_NUM_UPDATES
+#if ENTROPY_NUM_UPDATES < 1
+    #error "ENTROPY_NUM_UPDATES must be 1 or more"
+#endif
+
+/* Largest offset added within the final block by Entropy_MemUse().
+ *
+ * Entropy_MemUse() computes, for a byte d[i] in [0, 255] and j in
+ * [0, ENTROPY_NUM_UPDATES - 1]:
+ *     idx = (d[i] << ENTROPY_BLOCK_SZ) + (j << ENTROPY_OFFSET_SHIFTING)
+ * As 256 << ENTROPY_BLOCK_SZ == ENTROPY_NUM_WORDS, the first term reaches
+ * ENTROPY_NUM_WORDS - (1 << ENTROPY_BLOCK_SZ), and the maximum value added on
+ * top of it is the offset below.
+ */
+#define ENTROPY_MAX_BLOCK_OFFSET                                             \
+    ((ENTROPY_NUM_UPDATES - 1) << ENTROPY_OFFSET_SHIFTING)
+
+/* Number of extra words entropy_state needs beyond ENTROPY_NUM_WORDS.
+ *
+ * The largest index accessed is:
+ *     (ENTROPY_NUM_WORDS - (1 << ENTROPY_BLOCK_SZ)) + ENTROPY_MAX_BLOCK_OFFSET
+ * so the final block must hold (ENTROPY_MAX_BLOCK_OFFSET + 1) words. When that
+ * exceeds one block the shifted offset spills past ENTROPY_NUM_WORDS, so
+ * allocate exactly the overflow as extra words; otherwise the offset stays
+ * within the block and no extra words are needed.
+ *
+ * This sizing keeps every access in bounds for any ENTROPY_NUM_UPDATES >= 1,
+ * regardless of whether ENTROPY_NUM_UPDATES_BITS was supplied or left to
+ * default to ENTROPY_BLOCK_SZ.
+ */
+#if (ENTROPY_MAX_BLOCK_OFFSET + 1) > (1 << ENTROPY_BLOCK_SZ)
+    #define EXTRA_ENTROPY_WORDS                                             \
+        (ENTROPY_MAX_BLOCK_OFFSET + 1 - (1 << ENTROPY_BLOCK_SZ))
 #else
-#define EXTRA_ENTROPY_WORDS             0
+    #define EXTRA_ENTROPY_WORDS             0
+#endif
+
+#if (ENTROPY_MAX_BLOCK_OFFSET >= ((1 << ENTROPY_BLOCK_SZ) + EXTRA_ENTROPY_WORDS))
+    #error "entropy_state sizing insufficient - Entropy_MemUse index would " \
+           "exceed its bounds. This indicates an internal logic error in "  \
+           "the ENTROPY_* macro definitions."
 #endif
 
 /* State to update that is multiple cache lines long. */
@@ -1007,6 +1052,11 @@ static void Entropy_HealthTest_Reset(void)
 {
     Entropy_HealthTest_Repetition_Reset();
     Entropy_HealthTest_Proportion_Reset();
+}
+
+const char* wc_Entropy_GetVersion(void)
+{
+    return "wolfEntropy v7.0.0m";
 }
 
 #endif /* HAVE_ENTROPY_MEMUSE */

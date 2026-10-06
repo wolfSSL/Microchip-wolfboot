@@ -10,7 +10,8 @@
 #   -b, --branch <branch>  wolfSSL branch/revision
 #   -z, --zephyr <version> Zephyr version tag
 #   -t, --target <board>   Board target
-#   -s, --sample <name>    Sample to build
+#   -s, --sample <name>    Sample/test app to build
+#   -d, --subdir <dir>     App subdir under zephyr/ (samples or tests; default samples)
 #   -v, --verbose          Verbose compile output (show full compiler commands)
 #   -W, --werror           Build with -Werror (treat warnings as errors)
 #   --commit <sha>         Checkout specific commit after fetching branch
@@ -49,6 +50,7 @@ WOLFSSL_BRANCH="master"
 ZEPHYR_VERSION="v4.1.0"
 BOARD_TARGET="native_sim"
 SAMPLE_NAME="wolfssl_tls_sock"
+SUBDIR="samples"
 INTERACTIVE=0
 VERBOSE=0
 WERROR=0
@@ -92,6 +94,7 @@ while [[ $# -gt 0 ]]; do
         -z|--zephyr)  ZEPHYR_VERSION="$2"; shift 2 ;;
         -t|--target)  BOARD_TARGET="$2"; shift 2 ;;
         -s|--sample)  SAMPLE_NAME="$2"; shift 2 ;;
+        -d|--subdir)  SUBDIR="$2"; shift 2 ;;
         -v|--verbose) VERBOSE=1; shift ;;
         -W|--werror) WERROR=1; shift ;;
         --commit) WOLFSSL_COMMIT="$2"; shift 2 ;;
@@ -123,7 +126,7 @@ echo "==> wolfSSL repo:   ${WOLFSSL_REPO}"
 echo "==> wolfSSL branch: ${WOLFSSL_BRANCH}"
 echo "==> Zephyr version: ${ZEPHYR_VERSION}"
 echo "==> Board target:   ${BOARD_TARGET}"
-echo "==> Sample:         ${SAMPLE_NAME}"
+echo "==> Sample:         ${SUBDIR}/${SAMPLE_NAME}"
 echo "==> Docker image:   ${DOCKER_IMAGE}"
 [[ -n "$WOLFSSL_COMMIT" ]] && echo "==> Commit:         ${WOLFSSL_COMMIT}"
 [[ "$WERROR" == "1" ]] && echo "==> Werror:         enabled"
@@ -144,6 +147,7 @@ set -euo pipefail
 ZEPHYR_VERSION="__ZEPHYR_VERSION__"
 BOARD_TARGET="__BOARD_TARGET__"
 SAMPLE_NAME="__SAMPLE_NAME__"
+SUBDIR="__SUBDIR__"
 WOLFSSL_REPO="__WOLFSSL_REPO__"
 WOLFSSL_BRANCH="__WOLFSSL_BRANCH__"
 WOLFSSL_COMMIT="__WOLFSSL_COMMIT__"
@@ -197,7 +201,15 @@ echo "==> [container] Exporting Zephyr..."
 west zephyr-export
 
 echo "==> [container] Installing host packages (newlib, python3-venv)..."
-sudo apt-get update -qq && sudo apt-get install -y -qq python3-venv libnewlib-dev >/dev/null 2>&1 || true
+# `|| true` keeps this best-effort, but without a timeout a wedged mirror
+# stalls here silently until the job budget runs out.
+APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+sudo timeout -k 10 120 apt-get "${APT_OPTS[@]}" update -qq >/dev/null 2>&1 \
+  && sudo timeout -k 10 300 apt-get "${APT_OPTS[@]}" install -y -qq \
+       python3-venv libnewlib-dev >/dev/null 2>&1 \
+  || echo "==> [container] host package install skipped (apt update," \
+          "install or the timeout above failed); the build continues without" \
+          "python3-venv and libnewlib-dev"
 python3 -m venv .venv
 source .venv/bin/activate
 pip3 install west
@@ -224,11 +236,11 @@ if [[ "$INTERACTIVE" == "1" ]]; then
     echo " wolfSSL:   modules/crypto/wolfssl"
     echo ""
     echo " Example build commands:"
-    echo "   west build -p always -b ${BOARD_TARGET} modules/crypto/wolfssl/zephyr/samples/${SAMPLE_NAME}"
+    echo "   west build -p always -b ${BOARD_TARGET} modules/crypto/wolfssl/zephyr/${SUBDIR}/${SAMPLE_NAME}"
     echo "   west build -t run"
     echo ""
     echo " To run twister tests:"
-    echo "   ./zephyr/scripts/twister -T modules/crypto/wolfssl/zephyr/samples/${SAMPLE_NAME} -vvv"
+    echo "   ./zephyr/scripts/twister -T modules/crypto/wolfssl/zephyr/${SUBDIR}/${SAMPLE_NAME} -vvv"
     echo "=========================================="
     echo ""
     exec /bin/bash
@@ -256,7 +268,7 @@ else
     fi
 
     west build -p always -b "${BOARD_TARGET}" \
-        "modules/crypto/wolfssl/zephyr/samples/${SAMPLE_NAME}" \
+        "modules/crypto/wolfssl/zephyr/${SUBDIR}/${SAMPLE_NAME}" \
         ${CMAKE_ARGS:+-- $CMAKE_ARGS}
 
     echo ""
@@ -300,7 +312,7 @@ else
                     exit 1
                 fi
                 # Check for success strings
-                if grep -q "Benchmark complete\|Test complete\|Client Return: 0" "${RUN_LOG}" 2>/dev/null; then
+                if grep -q "Benchmark complete\|Test complete\|Client Return: 0\|PROJECT EXECUTION SUCCESSFUL" "${RUN_LOG}" 2>/dev/null; then
                     echo "==> [container] App completed successfully!"
                     APP_RC=0
                     kill "${RUN_PID}" 2>/dev/null || true
@@ -315,7 +327,7 @@ else
 
             if [[ $APP_RC -ne 0 ]]; then
                 # Process exited on its own - check if it printed a success string
-                if grep -q "Benchmark complete\|Test complete\|Client Return: 0" "${RUN_LOG}" 2>/dev/null; then
+                if grep -q "Benchmark complete\|Test complete\|Client Return: 0\|PROJECT EXECUTION SUCCESSFUL" "${RUN_LOG}" 2>/dev/null; then
                     APP_RC=0
                 else
                     echo "==> [container] App exited without a success string"
@@ -336,6 +348,7 @@ INNER_SCRIPT
 BUILD_SCRIPT="${BUILD_SCRIPT//__ZEPHYR_VERSION__/$ZEPHYR_VERSION}"
 BUILD_SCRIPT="${BUILD_SCRIPT//__BOARD_TARGET__/$BOARD_TARGET}"
 BUILD_SCRIPT="${BUILD_SCRIPT//__SAMPLE_NAME__/$SAMPLE_NAME}"
+BUILD_SCRIPT="${BUILD_SCRIPT//__SUBDIR__/$SUBDIR}"
 BUILD_SCRIPT="${BUILD_SCRIPT//__WOLFSSL_REPO__/$WOLFSSL_REPO}"
 BUILD_SCRIPT="${BUILD_SCRIPT//__WOLFSSL_BRANCH__/$WOLFSSL_BRANCH}"
 BUILD_SCRIPT="${BUILD_SCRIPT//__WOLFSSL_COMMIT__/$WOLFSSL_COMMIT}"

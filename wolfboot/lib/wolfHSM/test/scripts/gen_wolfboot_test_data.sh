@@ -168,9 +168,9 @@ HEADER_FILE="$OUTPUT_DIR/wh_test_wolfboot_img_data.h"
 
 cat > "$HEADER_FILE" << 'HEADER_TOP'
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *

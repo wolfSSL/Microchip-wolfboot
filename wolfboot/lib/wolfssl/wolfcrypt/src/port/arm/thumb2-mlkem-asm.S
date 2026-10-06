@@ -15,6 +15,9 @@
  *       thumb2 ../wolfssl/wolfcrypt/src/port/arm/thumb2-mlkem-asm.S
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_THUMB2_MLKEM_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -56,16 +59,17 @@ L_mlkem_thumb2_ntt_zetas:
 	.text
 	.align	4
 	.globl	mlkem_thumb2_ntt
+	WC_ASM_ATT_HIDDEN(mlkem_thumb2_ntt)
 	.type	mlkem_thumb2_ntt, %function
 mlkem_thumb2_ntt:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
-	SUB	sp, sp, #0x8
+	SUB	sp, sp, #8
 	ADR	r1, L_mlkem_thumb2_ntt_zetas
 #ifndef WOLFSSL_ARM_ARCH_7M
 	MOV	r12, #0xd01
 	MOVT	r12, #0xcff
 #endif /* !WOLFSSL_ARM_ARCH_7M */
-	MOV	r2, #0x10
+	MOV	r2, #16
 L_mlkem_thumb2_ntt_loop_123:
 	STR	r2, [sp]
 	LDRH	lr, [r1, #2]
@@ -497,19 +501,19 @@ L_mlkem_thumb2_ntt_loop_123:
 	STR	r8, [r0, #384]
 	STR	r9, [r0, #448]
 	LDR	r2, [sp]
-	SUBS	r2, r2, #0x1
-	ADD	r0, r0, #0x4
+	SUBS	r2, r2, #1
+	ADD	r0, r0, #4
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_thumb2_ntt_loop_123
 #else
-	BNE.N	L_mlkem_thumb2_ntt_loop_123
+	BNE.W	L_mlkem_thumb2_ntt_loop_123
 #endif
 	SUB	r0, r0, #0x40
-	MOV	r3, #0x0
+	MOV	r3, #0
 L_mlkem_thumb2_ntt_loop_4_j:
 	STR	r3, [sp, #4]
 	ADD	lr, r1, r3, LSR #4
-	MOV	r2, #0x4
+	MOV	r2, #4
 	LDR	lr, [lr, #16]
 L_mlkem_thumb2_ntt_loop_4_i:
 	STR	r2, [sp]
@@ -666,8 +670,8 @@ L_mlkem_thumb2_ntt_loop_4_i:
 	STR	r8, [r0, #96]
 	STR	r9, [r0, #112]
 	LDRD	r2, r3, [sp]
-	SUBS	r2, r2, #0x1
-	ADD	r0, r0, #0x4
+	SUBS	r2, r2, #1
+	ADD	r0, r0, #4
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_thumb2_ntt_loop_4_i
 #else
@@ -682,7 +686,7 @@ L_mlkem_thumb2_ntt_loop_4_i:
 	BNE.N	L_mlkem_thumb2_ntt_loop_4_j
 #endif
 	SUB	r0, r0, #0x200
-	MOV	r3, #0x0
+	MOV	r3, #0
 L_mlkem_thumb2_ntt_loop_567:
 	ADD	lr, r1, r3, LSR #3
 	STR	r3, [sp, #4]
@@ -1300,15 +1304,15 @@ L_mlkem_thumb2_ntt_loop_567:
 	STR	r8, [r0, #24]
 	STR	r9, [r0, #28]
 	LDR	r3, [sp, #4]
-	ADD	r3, r3, #0x10
+	ADD	r3, r3, #16
 	RSBS	r10, r3, #0x100
-	ADD	r0, r0, #0x20
+	ADD	r0, r0, #32
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_thumb2_ntt_loop_567
 #else
-	BNE.N	L_mlkem_thumb2_ntt_loop_567
+	BNE.W	L_mlkem_thumb2_ntt_loop_567
 #endif
-	ADD	sp, sp, #0x8
+	ADD	sp, sp, #8
 	POP	{r4, r5, r6, r7, r8, r9, r10, r11, pc}
 	/* Cycle Count = 1270 */
 	.size	mlkem_thumb2_ntt,.-mlkem_thumb2_ntt
@@ -1345,16 +1349,17 @@ L_mlkem_invntt_zetas_inv:
 	.text
 	.align	4
 	.globl	mlkem_thumb2_invntt
+	WC_ASM_ATT_HIDDEN(mlkem_thumb2_invntt)
 	.type	mlkem_thumb2_invntt, %function
 mlkem_thumb2_invntt:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
-	SUB	sp, sp, #0x8
+	SUB	sp, sp, #8
 	ADR	r1, L_mlkem_invntt_zetas_inv
 #ifndef WOLFSSL_ARM_ARCH_7M
 	MOV	r12, #0xd01
 	MOVT	r12, #0xcff
 #endif /* !WOLFSSL_ARM_ARCH_7M */
-	MOV	r3, #0x0
+	MOV	r3, #0
 L_mlkem_invntt_loop_765:
 	ADD	lr, r1, r3, LSR #1
 	STR	r3, [sp, #4]
@@ -1943,20 +1948,20 @@ L_mlkem_invntt_loop_765:
 	STR	r8, [r0, #24]
 	STR	r9, [r0, #28]
 	LDR	r3, [sp, #4]
-	ADD	r3, r3, #0x10
+	ADD	r3, r3, #16
 	RSBS	r10, r3, #0x100
-	ADD	r0, r0, #0x20
+	ADD	r0, r0, #32
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_invntt_loop_765
 #else
-	BNE.N	L_mlkem_invntt_loop_765
+	BNE.W	L_mlkem_invntt_loop_765
 #endif
 	SUB	r0, r0, #0x200
-	MOV	r3, #0x0
+	MOV	r3, #0
 L_mlkem_invntt_loop_4_j:
 	STR	r3, [sp, #4]
 	ADD	lr, r1, r3, LSR #4
-	MOV	r2, #0x4
+	MOV	r2, #4
 	LDR	lr, [lr, #224]
 L_mlkem_invntt_loop_4_i:
 	STR	r2, [sp]
@@ -2133,8 +2138,8 @@ L_mlkem_invntt_loop_4_i:
 	STR	r8, [r0, #96]
 	STR	r9, [r0, #112]
 	LDRD	r2, r3, [sp]
-	SUBS	r2, r2, #0x1
-	ADD	r0, r0, #0x4
+	SUBS	r2, r2, #1
+	ADD	r0, r0, #4
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_invntt_loop_4_i
 #else
@@ -2149,7 +2154,7 @@ L_mlkem_invntt_loop_4_i:
 	BNE.N	L_mlkem_invntt_loop_4_j
 #endif
 	SUB	r0, r0, #0x200
-	MOV	r2, #0x10
+	MOV	r2, #16
 L_mlkem_invntt_loop_321:
 	STR	r2, [sp]
 	LDRH	lr, [r1, #2]
@@ -2957,14 +2962,14 @@ L_mlkem_invntt_loop_321:
 	STR	r8, [r0, #384]
 	STR	r9, [r0, #448]
 	LDR	r2, [sp]
-	SUBS	r2, r2, #0x1
-	ADD	r0, r0, #0x4
+	SUBS	r2, r2, #1
+	ADD	r0, r0, #4
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_invntt_loop_321
 #else
-	BNE.N	L_mlkem_invntt_loop_321
+	BNE.W	L_mlkem_invntt_loop_321
 #endif
-	ADD	sp, sp, #0x8
+	ADD	sp, sp, #8
 	POP	{r4, r5, r6, r7, r8, r9, r10, r11, pc}
 	/* Cycle Count = 1629 */
 	.size	mlkem_thumb2_invntt,.-mlkem_thumb2_invntt
@@ -3001,6 +3006,7 @@ L_mlkem_basemul_mont_zetas:
 	.text
 	.align	4
 	.globl	mlkem_thumb2_basemul_mont
+	WC_ASM_ATT_HIDDEN(mlkem_thumb2_basemul_mont)
 	.type	mlkem_thumb2_basemul_mont, %function
 mlkem_thumb2_basemul_mont:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -3010,12 +3016,12 @@ mlkem_thumb2_basemul_mont:
 	MOV	r12, #0xd01
 	MOVT	r12, #0xcff
 #endif /* !WOLFSSL_ARM_ARCH_7M */
-	MOV	r8, #0x0
+	MOV	r8, #0
 L_mlkem_basemul_mont_loop:
 	LDM	r1!, {r4, r5}
 	LDM	r2!, {r6, r7}
 	LDR	lr, [r3, r8]
-	ADD	r8, r8, #0x2
+	ADD	r8, r8, #2
 	PUSH	{r8}
 	CMP	r8, #0x80
 #ifndef WOLFSSL_ARM_ARCH_7M
@@ -3025,7 +3031,7 @@ L_mlkem_basemul_mont_loop:
 	SMULTB	r11, r12, r10
 	SMLABB	r8, r12, r9, r8
 	SMLABB	r10, r12, r11, r10
-	RSB	r11, lr, #0x0
+	RSB	r11, lr, #0
 	SMULBT	r8, lr, r8
 	SMULBT	r10, r11, r10
 	SMLABB	r8, r4, r6, r8
@@ -3061,7 +3067,7 @@ L_mlkem_basemul_mont_loop:
 	SBFX	r11, r11, #0, #16
 	MLA	r8, r12, r9, r8
 	MLA	r10, r12, r11, r10
-	RSB	r11, lr, #0x0
+	RSB	r11, lr, #0
 	SBFX	r9, lr, #0, #16
 	SBFX	r11, r11, #0, #16
 	ASR	r8, r8, #16
@@ -3124,6 +3130,7 @@ L_mlkem_basemul_mont_loop:
 	.text
 	.align	4
 	.globl	mlkem_thumb2_basemul_mont_add
+	WC_ASM_ATT_HIDDEN(mlkem_thumb2_basemul_mont_add)
 	.type	mlkem_thumb2_basemul_mont_add, %function
 mlkem_thumb2_basemul_mont_add:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -3133,12 +3140,12 @@ mlkem_thumb2_basemul_mont_add:
 	MOV	r12, #0xd01
 	MOVT	r12, #0xcff
 #endif /* !WOLFSSL_ARM_ARCH_7M */
-	MOV	r8, #0x0
+	MOV	r8, #0
 L_mlkem_thumb2_basemul_mont_add_loop:
 	LDM	r1!, {r4, r5}
 	LDM	r2!, {r6, r7}
 	LDR	lr, [r3, r8]
-	ADD	r8, r8, #0x2
+	ADD	r8, r8, #2
 	PUSH	{r8}
 	CMP	r8, #0x80
 #ifndef WOLFSSL_ARM_ARCH_7M
@@ -3148,7 +3155,7 @@ L_mlkem_thumb2_basemul_mont_add_loop:
 	SMULTB	r11, r12, r10
 	SMLABB	r8, r12, r9, r8
 	SMLABB	r10, r12, r11, r10
-	RSB	r11, lr, #0x0
+	RSB	r11, lr, #0
 	SMULBT	r8, lr, r8
 	SMULBT	r10, r11, r10
 	SMLABB	r8, r4, r6, r8
@@ -3187,7 +3194,7 @@ L_mlkem_thumb2_basemul_mont_add_loop:
 	SBFX	r11, r11, #0, #16
 	MLA	r8, r12, r9, r8
 	MLA	r10, r12, r11, r10
-	RSB	r11, lr, #0x0
+	RSB	r11, lr, #0
 	SBFX	r9, lr, #0, #16
 	SBFX	r11, r11, #0, #16
 	ASR	r8, r8, #16
@@ -3259,6 +3266,7 @@ L_mlkem_thumb2_basemul_mont_add_loop:
 	.text
 	.align	4
 	.globl	mlkem_thumb2_csubq
+	WC_ASM_ATT_HIDDEN(mlkem_thumb2_csubq)
 	.type	mlkem_thumb2_csubq, %function
 mlkem_thumb2_csubq:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -3336,7 +3344,7 @@ L_mlkem_thumb2_csubq_loop:
 	BFI	r5, r10, #0, #16
 #endif /* !WOLFSSL_ARM_ARCH_7M */
 	STM	r0!, {r2, r3, r4, r5}
-	SUBS	r1, r1, #0x8
+	SUBS	r1, r1, #8
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_thumb2_csubq_loop
 #else
@@ -3348,13 +3356,14 @@ L_mlkem_thumb2_csubq_loop:
 	.text
 	.align	4
 	.globl	mlkem_thumb2_rej_uniform
+	WC_ASM_ATT_HIDDEN(mlkem_thumb2_rej_uniform)
 	.type	mlkem_thumb2_rej_uniform, %function
 mlkem_thumb2_rej_uniform:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, lr}
 	MOV	r8, #0xd01
-	MOV	r9, #0x0
+	MOV	r9, #0
 L_mlkem_thumb2_rej_uniform_loop_no_fail:
-	CMP	r1, #0x8
+	CMP	r1, #8
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BLT	L_mlkem_thumb2_rej_uniform_done_no_fail
 #else
@@ -3411,7 +3420,7 @@ L_mlkem_thumb2_rej_uniform_loop_no_fail:
 	LSR	r10, r10, #31
 	SUB	r1, r1, r10
 	ADD	r9, r9, r10, LSL #1
-	SUBS	r3, r3, #0xc
+	SUBS	r3, r3, #12
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_mlkem_thumb2_rej_uniform_loop_no_fail
 #else
@@ -3423,7 +3432,7 @@ L_mlkem_thumb2_rej_uniform_loop_no_fail:
 	B.N	L_mlkem_thumb2_rej_uniform_done
 #endif
 L_mlkem_thumb2_rej_uniform_done_no_fail:
-	CMP	r1, #0x0
+	CMP	r1, #0
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3439,8 +3448,8 @@ L_mlkem_thumb2_rej_uniform_loop:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_0
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3455,8 +3464,8 @@ L_mlkem_thumb2_rej_uniform_fail_0:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_1
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3472,8 +3481,8 @@ L_mlkem_thumb2_rej_uniform_fail_1:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_2
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3488,8 +3497,8 @@ L_mlkem_thumb2_rej_uniform_fail_2:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_3
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3504,8 +3513,8 @@ L_mlkem_thumb2_rej_uniform_fail_3:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_4
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3521,8 +3530,8 @@ L_mlkem_thumb2_rej_uniform_fail_4:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_5
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3537,8 +3546,8 @@ L_mlkem_thumb2_rej_uniform_fail_5:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_6
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
@@ -3553,15 +3562,15 @@ L_mlkem_thumb2_rej_uniform_fail_6:
 	BGE.N	L_mlkem_thumb2_rej_uniform_fail_7
 #endif
 	STRH	r7, [r0, r9]
-	SUBS	r1, r1, #0x1
-	ADD	r9, r9, #0x2
+	SUBS	r1, r1, #1
+	ADD	r9, r9, #2
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BEQ	L_mlkem_thumb2_rej_uniform_done
 #else
 	BEQ.N	L_mlkem_thumb2_rej_uniform_done
 #endif
 L_mlkem_thumb2_rej_uniform_fail_7:
-	SUBS	r3, r3, #0xc
+	SUBS	r3, r3, #12
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BGT	L_mlkem_thumb2_rej_uniform_loop
 #else
@@ -3573,10 +3582,10 @@ L_mlkem_thumb2_rej_uniform_done:
 	/* Cycle Count = 225 */
 	.size	mlkem_thumb2_rej_uniform,.-mlkem_thumb2_rej_uniform
 #endif /* WOLFSSL_HAVE_MLKEM */
-#endif /* WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

@@ -247,6 +247,10 @@ static uint8_t *find_object_buffer(int32_t type, uint32_t tok_id, uint32_t obj_i
     while ((uintptr_t)hdr < ((uintptr_t)vault_base + WOLFBOOT_SECTOR_SIZE)) {
         if ((hdr->token_id == tok_id) && (hdr->object_id == obj_id)
                 && (hdr->type == type)) {
+            if (hdr->pos >= KEYVAULT_MAX_ITEMS) {
+                delete_object(type, tok_id, obj_id);
+                return NULL; /* Corrupted slot position */
+            }
             tok_obj_stored = (uint32_t *) (vault_base + (2 * WOLFBOOT_SECTOR_SIZE) + (hdr->pos * KEYVAULT_OBJ_SIZE));
             if ((tok_obj_stored[0] != tok_id) || (tok_obj_stored[1] != obj_id)) {
                 /* Id's don't match. Try backup sector. */
@@ -341,13 +345,16 @@ static struct obj_hdr *create_object(int32_t type, uint32_t tok_id, uint32_t obj
 
 static void update_store_size(struct obj_hdr *hdr, uint32_t size)
 {
-    uint32_t off;
+    uintptr_t off;
+    uint8_t *h = (uint8_t *)hdr;
     struct obj_hdr *hdr_mem;
-    if (((uint8_t *)hdr) < vault_base ||
-        ((uint8_t *)hdr > vault_base + WOLFBOOT_SECTOR_SIZE))
+
+    if (h < vault_base ||
+            h + sizeof(struct obj_hdr) >
+            vault_base + WOLFBOOT_SECTOR_SIZE)
         return;
+    off = (uintptr_t)(h - vault_base);
     check_vault();
-    off = (uintptr_t)hdr - (uintptr_t)vault_base;
     memcpy(cached_sector, vault_base, WOLFBOOT_SECTOR_SIZE);
     hdr_mem = (struct obj_hdr *)(cached_sector + off);
     hdr_mem->size = size;
@@ -476,10 +483,11 @@ int wolfPSA_Store_OpenSz(int type, unsigned long id1, unsigned long id2, int rea
     return wolfPSA_Store_Open(type, id1, id2, read, store);
 }
 
-void wolfPSA_Store_Close(void* store)
+int wolfPSA_Store_Close(void* store)
 {
     struct store_handle *handle = store;
     memset(handle, 0, sizeof(*handle));
+    return 0;
 }
 
 int wolfPSA_Store_Read(void* store, unsigned char* buffer, int len)
@@ -488,6 +496,9 @@ int wolfPSA_Store_Read(void* store, unsigned char* buffer, int len)
     uint32_t obj_size = 0;
     if ((handle == NULL) || (handle->hdr == NULL) || (handle->buffer == NULL))
        return -1;
+
+    if (len < 0)
+        return -1;
 
     obj_size = handle->hdr->size;
     if (obj_size > KEYVAULT_OBJ_SIZE)
@@ -520,6 +531,9 @@ int wolfPSA_Store_Write(void* store, unsigned char* buffer, int len)
     if ((handle == NULL) || (handle->hdr == NULL) || (handle->buffer == NULL))
        return -1;
     if ((handle->flags & STORE_FLAGS_READONLY) != 0)
+        return -1;
+
+    if (len < 0)
         return -1;
 
     obj_size = handle->hdr->size;
@@ -565,6 +579,9 @@ int wolfPSA_Store_Remove(int type, unsigned long id1, unsigned long id2)
     if (buf == NULL)
         return NOT_AVAILABLE_E;
 
+    /* Erase the payload before invalidating the metadata, so key
+     * material does not remain recoverable in flash after removal. */
+    erase_object_payload(buf);
     delete_object((int32_t)type, (uint32_t)id1, (uint32_t)id2);
     return 0;
 }

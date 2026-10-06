@@ -279,9 +279,9 @@ test-sim-self-update-monolithic: wolfboot.bin test-app/image_v1_signed.bin FORCE
 	@# Sign monolithic payload as wolfBoot self-update v2
 	$(Q)$(SIGN_ENV) $(SIGN_TOOL) $(SIGN_OPTIONS) --wolfboot-update monolithic_payload.bin $(PRIVATE_KEY) 2
 	@# Create update partition with signed monolithic image and "pBOOT" trailer
-	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_PARTITION_SIZE))) count=1 2>/dev/null | tr '\000' '\377' > update_part.dd
+	$(Q)dd if=/dev/zero bs=$$(($(or $(WOLFBOOT_PARTITION_UPDATE_SIZE),$(WOLFBOOT_PARTITION_SIZE)))) count=1 2>/dev/null | tr '\000' '\377' > update_part.dd
 	$(Q)dd if=monolithic_payload_v2_signed.bin of=update_part.dd bs=1 conv=notrunc
-	$(Q)printf "pBOOT" | dd of=update_part.dd bs=1 seek=$$(($(WOLFBOOT_PARTITION_SIZE) - 5)) conv=notrunc
+	$(Q)printf "pBOOT" | dd of=update_part.dd bs=1 seek=$$(($(or $(WOLFBOOT_PARTITION_UPDATE_SIZE),$(WOLFBOOT_PARTITION_SIZE)) - 5)) conv=notrunc
 	@# Create erased boot partition
 	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_PARTITION_SIZE))) count=1 2>/dev/null | tr '\000' '\377' > boot_part.dd
 	@# Assemble flash: wolfboot.bin at 0, empty boot partition, update partition
@@ -315,9 +315,9 @@ test-sim-self-update-monolithic-self-header: wolfboot.bin test-app/image_v1_sign
 	$(Q)$(SIGN_ENV) $(SIGN_TOOL) $(SIGN_OPTIONS) --wolfboot-update monolithic_payload.bin $(PRIVATE_KEY) 2
 	$(Q)$(SIGN_ENV) $(SIGN_TOOL) $(SIGN_OPTIONS) --wolfboot-update --header-only monolithic_payload.bin $(PRIVATE_KEY) 2
 	@# Create update partition with signed monolithic image and "pBOOT" trailer
-	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_PARTITION_SIZE))) count=1 2>/dev/null | tr '\000' '\377' > update_part.dd
+	$(Q)dd if=/dev/zero bs=$$(($(or $(WOLFBOOT_PARTITION_UPDATE_SIZE),$(WOLFBOOT_PARTITION_SIZE)))) count=1 2>/dev/null | tr '\000' '\377' > update_part.dd
 	$(Q)dd if=monolithic_payload_v2_signed.bin of=update_part.dd bs=1 conv=notrunc
-	$(Q)printf "pBOOT" | dd of=update_part.dd bs=1 seek=$$(($(WOLFBOOT_PARTITION_SIZE) - 5)) conv=notrunc
+	$(Q)printf "pBOOT" | dd of=update_part.dd bs=1 seek=$$(($(or $(WOLFBOOT_PARTITION_UPDATE_SIZE),$(WOLFBOOT_PARTITION_SIZE)) - 5)) conv=notrunc
 	@# Create erased boot partition and self-header sector
 	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_PARTITION_SIZE))) count=1 2>/dev/null | tr '\000' '\377' > boot_part.dd
 	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_SECTOR_SIZE))) count=1 2>/dev/null | tr '\000' '\377' > self_hdr.dd
@@ -342,6 +342,49 @@ test-sim-self-update-monolithic-self-header: wolfboot.bin test-app/image_v1_sign
 	$(Q)cmp -n $$(($(IMAGE_HEADER_SIZE))) persisted_hdr.dd monolithic_payload_v2_header.bin
 	@echo "  Self-header persisted correctly: PASSED"
 	@echo "=== Monolithic Self-Update + Self-Header Test PASSED ==="
+
+# Test that an oversized monolithic self-update is rejected. The payload is
+# signed and staged normally, but its firmware size exceeds the install span
+# (bootloader region + BOOT partition minus the trailer sector), so wolfBoot
+# must refuse it and leave the bootloader and BOOT partition untouched.
+# Requires a build with wolfBoot_printf output (e.g. DEBUG=1, as in the
+# sim-self-update-monolithic example config).
+test-sim-self-update-monolithic-oversize: wolfboot.bin test-app/image_v1_signed.bin FORCE
+	@echo "=== Simulator Monolithic Self-Update Oversize Rejection Test ==="
+	@# Create dummy bootloader (0xAA pattern, exactly bootloader region size)
+	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_PARTITION_BOOT_ADDRESS) - $(ARCH_FLASH_OFFSET))) count=1 2>/dev/null | tr '\000' '\252' > monolithic_dummy_bl.bin
+	@# Build a payload 0x100 bytes past the max install span, padded with 0xFF.
+	@# It still fits the UPDATE partition, so only the install-span check can
+	@# reject it.
+	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_PARTITION_BOOT_ADDRESS) - $(ARCH_FLASH_OFFSET) + $(WOLFBOOT_PARTITION_SIZE) - $(WOLFBOOT_SECTOR_SIZE) + 0x100)) count=1 2>/dev/null | tr '\000' '\377' > monolithic_oversize.bin
+	$(Q)cat monolithic_dummy_bl.bin test-app/image_v1_signed.bin | dd of=monolithic_oversize.bin conv=notrunc 2>/dev/null
+	@# Sign with an inflated update partition size: the keytool refuses
+	@# oversized images, and the point here is the bootloader's own guard
+	$(Q)$(SIGN_ENV) WOLFBOOT_PARTITION_UPDATE_SIZE=0x1000000 $(SIGN_TOOL) $(SIGN_OPTIONS) --wolfboot-update monolithic_oversize.bin $(PRIVATE_KEY) 2
+	@# Create update partition with signed oversized image and "pBOOT" trailer
+	$(Q)dd if=/dev/zero bs=$$(($(or $(WOLFBOOT_PARTITION_UPDATE_SIZE),$(WOLFBOOT_PARTITION_SIZE)))) count=1 2>/dev/null | tr '\000' '\377' > update_part.dd
+	$(Q)dd if=monolithic_oversize_v2_signed.bin of=update_part.dd bs=1 conv=notrunc
+	$(Q)printf "pBOOT" | dd of=update_part.dd bs=1 seek=$$(($(or $(WOLFBOOT_PARTITION_UPDATE_SIZE),$(WOLFBOOT_PARTITION_SIZE)) - 5)) conv=notrunc
+	@# Create erased boot partition
+	$(Q)dd if=/dev/zero bs=$$(($(WOLFBOOT_PARTITION_SIZE))) count=1 2>/dev/null | tr '\000' '\377' > boot_part.dd
+	@# Assemble flash: wolfboot.bin at 0, empty boot partition, update partition
+	$(Q)$(BINASSEMBLE) internal_flash.dd \
+		0 wolfboot.bin \
+		$$(($(WOLFBOOT_PARTITION_BOOT_ADDRESS) - $(ARCH_FLASH_OFFSET))) boot_part.dd \
+		$$(($(WOLFBOOT_PARTITION_UPDATE_ADDRESS) - $(ARCH_FLASH_OFFSET))) update_part.dd
+	@# Run simulator - the self-update must be refused before any flash write
+	$(Q)./wolfboot.elf get_version > monolithic_oversize.log 2>&1 || true
+	$(Q)grep -q "Self update image too large" monolithic_oversize.log || \
+		{ echo "Rejection message not found; simulator output:"; \
+		  cat monolithic_oversize.log; false; }
+	@echo "  Oversized self-update rejected: PASSED"
+	@# Verify the bootloader region still contains the original wolfboot.bin
+	$(Q)cmp -n $$(wc -c < wolfboot.bin | awk '{print $$1}') wolfboot.bin internal_flash.dd
+	@echo "  Bootloader region untouched: PASSED"
+	@# Verify the boot partition is still fully erased
+	$(Q)cmp -n $$(($(WOLFBOOT_PARTITION_SIZE))) boot_part.dd internal_flash.dd 0 $$(($(WOLFBOOT_PARTITION_BOOT_ADDRESS) - $(ARCH_FLASH_OFFSET)))
+	@echo "  Boot partition untouched: PASSED"
+	@echo "=== Monolithic Self-Update Oversize Rejection Test PASSED ==="
 
 # Test self-header cryptographic verification (hash + signature validation)
 #
@@ -1185,52 +1228,67 @@ test-all: clean
 
 
 test-size-all:
-	make test-size SIGN=NONE LIMIT=5072 NO_ARM_ASM=1
+	# Several limits below are raised relative to upstream.  This branch bumps
+	# lib/wolfssl to the ti_c25 merge for CHAR_BIT!=8 wide-byte support, which
+	# costs 4-48 bytes depending on configuration (most of it in the no-ASM
+	# SP-math and ML-DSA paths).  On top of that, every entry here is an
+	# STM32F407 build, so each one also carries the flat 48 bytes of
+	# hal_cache_invalidate() and its call from hal_flash_lock().  Each value
+	# is the measured size, matching upstream's convention.
+	# Measured with the CI container (ghcr.io/wolfssl/wolfboot-ci-arm).
+	# Re-measured after the lib/wolfssl bump to master 4aa1ad7a5, which adds
+	# 8-136 bytes per configuration.
+	# Re-measured 2026-09-24: SIGN=NONE +8B (5180) from the Fenrir fix batch;
+	# all other configurations measured smaller than their limits.
+	# Re-measured 2026-09-29: NONE +24B (5204), ECC256/ECC384 +12B each, from
+	# the uart printf %u/is_signed change compiled into every build; RSA,
+	# RSAPSS, LMS and ML_DSA measured 8B smaller than their limits.
+	make test-size SIGN=NONE LIMIT=5204 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=ED25519 LIMIT=12184 NO_ARM_ASM=1
+	make test-size SIGN=ED25519 LIMIT=12356 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=ECC256  LIMIT=18880 NO_ARM_ASM=1
+	make test-size SIGN=ECC256  LIMIT=19076 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=ECC256 NO_ASM=1 LIMIT=13896 NO_ARM_ASM=1
+	make test-size SIGN=ECC256 NO_ASM=1 LIMIT=14120 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=RSA2048 LIMIT=11768 NO_ARM_ASM=1
+	make test-size SIGN=RSA2048 LIMIT=11984 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=RSA2048 NO_ASM=1 LIMIT=12328 NO_ARM_ASM=1
+	make test-size SIGN=RSA2048 NO_ASM=1 LIMIT=12532 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=RSA4096 LIMIT=12068 NO_ARM_ASM=1
+	make test-size SIGN=RSA4096 LIMIT=12284 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=RSA4096 NO_ASM=1 LIMIT=12608 NO_ARM_ASM=1
+	make test-size SIGN=RSA4096 NO_ASM=1 LIMIT=12828 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=ECC384 LIMIT=19564 NO_ARM_ASM=1
+	make test-size SIGN=ECC384 LIMIT=19760 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=ECC384 NO_ASM=1 LIMIT=15260 NO_ARM_ASM=1
+	make test-size SIGN=ECC384 NO_ASM=1 LIMIT=15476 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=ED448 LIMIT=14212 NO_ARM_ASM=1
+	make test-size SIGN=ED448 LIMIT=14424 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=RSA3072 LIMIT=11908 NO_ARM_ASM=1
+	make test-size SIGN=RSA3072 LIMIT=12124 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=RSA3072 NO_ASM=1 LIMIT=12436 NO_ARM_ASM=1
+	make test-size SIGN=RSA3072 NO_ASM=1 LIMIT=12648 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=RSAPSS2048 LIMIT=13704 NO_ARM_ASM=1
+	make test-size SIGN=RSAPSS2048 LIMIT=13912 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=RSAPSS2048 NO_ASM=1 LIMIT=14264 NO_ARM_ASM=1
+	make test-size SIGN=RSAPSS2048 NO_ASM=1 LIMIT=14460 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=RSAPSS3072 LIMIT=13872 NO_ARM_ASM=1
+	make test-size SIGN=RSAPSS3072 LIMIT=14076 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=RSAPSS3072 NO_ASM=1 LIMIT=14396 NO_ARM_ASM=1
+	make test-size SIGN=RSAPSS3072 NO_ASM=1 LIMIT=14600 NO_ARM_ASM=1
 	make keysclean
-	make test-size SIGN=RSAPSS4096 LIMIT=14044 NO_ARM_ASM=1
+	make test-size SIGN=RSAPSS4096 LIMIT=14248 NO_ARM_ASM=1
 	make clean
-	make test-size SIGN=RSAPSS4096 NO_ASM=1 LIMIT=14584 NO_ARM_ASM=1
+	make test-size SIGN=RSAPSS4096 NO_ASM=1 LIMIT=14792 NO_ARM_ASM=1
 	make keysclean
 	make test-size SIGN=LMS LMS_LEVELS=2 LMS_HEIGHT=5 LMS_WINTERNITZ=8 \
 		WOLFBOOT_SMALL_STACK=0 IMAGE_SIGNATURE_SIZE=2644 \
-		IMAGE_HEADER_SIZE?=5288 LIMIT=8076 NO_ARM_ASM=1
+		IMAGE_HEADER_SIZE?=5288 LIMIT=8220 NO_ARM_ASM=1
 	make keysclean
 	make test-size SIGN=XMSS XMSS_PARAMS='XMSS-SHA2_10_256' \
 		IMAGE_SIGNATURE_SIZE=2500 IMAGE_HEADER_SIZE?=4096 \
-		LIMIT=8728 NO_ARM_ASM=1
+		LIMIT=8852 NO_ARM_ASM=1
 	make keysclean
 	make clean
-	make test-size SIGN=ML_DSA ML_DSA_LEVEL=2 LIMIT=19486 \
+	make test-size SIGN=ML_DSA ML_DSA_LEVEL=2 LIMIT=19694 \
 		IMAGE_SIGNATURE_SIZE=2420 IMAGE_HEADER_SIZE?=8192

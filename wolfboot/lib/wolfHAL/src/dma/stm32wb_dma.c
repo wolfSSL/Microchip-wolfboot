@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 #ifdef WHAL_CFG_STM32WB_DMA_SINGLE_INSTANCE
-#include "board.h"  /* provides whal_Stm32wb_Dma_Dev singleton */
+#include "wolfHAL_board.h"  /* provides whal_Stm32wb_Dma_Dev singleton */
 #endif
 #include <wolfHAL/dma/dma.h>
 #include <wolfHAL/dma/stm32wb_dma.h>

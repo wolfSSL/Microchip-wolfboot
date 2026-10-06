@@ -514,9 +514,9 @@ impl AeadCore for Aes128Ccm {
 #[cfg(all(aes_ccm, feature = "aead"))]
 impl KeyInit for Aes128Ccm {
     fn new(key: &aead::Key<Self>) -> Self {
-        let mut k = [0u8; 16];
-        k.copy_from_slice(key.as_ref());
-        Aes128Ccm { key: k }
+        let mut out = Aes128Ccm { key: [0u8; 16] };
+        out.key.copy_from_slice(key.as_ref());
+        out
     }
 }
 
@@ -566,9 +566,9 @@ impl AeadCore for Aes192Ccm {
 #[cfg(all(aes_ccm, feature = "aead"))]
 impl KeyInit for Aes192Ccm {
     fn new(key: &aead::Key<Self>) -> Self {
-        let mut k = [0u8; 24];
-        k.copy_from_slice(key.as_ref());
-        Aes192Ccm { key: k }
+        let mut out = Aes192Ccm { key: [0u8; 24] };
+        out.key.copy_from_slice(key.as_ref());
+        out
     }
 }
 
@@ -618,9 +618,9 @@ impl AeadCore for Aes256Ccm {
 #[cfg(all(aes_ccm, feature = "aead"))]
 impl KeyInit for Aes256Ccm {
     fn new(key: &aead::Key<Self>) -> Self {
-        let mut k = [0u8; 32];
-        k.copy_from_slice(key.as_ref());
-        Aes256Ccm { key: k }
+        let mut out = Aes256Ccm { key: [0u8; 32] };
+        out.key.copy_from_slice(key.as_ref());
+        out
     }
 }
 
@@ -687,7 +687,7 @@ impl AeadInPlace for Aes256Ccm {
 /// assert_eq!(outbuf, cipher);
 /// cfb.init(&key, &iv).expect("Error with init()");
 /// let mut plain: [u8; 48] = [0; 48];
-/// #[cfg(aes_decrypt)]
+/// #[cfg(aes_cfb_decrypt)]
 /// {
 /// cfb.decrypt(&outbuf, &mut plain).expect("Error with decrypt()");
 /// assert_eq!(plain, msg);
@@ -863,7 +863,7 @@ impl CFB {
     ///
     /// A Result which is Ok(()) on success or an Err containing the wolfSSL
     /// library return code on failure.
-    #[cfg(aes_decrypt)]
+    #[cfg(aes_cfb_decrypt)]
     pub fn decrypt(&mut self, din: &[u8], dout: &mut [u8]) -> Result<(), i32> {
         let in_size = crate::buffer_len_to_u32(din.len())?;
         let out_size = crate::buffer_len_to_u32(dout.len())?;
@@ -895,7 +895,7 @@ impl CFB {
     ///
     /// A Result which is Ok(()) on success or an Err containing the wolfSSL
     /// library return code on failure.
-    #[cfg(aes_decrypt)]
+    #[cfg(aes_cfb_decrypt)]
     pub fn decrypt1(&mut self, din: &[u8], dout: &mut [u8], size: usize) -> Result<(), i32> {
         if din.len() != dout.len() {
             return Err(sys::wolfCrypt_ErrorCodes_BAD_FUNC_ARG);
@@ -927,7 +927,7 @@ impl CFB {
     ///
     /// A Result which is Ok(()) on success or an Err containing the wolfSSL
     /// library return code on failure.
-    #[cfg(aes_decrypt)]
+    #[cfg(aes_cfb_decrypt)]
     pub fn decrypt8(&mut self, din: &[u8], dout: &mut [u8]) -> Result<(), i32> {
         let in_size = crate::buffer_len_to_u32(din.len())?;
         let out_size = crate::buffer_len_to_u32(dout.len())?;
@@ -1730,9 +1730,9 @@ impl AeadCore for Aes128Gcm {
 #[cfg(all(aes_gcm, feature = "aead"))]
 impl KeyInit for Aes128Gcm {
     fn new(key: &aead::Key<Self>) -> Self {
-        let mut k = [0u8; 16];
-        k.copy_from_slice(key.as_ref());
-        Aes128Gcm { key: k }
+        let mut out = Aes128Gcm { key: [0u8; 16] };
+        out.key.copy_from_slice(key.as_ref());
+        out
     }
 }
 
@@ -1782,9 +1782,9 @@ impl AeadCore for Aes192Gcm {
 #[cfg(all(aes_gcm, feature = "aead"))]
 impl KeyInit for Aes192Gcm {
     fn new(key: &aead::Key<Self>) -> Self {
-        let mut k = [0u8; 24];
-        k.copy_from_slice(key.as_ref());
-        Aes192Gcm { key: k }
+        let mut out = Aes192Gcm { key: [0u8; 24] };
+        out.key.copy_from_slice(key.as_ref());
+        out
     }
 }
 
@@ -1834,9 +1834,9 @@ impl AeadCore for Aes256Gcm {
 #[cfg(all(aes_gcm, feature = "aead"))]
 impl KeyInit for Aes256Gcm {
     fn new(key: &aead::Key<Self>) -> Self {
-        let mut k = [0u8; 32];
-        k.copy_from_slice(key.as_ref());
-        Aes256Gcm { key: k }
+        let mut out = Aes256Gcm { key: [0u8; 32] };
+        out.key.copy_from_slice(key.as_ref());
+        out
     }
 }
 
@@ -2190,7 +2190,7 @@ impl Drop for GCMStream {
 /// assert_eq!(cipher, expected_cipher);
 /// ofb.init(&key, &iv).expect("Error with init()");
 /// let mut plain_out: [u8; 48] = [0; 48];
-/// #[cfg(aes_decrypt)]
+/// #[cfg(aes_ofb_decrypt)]
 /// {
 /// ofb.decrypt(&cipher, &mut plain_out).expect("Error with decrypt()");
 /// assert_eq!(plain_out, plain);
@@ -2303,7 +2303,7 @@ impl OFB {
     ///
     /// A Result which is Ok(()) on success or an Err containing the wolfSSL
     /// library return code on failure.
-    #[cfg(aes_decrypt)]
+    #[cfg(aes_ofb_decrypt)]
     pub fn decrypt(&mut self, din: &[u8], dout: &mut [u8]) -> Result<(), i32> {
         let in_size = crate::buffer_len_to_u32(din.len())?;
         let out_size = crate::buffer_len_to_u32(dout.len())?;

@@ -70,7 +70,7 @@
  * @param [in] a  Little-endian byte array.
  * @return 16-bit number.
  */
-#define GET_U16(a)      (*(const word16*)(a))
+#define GET_U16(a)      readUnalignedWord16(a)
 /**
  * Encode 64-bit number to a little-endian byte array.
  *
@@ -401,8 +401,8 @@ int wc_SipHash(const unsigned char* key, const unsigned char* in, word32 inSz,
         return BAD_FUNC_ARG;
     }
 
-    k0 = ((const word64*)key)[0];
-    k1 = ((const word64*)key)[1];
+    k0 = GET_U64(key);
+    k1 = GET_U64(key + 8);
     __asm__ __volatile__ (
         "xorq   %[k0], %[v0]\n\t"
         "xorq   %[k1], %[v1]\n\t"
@@ -428,7 +428,7 @@ int wc_SipHash(const unsigned char* key, const unsigned char* in, word32 inSz,
         SIPHASH_ROUND(%[v0], %[v1], %[v2], %[v3])
 #endif
         "xorq   %[k0], %[v0]\n\t"
-        "sub    $8, %[inSz]\n\t"
+        "subq   $8, %q[inSz]\n\t"
         "jge    L_siphash_input\n\t"
         "L_siphash_done_input_8:\n\t"
         "add    $8, %[inSz]\n\t"
@@ -630,8 +630,8 @@ int wc_SipHash(const unsigned char* key, const unsigned char* in, word32 inSz,
         return BAD_FUNC_ARG;
     }
 
-    k0 = ((word64*)key)[0];
-    k1 = ((word64*)key)[1];
+    k0 = GET_U64(key + 0);
+    k1 = GET_U64(key + 8);
     __asm__ __volatile__ (
         "eor    %[v0], %[v0], %[k0]\n\t"
         "eor    %[v1], %[v1], %[k1]\n\t"
@@ -646,7 +646,7 @@ int wc_SipHash(const unsigned char* key, const unsigned char* in, word32 inSz,
         "L_siphash_8_top:\n\t"
 
         "subs   %w[inSz], %w[inSz], #8\n\t"
-        "b.mi   L_siphash_done_input_8\n\t"
+        "b.lo   L_siphash_done_input_8\n\t"
         "L_siphash_input:\n\t"
         "ldr    %[k0], [%[in]], #8\n\t"
         "eor    %[v3], %[v3], %[k0]\n\t"
@@ -658,7 +658,7 @@ int wc_SipHash(const unsigned char* key, const unsigned char* in, word32 inSz,
 #endif
         "eor    %[v0], %[v0], %[k0]\n\t"
         "subs   %w[inSz], %w[inSz], #8\n\t"
-        "b.ge   L_siphash_input\n\t"
+        "b.hs   L_siphash_input\n\t"
         "L_siphash_done_input_8:\n\t"
         "add    %w[inSz], %w[inSz], #8\n\t"
 

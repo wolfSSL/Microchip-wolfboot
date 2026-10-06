@@ -19,6 +19,7 @@
 #include "spi_flash.h"
 #include "wolfboot/wolfboot.h"
 #include "printf.h"
+#include "encrypt.h"
 #ifdef SECURE_PKCS11
 int WP11_Library_Init(void);
 #endif
@@ -30,6 +31,15 @@ static inline void boot_panic(void)
     while(1)
         ;
 }
+
+#if defined(MMU) || defined(WOLFBOOT_FDT)
+/* No device tree here, but hooks.h advertises the accessor for every
+ * MMU/WOLFBOOT_FDT build, so a conforming hook must still link. */
+void* wolfBoot_get_dts_address(void)
+{
+    return NULL;
+}
+#endif
 
 void RAMFUNCTION wolfBoot_start(void)
 {
@@ -115,9 +125,18 @@ void RAMFUNCTION wolfBoot_start(void)
 #elif defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
     (void)hal_hsm_server_cleanup();
 #endif
+
+#ifdef ENCRYPT_PKCS11
+    pkcs11_crypto_deinit();
+#endif
 #ifndef TZEN
     if (hal_flash_protect(WOLFBOOT_ORIGIN, BOOTLOADER_PARTITION_SIZE) < 0)
         boot_panic();
+#endif
+#ifdef WOLFBOOT_HOOK_PREBOOT
+    /* Before hal_prepare_boot(), so a hook still has the MMU and caches as
+     * wolfBoot set them up. */
+    wolfBoot_hook_preboot(&fw_image);
 #endif
     hal_prepare_boot();
 #ifdef WOLFBOOT_HOOK_BOOT

@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -350,6 +350,8 @@ static int DerNextSequence(const uint8_t* input, uint32_t maxIdx,
 }
 
 
+/* Caller (the cert request dispatch) holds the non-recursive
+ * WH_SERVER_NVM_LOCK, so only unlocked keystore primitives may be used here. */
 static int _verifyChainAgainstCmStore(
     whServerContext* server, WOLFSSL_CERT_MANAGER* cm, const uint8_t* chain,
     uint32_t chain_len, const whNvmId* trustedRootNvmIds, uint16_t numRoots,
@@ -477,6 +479,7 @@ static int _verifyChainAgainstCmStore(
                 if (WH_KEYID_ISERASED(*inout_keyId)) {
                     rc = wh_Server_KeystoreGetUniqueId(server, inout_keyId);
                     if (rc != WH_ERROR_OK) {
+                        wc_FreeDecodedCert(&dc);
                         return rc;
                     }
                 }
@@ -500,7 +503,10 @@ static int _verifyChainAgainstCmStore(
                         if (rc == 0) {
                             const char label[] = "cert_pubkey";
                             cacheMeta->len     = (whNvmSize)cacheBufSize;
-                            cacheMeta->flags   = cachedKeyFlags;
+                            /* clients can't set server-only flags (e.g. trusted
+                             * KEK) */
+                            cacheMeta->flags =
+                                cachedKeyFlags & ~WH_NVM_FLAGS_SERVER_ONLY;
                             cacheMeta->access  = WH_NVM_ACCESS_ANY;
                             cacheMeta->id      = *inout_keyId;
                             memset(cacheMeta->label, 0,
@@ -607,7 +613,9 @@ int wh_Server_CertAddTrusted(whServerContext* server, whNvmId id,
         memcpy(metadata.label, "trusted_cert", sizeof("trusted_cert"));
     }
 
-    rc = wh_Nvm_AddObject(server->nvm, &metadata, cert_len, cert);
+    /* Client-driven path: checked add strips server-only flags and refuses
+     * to overwrite a policy-protected object (e.g. a trusted KEK). */
+    rc = wh_Nvm_AddObjectChecked(server->nvm, &metadata, cert_len, cert);
 
 #ifdef WOLFHSM_CFG_CERTIFICATE_VERIFY_CACHE
     /* Cache entries are bound to the trusted root by NVM ID. AddObject
@@ -629,11 +637,28 @@ int wh_Server_CertAddTrusted(whServerContext* server, whNvmId id,
 /* Delete a trusted certificate from NVM storage */
 int wh_Server_CertEraseTrusted(whServerContext* server, whNvmId id)
 {
-    int     rc;
-    whNvmId id_list[1];
+    int           rc;
+    whNvmId       id_list[1];
+    whNvmMetadata meta;
 
     if (server == NULL) {
         return WH_ERROR_BADARGS;
+    }
+
+    /* Client-driven path: never destroy a server-only object (e.g. a trusted
+     * KEK) or one marked NONDESTROYABLE. Keys and certs share the NVM id
+     * space, so without this check a client could erase a protected key by
+     * passing its id here. NONMODIFIABLE certs stay erasable so trusted
+     * roots can be removed and replaced through this API. */
+    rc = wh_Nvm_GetMetadata(server->nvm, id, &meta);
+    if (rc == WH_ERROR_OK) {
+        if (meta.flags &
+            (WH_NVM_FLAGS_SERVER_ONLY | WH_NVM_FLAGS_NONDESTROYABLE)) {
+            return WH_ERROR_ACCESS;
+        }
+    }
+    else if (rc != WH_ERROR_NOTFOUND) {
+        return rc;
     }
 
     id_list[0] = id;
@@ -657,6 +682,7 @@ int wh_Server_CertReadTrusted(whServerContext* server, whNvmId id,
                               uint8_t* cert, uint32_t* inout_cert_len)
 {
     int           rc;
+    uint32_t      buf_len;
     whNvmMetadata meta;
 
     if ((server == NULL) || (cert == NULL) || (inout_cert_len == NULL) ||
@@ -664,6 +690,7 @@ int wh_Server_CertReadTrusted(whServerContext* server, whNvmId id,
         return WH_ERROR_BADARGS;
     }
 
+    buf_len = *inout_cert_len;
 
     /* Get metadata to check the certificate size */
     rc = wh_Nvm_GetMetadata(server->nvm, id, &meta);
@@ -671,14 +698,14 @@ int wh_Server_CertReadTrusted(whServerContext* server, whNvmId id,
         return rc;
     }
 
+    /* Report the actual length even when the buffer is too small, so the
+     * caller learns the size it could not receive */
+    *inout_cert_len = meta.len;
+
     /* Check if the provided buffer is large enough */
-    if (meta.len > *inout_cert_len) {
+    if (meta.len > buf_len) {
         return WH_ERROR_BUFFER_SIZE;
     }
-
-    /* Clamp the input length to the actual length of the certificate. This will
-     * be reflected back to the user on length mismatch failure */
-    *inout_cert_len = meta.len;
 
     return wh_Nvm_Read(server->nvm, id, 0, meta.len, cert);
 }
@@ -961,21 +988,28 @@ int wh_Server_HandleCertRequest(whServerContext* server, uint16_t magic,
                             ? max_transport_cert_len
                             : WOLFHSM_CFG_MAX_CERT_SIZE;
 
-            /* Check metadata to check if the certificate is non-exportable.
-             * This is unfortunately redundant since metadata is checked in
-             * wh_Server_CertReadTrusted(). */
+            /* Deny reading non-exportable or server-only (trusted KEK)
+             * objects. Keys and certs share the NVM id space, so a client
+             * could pass a protected key's id here. This is the only gate:
+             * wh_Server_CertReadTrusted() does an unchecked NVM read. */
             rc = WH_SERVER_NVM_LOCK(server);
             if (rc == WH_ERROR_OK) {
                 rc = wh_Nvm_GetMetadata(server->nvm, req.id, &meta);
                 if (rc == WH_ERROR_OK) {
-                    /* Check if the certificate is non-exportable */
-                    if (meta.flags & WH_NVM_FLAGS_NONEXPORTABLE) {
+                    if (meta.flags & (WH_NVM_FLAGS_NONEXPORTABLE |
+                                      WH_NVM_FLAGS_SERVER_ONLY)) {
                         rc = WH_ERROR_ACCESS;
                     }
                     else {
                         rc = wh_Server_CertReadTrusted(server, req.id,
                                                        cert_data, &cert_len);
-                        resp.cert_len = cert_len;
+                        /* These are the only outcomes that resolve a length.
+                         * Any other error staged no certificate, so there is
+                         * no length to describe it with */
+                        if ((rc == WH_ERROR_OK) ||
+                            (rc == WH_ERROR_BUFFER_SIZE)) {
+                            resp.cert_len = cert_len;
+                        }
                     }
                 }
 
@@ -986,7 +1020,12 @@ int wh_Server_HandleCertRequest(whServerContext* server, uint16_t magic,
             /* Convert the response struct */
             wh_MessageCert_TranslateReadTrustedResponse(
                 magic, &resp, (whMessageCert_ReadTrustedResponse*)resp_packet);
-            *out_resp_size = sizeof(resp) + resp.cert_len;
+            /* Certificate data is only staged on success. Sizing the response
+             * to cert_len otherwise would transmit unwritten packet bytes */
+            *out_resp_size = sizeof(resp);
+            if (rc == WH_ERROR_OK) {
+                *out_resp_size += resp.cert_len;
+            }
         }; break;
 
         case WH_MESSAGE_CERT_ACTION_VERIFY: {
@@ -1133,7 +1172,7 @@ int wh_Server_HandleCertRequest(whServerContext* server, uint16_t magic,
             if (rc == WH_ERROR_OK) {
                 rc = wh_Server_CertVerifyCache_Clear(server);
                 (void)WH_SERVER_NVM_UNLOCK(server);
-            }
+            } /* WH_SERVER_NVM_LOCK() */
 #else
             rc = wh_Server_CertVerifyCache_Clear(server);
 #endif
@@ -1161,7 +1200,7 @@ int wh_Server_HandleCertRequest(whServerContext* server, uint16_t magic,
                     rc = wh_Server_CertVerifyCache_SetEnabled(server,
                                                               req.enable);
                     (void)WH_SERVER_NVM_UNLOCK(server);
-                }
+                } /* WH_SERVER_NVM_LOCK() */
 #else
                 rc = wh_Server_CertVerifyCache_SetEnabled(server, req.enable);
 #endif
@@ -1251,16 +1290,20 @@ int wh_Server_HandleCertRequest(whServerContext* server, uint16_t magic,
                 }
             }
             if (resp.rc == WH_ERROR_OK) {
-                /* Check metadata to see if the certificate is non-exportable */
+                /* Deny reading non-exportable or server-only (trusted KEK)
+                 * objects; see the non-DMA path above. */
                 resp.rc = WH_SERVER_NVM_LOCK(server);
                 if (resp.rc == WH_ERROR_OK) {
                     resp.rc = wh_Nvm_GetMetadata(server->nvm, req.id, &meta);
                     if (resp.rc == WH_ERROR_OK) {
-                        if ((meta.flags & WH_NVM_FLAGS_NONEXPORTABLE) != 0) {
+                        if ((meta.flags & (WH_NVM_FLAGS_NONEXPORTABLE |
+                                           WH_NVM_FLAGS_SERVER_ONLY)) != 0) {
                             resp.rc = WH_ERROR_ACCESS;
                         }
                         else {
-                            /* Clamp cert_len to actual stored length */
+                            /* The callee reports the stored length back into
+                             * cert_len, but SimpleResponse has no field to
+                             * return it, so the client cannot learn it here */
                             cert_len = req.cert_len;
                             resp.rc  = wh_Server_CertReadTrusted(
                                 server, req.id, cert_data, &cert_len);
@@ -1506,15 +1549,15 @@ int wh_Server_HandleCertRequest(whServerContext* server, uint16_t magic,
                     WH_DMA_OPER_CLIENT_READ_POST, (whServerDmaFlags){0});
             }
 
+            /* Propagate any server-side error before serializing the response */
+            if (rc != WH_ERROR_OK) {
+                resp.rc = rc;
+            }
+
             /* Convert the response struct */
             wh_MessageCert_TranslateSimpleResponse(
                 magic, &resp, (whMessageCert_SimpleResponse*)resp_packet);
             *out_resp_size = sizeof(resp);
-
-            /* If there was an error, return it in the response */
-            if (rc != WH_ERROR_OK) {
-                resp.rc = rc;
-            }
         } break;
 #endif /* WOLFHSM_CFG_DMA */
 #endif /* WOLFHSM_CFG_CERTIFICATE_MANAGER_ACERT */

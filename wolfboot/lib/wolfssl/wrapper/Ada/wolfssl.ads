@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 with Interfaces.C;
 
 --  This package is annotated "with SPARK_Mode" that SPARK can verify

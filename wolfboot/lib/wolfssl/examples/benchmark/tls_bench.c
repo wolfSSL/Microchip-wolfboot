@@ -430,11 +430,24 @@ static int run_all_CAST(void)
 
 static double gettime_secs(int reset)
 {
+#if defined(_POSIX_TIMERS) && (_POSIX_TIMERS > 0) && defined(CLOCK_MONOTONIC)
+    /* CLOCK_MONOTONIC is the correct source for measuring an interval: it is
+     * unaffected by NTP steps/slew and by manual clock changes, either of
+     * which can corrupt a run when using wall-clock time. It also has
+     * nanosecond resolution, where gettimeofday() quantises to 1 us - enough
+     * to matter for the short per-read/per-write intervals timed below. */
+    struct timespec ts;
+    LIBCALL_CHECK_RET(clock_gettime(CLOCK_MONOTONIC, &ts));
+    (void)reset;
+
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+#else
     struct timeval tv;
     LIBCALL_CHECK_RET(gettimeofday(&tv, 0));
     (void)reset;
 
     return (double)tv.tv_sec + (double)tv.tv_usec / 1000000;
+#endif
 }
 
 
@@ -1090,6 +1103,13 @@ static int bench_tls_client(info_t* info)
 #endif
         wolfSSL_SetIOReadCtx(cli_ssl, info);
         wolfSSL_SetIOWriteCtx(cli_ssl, info);
+#if defined(WOLFSSL_TLS_READ_AHEAD) && !defined(NO_FILESYSTEM) && \
+    !defined(NO_STDIO_FILESYSTEM)
+        /* Optional A/B benchmark toggle for TLS receive read-ahead. Gated on
+         * filesystem support since XGETENV is only defined there. */
+        if (XGETENV("WOLF_BENCH_READ_AHEAD") != NULL)
+            wolfSSL_set_read_ahead(cli_ssl, 1);
+#endif
 
 #if !defined(SINGLE_THREADED) && defined(WOLFSSL_DTLS)
         /* synchronize with server */
@@ -1547,6 +1567,13 @@ static int bench_tls_server(info_t* info)
 
         wolfSSL_SetIOReadCtx(srv_ssl, info);
         wolfSSL_SetIOWriteCtx(srv_ssl, info);
+#if defined(WOLFSSL_TLS_READ_AHEAD) && !defined(NO_FILESYSTEM) && \
+    !defined(NO_STDIO_FILESYSTEM)
+        /* Optional A/B benchmark toggle for TLS receive read-ahead. Gated on
+         * filesystem support since XGETENV is only defined there. */
+        if (XGETENV("WOLF_BENCH_READ_AHEAD") != NULL)
+            wolfSSL_set_read_ahead(srv_ssl, 1);
+#endif
     #ifndef NO_DH
         wolfSSL_SetTmpDH(srv_ssl, dhp, sizeof(dhp), dhg, sizeof(dhg));
     #endif
@@ -1720,6 +1747,17 @@ static THREAD_RETURN_NOJOIN WOLFSSL_THREAD_NO_JOIN server_thread(void* args)
 
 static void print_stats(stats_t* wcStat, const char* desc, const char* cipher, const char *group, int verbose)
 {
+    double rxRate, txRate, connAvg;
+
+    /* A run short enough to leave a timer or the connection count at zero
+     * would otherwise divide by zero and report inf/nan. */
+    rxRate  = (wcStat->rxTime > 0.0) ?
+              wcStat->rxTotal / wcStat->rxTime / 1024 / 1024 : 0.0;
+    txRate  = (wcStat->txTime > 0.0) ?
+              wcStat->txTotal / wcStat->txTime / 1024 / 1024 : 0.0;
+    connAvg = (wcStat->connCount > 0) ?
+              wcStat->connTime * 1000 / wcStat->connCount : 0.0;
+
     if (verbose) {
         fprintf(stderr,
                 "wolfSSL %s Benchmark on %s with group %s:\n"
@@ -1727,8 +1765,8 @@ static void print_stats(stats_t* wcStat, const char* desc, const char* cipher, c
                 "\tNum Conns   : %9d\n"
                 "\tRx Total    : %9.3f ms\n"
                 "\tTx Total    : %9.3f ms\n"
-                "\tRx          : %9.3f MB/s\n"
-                "\tTx          : %9.3f MB/s\n"
+                "\tRx          : %9.3f MiB/s\n"
+                "\tTx          : %9.3f MiB/s\n"
                 "\tConnect     : %9.3f ms\n"
                 "\tConnect Avg : %9.3f ms\n",
                 desc,
@@ -1738,10 +1776,10 @@ static void print_stats(stats_t* wcStat, const char* desc, const char* cipher, c
                 wcStat->connCount,
                 wcStat->rxTime * 1000,
                 wcStat->txTime * 1000,
-                wcStat->rxTotal / wcStat->rxTime / 1024 / 1024,
-                wcStat->txTotal / wcStat->txTime / 1024 / 1024,
+                rxRate,
+                txRate,
                 wcStat->connTime * 1000,
-                wcStat->connTime * 1000 / wcStat->connCount);
+                connAvg);
     }
     else {
         fprintf(stderr,
@@ -1754,10 +1792,10 @@ static void print_stats(stats_t* wcStat, const char* desc, const char* cipher, c
                 wcStat->connCount,
                 wcStat->rxTime * 1000,
                 wcStat->txTime * 1000,
-                wcStat->rxTotal / wcStat->rxTime / 1024 / 1024,
-                wcStat->txTotal / wcStat->txTime / 1024 / 1024,
+                rxRate,
+                txRate,
                 wcStat->connTime * 1000,
-                wcStat->connTime * 1000 / wcStat->connCount);
+                connAvg);
     }
 }
 
@@ -2297,7 +2335,7 @@ int bench_tls(void* args)
             else {
                 fprintf(stderr, "%-6s  %-33s  %-25s  %11s  %9s  %9s  %9s  %9s  %9s  %17s  %15s\n",
                         "Side", "Cipher", "Group", "Total Bytes", "Num Conns", "Rx ms", "Tx ms",
-                        "Rx MB/s", "Tx MB/s", "Connect Total ms", "Connect Avg ms");
+                        "Rx MiB/s", "Tx MiB/s", "Connect Total ms", "Connect Avg ms");
         #ifndef NO_WOLFSSL_SERVER
                 if (!argClientOnly) {
                     print_stats(&srv_comb, "Server", theadInfo[0].cipher, gname,

@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -46,6 +46,17 @@ static int _whTest_DmaAllowListBasic(void)
         &allowList, WH_DMA_OPER_CLIENT_READ_PRE,
         (void*)((uintptr_t)0x10000), 0x1000);
     WH_TEST_ASSERT_RETURN(rc == WH_ERROR_OK);
+
+    /* [addr, addr+size): exact fit is allowed, one more byte is not */
+    rc = wh_Dma_CheckMemOperAgainstAllowList(
+        &allowList, WH_DMA_OPER_CLIENT_READ_PRE,
+        (void*)((uintptr_t)0x10000), 0x10000);
+    WH_TEST_ASSERT_RETURN(rc == WH_ERROR_OK);
+
+    rc = wh_Dma_CheckMemOperAgainstAllowList(
+        &allowList, WH_DMA_OPER_CLIENT_READ_PRE,
+        (void*)((uintptr_t)0x10000), 0x10001);
+    WH_TEST_ASSERT_RETURN(rc == WH_ERROR_ACCESS);
 
     rc = wh_Dma_CheckMemOperAgainstAllowList(
         &allowList, WH_DMA_OPER_CLIENT_READ_PRE,

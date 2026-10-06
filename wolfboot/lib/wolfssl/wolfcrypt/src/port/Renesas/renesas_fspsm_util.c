@@ -411,38 +411,41 @@ int fspsm_EccSharedSecret(WOLFSSL* ssl, ecc_key* otherKey,
             if (ret != FSP_SUCCESS) {
                 WOLFSSL_PKMSG("Failed secp256r1_EphemeralWrappedKeyPairGenerate"
                                 " %d\n", ret);
-                return ret;
-            }
-
-            /* copy generated ecdh public key into buffer */
-            pubKeyDer[0] = ECC_POINT_UNCOMP;
-            *pubKeySz = 1 + sizeof(cbInfo->internal->ecc_ecdh_public_key);
-            XMEMCPY(&pubKeyDer[1], &cbInfo->internal->ecc_ecdh_public_key,
-                        sizeof(cbInfo->internal->ecc_ecdh_public_key));
-
-            /* Generate Premaster Secret */
-            ret = FSPSM_TLS_PREMASTERGEN(
-                (uint32_t*)
-                    &cbInfo->internal->encrypted_ephemeral_ecdh_public_key,
-                    &cbInfo->internal->ecc_p256_wrapped_key,
-                    (uint32_t*)out/* pre-master secret 64 bytes */);
-            if (ret != FSP_SUCCESS) {
-                WOLFSSL_PKMSG("Failed PreMasterSecretGenerateForECC_secp256r1 %d\n", ret);
-                return ret;
             }
             else {
-                /* set master secret generation callback for use */
-                wolfSSL_CTX_SetGenMasterSecretCb(ssl->ctx,
-                                                Renesas_cmn_genMasterSecret);
-                wolfSSL_SetGenMasterSecretCtx(ssl, cbInfo);
+                /* copy generated ecdh public key into buffer */
+                pubKeyDer[0] = ECC_POINT_UNCOMP;
+                *pubKeySz = 1 + sizeof(cbInfo->internal->ecc_ecdh_public_key);
+                XMEMCPY(&pubKeyDer[1], &cbInfo->internal->ecc_ecdh_public_key,
+                            sizeof(cbInfo->internal->ecc_ecdh_public_key));
+
+                /* Generate Premaster Secret */
+                ret = FSPSM_TLS_PREMASTERGEN(
+                    (uint32_t*)
+                        &cbInfo->internal->encrypted_ephemeral_ecdh_public_key,
+                        &cbInfo->internal->ecc_p256_wrapped_key,
+                        (uint32_t*)out/* pre-master secret 64 bytes */);
+                if (ret != FSP_SUCCESS) {
+                    WOLFSSL_PKMSG("Failed PreMasterSecretGenerateForECC_secp256r1 %d\n", ret);
+                }
+                else {
+                    /* set master secret generation callback for use */
+                    wolfSSL_CTX_SetGenMasterSecretCb(ssl->ctx,
+                                                    Renesas_cmn_genMasterSecret);
+                    wolfSSL_SetGenMasterSecretCtx(ssl, cbInfo);
+                }
             }
+
+            /* unlock hw */
+            wc_fspsm_hw_unlock();
+
+            if (ret != FSP_SUCCESS)
+                return ret;
         }
         else {
             WOLFSSL_MSG("Failed to lock sce hw ");
+            return ret;
         }
-
-        /* unlock hw */
-        wc_fspsm_hw_unlock();
 
         *outlen = 64;
         WOLFSSL_PKMSG("PK ECC PMS: ret %d, PubKeySz %d, OutLen %d\n",
@@ -749,6 +752,13 @@ int wc_fspsm_generateSessionKey(WOLFSSL *ssl,
             key_server_aes = (FSPSM_AES_PWKEY)XMALLOC(sizeof(FSPSM_AES_WKEY),
                                             ssl->heap, DYNAMIC_TYPE_AES);
             if (key_client_aes == NULL || key_server_aes == NULL) {
+                if (key_client_aes != NULL) {
+                    XFREE(key_client_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                }
+                if (key_server_aes != NULL) {
+                    XFREE(key_server_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                }
+                wc_fspsm_hw_unlock();
                 return MEMORY_E;
             }
 
@@ -780,15 +790,25 @@ int wc_fspsm_generateSessionKey(WOLFSSL *ssl,
                 if (enc->aes == NULL) {
                     enc->aes = (Aes*)XMALLOC(sizeof(Aes), ssl->heap,
                                                     DYNAMIC_TYPE_CIPHER);
-                    if (enc->aes == NULL)
+                    if (enc->aes == NULL) {
+                        XFREE(key_client_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                        XFREE(key_server_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                        wc_fspsm_hw_unlock();
                         return MEMORY_E;
+                    }
                 }
                 XMEMSET(enc->aes, 0, sizeof(Aes));
                 enc->aes->ctx.wrapped_key = (FSPSM_AES_PWKEY)XMALLOC
                                             (sizeof(FSPSM_AES_WKEY),
                                             ssl->heap, DYNAMIC_TYPE_AES);
-                if (enc->aes->ctx.wrapped_key == NULL)
+                if (enc->aes->ctx.wrapped_key == NULL) {
+                    XFREE(enc->aes, ssl->heap, DYNAMIC_TYPE_CIPHER);
+                    enc->aes = NULL;
+                    XFREE(key_client_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                    XFREE(key_server_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                    wc_fspsm_hw_unlock();
                     return MEMORY_E;
+                }
             }
             if (dec) {
                 if (dec->aes == NULL) {
@@ -796,8 +816,14 @@ int wc_fspsm_generateSessionKey(WOLFSSL *ssl,
                                                     DYNAMIC_TYPE_CIPHER);
                     if (dec->aes == NULL) {
                         if (enc) {
-                            XFREE(enc->aes, NULL, DYNAMIC_TYPE_CIPHER);
+                            XFREE(enc->aes->ctx.wrapped_key, ssl->heap,
+                                                        DYNAMIC_TYPE_AES);
+                            XFREE(enc->aes, ssl->heap, DYNAMIC_TYPE_CIPHER);
+                            enc->aes = NULL;
                         }
+                        XFREE(key_client_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                        XFREE(key_server_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                        wc_fspsm_hw_unlock();
                         return MEMORY_E;
                     }
                     XMEMSET(dec->aes, 0, sizeof(Aes));
@@ -805,26 +831,43 @@ int wc_fspsm_generateSessionKey(WOLFSSL *ssl,
                     dec->aes->ctx.wrapped_key = (FSPSM_AES_PWKEY)XMALLOC
                                             (sizeof(FSPSM_AES_WKEY),
                                             ssl->heap, DYNAMIC_TYPE_AES);
-                    if (dec->aes->ctx.wrapped_key == NULL)
+                    if (dec->aes->ctx.wrapped_key == NULL) {
+                        if (enc) {
+                            XFREE(enc->aes->ctx.wrapped_key, ssl->heap,
+                                                        DYNAMIC_TYPE_AES);
+                            XFREE(enc->aes, ssl->heap, DYNAMIC_TYPE_CIPHER);
+                            enc->aes = NULL;
+                        }
+                        XFREE(dec->aes, ssl->heap, DYNAMIC_TYPE_CIPHER);
+                        dec->aes = NULL;
+                        XFREE(key_client_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                        XFREE(key_server_aes, ssl->heap, DYNAMIC_TYPE_AES);
+                        wc_fspsm_hw_unlock();
                         return MEMORY_E;
                     }
+                    }
             }
-            /* copy key index into aes */
-            if (ssl->options.side == PROVISION_CLIENT) {
-                XMEMCPY(enc->aes->ctx.wrapped_key, key_client_aes,
-                                                    sizeof(FSPSM_AES_WKEY));
-                XMEMCPY(dec->aes->ctx.wrapped_key, key_server_aes,
-                                                    sizeof(FSPSM_AES_WKEY));
+            /* copy key/mac index into aes/keys. Skipped when AES-GCM
+             * session-key generation was deferred above -- key_client_aes/
+             * key_server_aes/key_client_mac/key_server_mac are all
+             * uninitialized in that case, and the real per-record key is
+             * generated later inside wc_fspsm_AesGcmEncrypt/Decrypt. */
+            if (key_client_aes != NULL && key_server_aes != NULL) {
+                if (ssl->options.side == PROVISION_CLIENT) {
+                    XMEMCPY(enc->aes->ctx.wrapped_key, key_client_aes,
+                                                        sizeof(FSPSM_AES_WKEY));
+                    XMEMCPY(dec->aes->ctx.wrapped_key, key_server_aes,
+                                                        sizeof(FSPSM_AES_WKEY));
+                }
+                else {
+                    XMEMCPY(enc->aes->ctx.wrapped_key, key_server_aes,
+                                                        sizeof(FSPSM_AES_WKEY));
+                    XMEMCPY(dec->aes->ctx.wrapped_key, key_client_aes,
+                                                        sizeof(FSPSM_AES_WKEY));
+                }
+                ssl->keys.fspsm_client_write_MAC_secret = key_client_mac;
+                ssl->keys.fspsm_server_write_MAC_secret = key_server_mac;
             }
-            else {
-                XMEMCPY(enc->aes->ctx.wrapped_key, key_server_aes,
-                                                    sizeof(FSPSM_AES_WKEY));
-                XMEMCPY(dec->aes->ctx.wrapped_key, key_client_aes,
-                                                    sizeof(FSPSM_AES_WKEY));
-            }
-            /* copy mac key index into keys */
-            ssl->keys.fspsm_client_write_MAC_secret = key_client_mac;
-            ssl->keys.fspsm_server_write_MAC_secret = key_server_mac;
 
             /* set up key size and marked ready */
             if (enc) {

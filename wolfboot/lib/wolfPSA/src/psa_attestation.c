@@ -11,6 +11,8 @@
  * https://www.wolfssl.com
  */
 
+#include "psa_config.h"
+
 #include <stddef.h>
 #include <stdint.h>
 

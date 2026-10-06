@@ -119,6 +119,7 @@ BUILD_DIR=.
 LS1_OBJS=$(addprefix $(BUILD_DIR)/, $(notdir $(OBJS)))
 vpath %.c ../src
 vpath %.c ../hal
+vpath %.c ../hal/uart
 vpath %.c $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src $(WOLFBOOT_LIB_WOLFTPM)/src
 vpath %.c ../src/x86
 vpath %.S ../src
@@ -185,6 +186,7 @@ $(LSCRIPT): $(LSCRIPT_IN) FORCE
 	sed -e "s/@WOLFBOOT_DTS_UPDATE_ADDRESS@/$(WOLFBOOT_DTS_UPDATE_ADDRESS)/g" | \
 	sed -e "s/@WOLFBOOT_LOAD_ADDRESS@/$(WOLFBOOT_LOAD_ADDRESS)/g" | \
 	sed -e "s/@WOLFBOOT_LOAD_DTS_ADDRESS@/$(WOLFBOOT_LOAD_DTS_ADDRESS)/g" | \
+	sed -e "s|@WOLFBOOT_PARTITION_UPDATE_SIZE_DEFINE@|$(if $(strip $(WOLFBOOT_PARTITION_UPDATE_SIZE)),#define WOLFBOOT_PARTITION_UPDATE_SIZE    $(WOLFBOOT_PARTITION_UPDATE_SIZE),/* WOLFBOOT_PARTITION_UPDATE_SIZE not set */)|g" | \
 	sed -e "s|@WOLFBOOT_RAMBOOT_MAX_SIZE_DEFINE@|$(if $(strip $(WOLFBOOT_RAMBOOT_MAX_SIZE)),#define WOLFBOOT_RAMBOOT_MAX_SIZE             $(WOLFBOOT_RAMBOOT_MAX_SIZE),/* WOLFBOOT_RAMBOOT_MAX_SIZE undefined */)|g" \
 		> $@
 
@@ -195,6 +197,10 @@ $(BUILD_DIR)/%.o: ../src/%.c
 	@echo "\t[CC-$(ARCH)] $@"
 	$(Q)$(CC) $(CFLAGS) -c $(OUTPUT_FLAG) $@ $<
 $(BUILD_DIR)/%.o: ../hal/%.c
+	@echo "\t[CC-$(ARCH)] $@"
+	$(Q)$(CC) $(CFLAGS) -c $(OUTPUT_FLAG) $@ $<
+# The QorIQ console driver lives in hal/uart/.
+$(BUILD_DIR)/%.o: ../hal/uart/%.c
 	@echo "\t[CC-$(ARCH)] $@"
 	$(Q)$(CC) $(CFLAGS) -c $(OUTPUT_FLAG) $@ $<
 $(BUILD_DIR)/%.o: $(WOLFBOOT_LIB_WOLFSSL)/wolfcrypt/src/%.c

@@ -1,0 +1,194 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+jobs:
+  cppcheck:
+    name: cppcheck
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Enforce zero dynamic allocation
+      run: make zero-alloc-check
+
+    - name: Install cppcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck autoconf automake libtool
+
+    - name: Resolve wolfSSL master commit
+      id: wolfssl-rev
+      run: echo "sha=$(git ls-remote https://github.com/wolfSSL/wolfssl.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+    - name: Cache wolfSSL
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-ubuntu-latest-v4-lms-${{ steps.wolfssl-rev.outputs.sha }}
+
+    - name: Build wolfSSL
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-chacha --enable-poly1305 \
+                    --enable-mldsa --enable-lms \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=warning,style,performance,portability \
+                 --error-exitcode=1 \
+                 --suppress=missingIncludeSystem \
+                 --suppress=*:$HOME/wolfssl-install/include/* \
+                 --suppress=constParameterPointer \
+                 --suppress=constParameter \
+                 --suppress=knownConditionTrueFalse \
+                 --suppress=unusedLabelConfiguration \
+                 --suppress=duplicateCondition:tests/test_cose.c \
+                 --suppress=variableScope:tests/test_cose.c \
+                 --suppress=variableScope:tests/test_interop.c \
+                 --suppress=unreadVariable:tests/test_cose.c \
+                 --suppress=unusedVariable:tests/test_cose.c \
+                 --inline-suppr \
+                 -itests/test_eat_psa_curve_gates.c \
+                 -itests/test_eat_psa_hash_gates.c \
+                 -itests/test_eat_psa_min_key_gates.c \
+                 -I include -I src -I $HOME/wolfssl-install/include \
+                 src/ tests/
+
+    - name: Run cppcheck on the full PSA/EAT profile
+      run: |
+        cppcheck --enable=warning,style,performance,portability \
+                 --error-exitcode=1 \
+                 --suppress=missingIncludeSystem \
+                 --inline-suppr \
+                 -DWOLFCOSE_ENABLE_DEPRECATED_ALGS \
+                 -DWOLFCOSE_ENABLE_EAT_PSA \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_CURRENT \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_SIGN1 \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_MAC0 \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_ISSUE \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_SIGN1_ISSUE \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_MAC0_ISSUE \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_LEGACY \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_UEID_RESOLVER \
+                 -DWOLFCOSE_ENABLE_EAT_PSA_COMPONENT_ITERATOR \
+                 -I include -I src -I $HOME/wolfssl-install/include \
+                 src/wolfcose_eat_psa.c
+
+  clang-analyzer:
+    name: Clang Static Analyzer
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-tools autoconf automake libtool
+
+    - name: Resolve wolfSSL master commit
+      id: wolfssl-rev
+      run: echo "sha=$(git ls-remote https://github.com/wolfSSL/wolfssl.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+    - name: Cache wolfSSL
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-ubuntu-latest-v4-lms-${{ steps.wolfssl-rev.outputs.sha }}
+
+    - name: Build wolfSSL
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-chacha --enable-poly1305 \
+                    --enable-mldsa --enable-lms \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    - name: Run scan-build
+      run: |
+        export LD_LIBRARY_PATH=$HOME/wolfssl-install/lib
+        scan-build --status-bugs -o scan-results \
+          make CC=clang CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -I./include -isystem $HOME/wolfssl-install/include" \
+               LDFLAGS="-L$HOME/wolfssl-install/lib -lwolfssl"
+        scan-build --status-bugs -o scan-results \
+          make eat-psa-test CC=clang CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -I./include -isystem $HOME/wolfssl-install/include" \
+               LDFLAGS="-L$HOME/wolfssl-install/lib -lwolfssl"
+
+    - name: Upload scan-build results
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: scan-build-results
+        path: scan-results/
+
+  gcc-analyzer:
+    name: GCC -fanalyzer
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    - name: Resolve wolfSSL master commit
+      id: wolfssl-rev
+      run: echo "sha=$(git ls-remote https://github.com/wolfSSL/wolfssl.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+    - name: Cache wolfSSL
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: wolfssl-ubuntu-latest-v4-lms-${{ steps.wolfssl-rev.outputs.sha }}
+
+    - name: Build wolfSSL
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-chacha --enable-poly1305 \
+                    --enable-mldsa --enable-lms \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    - name: Build with -fanalyzer
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make CC=gcc CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -fanalyzer -Werror -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+        make eat-psa-test CC=gcc CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -fanalyzer -Werror -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"

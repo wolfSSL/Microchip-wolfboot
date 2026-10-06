@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE) && \
     (defined(HAVE_CURVE25519) || defined(HAVE_CURVE448))
@@ -66,17 +66,29 @@ psa_status_t psa_asymmetric_generate_key_x25519(psa_key_type_t key_type,
     priv_len = (word32)private_key_size;
     pub_len = (word32)public_key_size;
 
-    ret = wc_curve25519_init(&key);
+    ret = wc_curve25519_init_ex(&key, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
-    ret = wc_InitRng(&rng);
+    ret = wc_InitRng_ex(&rng, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_curve25519_free(&key);
         return wc_error_to_psa_status(ret);
     }
 
     ret = wc_curve25519_make_key(&rng, CURVE25519_KEYSIZE, &key);
+    /* An offload device may report success while keeping the scalar, which
+     * leaves privSet clear. wc_curve25519_export_private_raw_ex() refuses
+     * that, but only as ECC_BAD_ARG_E, which maps to
+     * PSA_ERROR_INVALID_ARGUMENT and blames the caller for a device fault.
+     * Report it the way the ECC path does. The device still holds a key this
+     * path cannot reclaim, so an integrator whose backend keeps the scalar
+     * has to free the backend slot itself. */
+    if ((ret == 0) && (!key.privSet)) {
+        wc_FreeRng(&rng);
+        wc_curve25519_free(&key);
+        return PSA_ERROR_HARDWARE_FAILURE;
+    }
     if (ret == 0) {
         ret = wc_curve25519_export_private_raw_ex(&key, private_key,
                                                   &priv_len,
@@ -107,14 +119,15 @@ psa_status_t psa_asymmetric_export_public_key_x25519(psa_key_type_t key_type,
                                                      size_t *output_length)
 {
     int ret;
-    uint8_t priv[CURVE25519_KEYSIZE];
+    word32 pub_len;
 
     if ((key_type != PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY) &&
          key_type != PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_MONTGOMERY)) ||
         key_bits != 255) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
-    if (key_buffer == NULL || output == NULL || output_length == NULL) {
+    if (key_buffer == NULL || output_length == NULL ||
+        (output == NULL && output_size != 0)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
     if (output_size < CURVE25519_KEYSIZE) {
@@ -122,16 +135,50 @@ psa_status_t psa_asymmetric_export_public_key_x25519(psa_key_type_t key_type,
     }
 
     if (key_type == PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY)) {
+        curve25519_key key;
+#ifdef WOLFSSL_CURVE25519_BLINDING
+        WC_RNG rng;
+        int rng_inited = 0;
+#endif
+
         if (key_buffer_size != CURVE25519_KEYSIZE) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        XMEMCPY(priv, key_buffer, CURVE25519_KEYSIZE);
-        priv[0] &= 248;
-        priv[31] &= 127;
-        priv[31] |= 64;
-        ret = wc_curve25519_make_pub(CURVE25519_KEYSIZE, output,
-                                     CURVE25519_KEYSIZE, priv);
-        wc_ForceZero(priv, sizeof(priv));
+
+        /* Derive through a key object rather than wc_curve25519_make_pub():
+         * the keyless form is documented as routable to whichever device
+         * happens to be registered, which would ignore the configured devId
+         * and defeat forcing local execution. */
+        ret = wc_curve25519_init_ex(&key, NULL, wolfPSA_GetDefaultDevID());
+        if (ret == 0) {
+            /* import_private_ex applies the curve25519 clamp itself */
+            ret = wc_curve25519_import_private_ex(key_buffer,
+                                                  CURVE25519_KEYSIZE, &key,
+                                                  EC25519_LITTLE_ENDIAN);
+#ifdef WOLFSSL_CURVE25519_BLINDING
+            /* Blinding makes the scalar multiplication need an RNG on the
+             * key object; the keyless make_pub path sets one up for itself,
+             * the key-object path has to. */
+            if (ret == 0) {
+                ret = wc_InitRng_ex(&rng, NULL, wolfPSA_GetDefaultDevID());
+                if (ret == 0) {
+                    rng_inited = 1;
+                    ret = wc_curve25519_set_rng(&key, &rng);
+                }
+            }
+#endif
+            if (ret == 0) {
+                pub_len = CURVE25519_KEYSIZE;
+                ret = wc_curve25519_export_public_ex(&key, output, &pub_len,
+                                                     EC25519_LITTLE_ENDIAN);
+            }
+            wc_curve25519_free(&key);
+#ifdef WOLFSSL_CURVE25519_BLINDING
+            if (rng_inited) {
+                wc_FreeRng(&rng);
+            }
+#endif
+        }
     }
     else {
         if (key_buffer_size != CURVE25519_KEYSIZE) {
@@ -170,8 +217,8 @@ psa_status_t psa_asymmetric_key_agreement_x25519(
     WC_RNG rng;
 #endif
 
-    if (private_key == NULL || peer_key == NULL || output == NULL ||
-        output_length == NULL) {
+    if (private_key == NULL || peer_key == NULL ||
+        (output == NULL && output_size != 0) || output_length == NULL) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
     if (private_key_length != CURVE25519_KEYSIZE ||
@@ -186,17 +233,17 @@ psa_status_t psa_asymmetric_key_agreement_x25519(
     }
     out_len = (word32)output_size;
 
-    ret = wc_curve25519_init(&priv);
+    ret = wc_curve25519_init_ex(&priv, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
-    ret = wc_curve25519_init(&pub);
+    ret = wc_curve25519_init_ex(&pub, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_curve25519_free(&priv);
         return wc_error_to_psa_status(ret);
     }
 #ifdef WOLFSSL_CURVE25519_BLINDING
-    ret = wc_InitRng(&rng);
+    ret = wc_InitRng_ex(&rng, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_curve25519_free(&pub);
         wc_curve25519_free(&priv);
@@ -273,17 +320,24 @@ psa_status_t psa_asymmetric_generate_key_x448(psa_key_type_t key_type,
     priv_len = (word32)private_key_size;
     pub_len = (word32)public_key_size;
 
-    ret = wc_curve448_init(&key);
+    ret = wc_curve448_init_ex(&key, NULL,
+                              wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
-    ret = wc_InitRng(&rng);
+    ret = wc_InitRng_ex(&rng, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_curve448_free(&key);
         return wc_error_to_psa_status(ret);
     }
 
     ret = wc_curve448_make_key(&rng, CURVE448_KEY_SIZE, &key);
+    /* Same offload caveat as the X25519 path above. */
+    if ((ret == 0) && (!key.privSet)) {
+        wc_FreeRng(&rng);
+        wc_curve448_free(&key);
+        return PSA_ERROR_HARDWARE_FAILURE;
+    }
     if (ret == 0) {
         ret = wc_curve448_export_private_raw_ex(&key, private_key, &priv_len,
                                                 EC448_LITTLE_ENDIAN);
@@ -313,14 +367,15 @@ psa_status_t psa_asymmetric_export_public_key_x448(psa_key_type_t key_type,
                                                    size_t *output_length)
 {
     int ret;
-    uint8_t priv[CURVE448_KEY_SIZE];
+    word32 pub_len;
 
     if ((key_type != PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY) &&
          key_type != PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_MONTGOMERY)) ||
         key_bits != 448) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
-    if (key_buffer == NULL || output == NULL || output_length == NULL) {
+    if (key_buffer == NULL || output_length == NULL ||
+        (output == NULL && output_size != 0)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
     if (output_size < CURVE448_KEY_SIZE) {
@@ -331,12 +386,24 @@ psa_status_t psa_asymmetric_export_public_key_x448(psa_key_type_t key_type,
         if (key_buffer_size != CURVE448_KEY_SIZE) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        XMEMCPY(priv, key_buffer, CURVE448_KEY_SIZE);
-        priv[0] &= 252;
-        priv[55] |= 128;
-        ret = wc_curve448_make_pub(CURVE448_KEY_SIZE, output,
-                                   CURVE448_KEY_SIZE, priv);
-        wc_ForceZero(priv, sizeof(priv));
+        curve448_key key;
+
+        /* Derive through a key object rather than wc_curve448_make_pub():
+         * the keyless form is documented as routable to whichever device
+         * happens to be registered, which would ignore the configured devId
+         * and defeat forcing local execution. */
+        ret = wc_curve448_init_ex(&key, NULL, wolfPSA_GetDefaultDevID());
+        if (ret == 0) {
+            /* import_private_ex applies the curve448 clamp itself */
+            ret = wc_curve448_import_private_ex(key_buffer, CURVE448_KEY_SIZE,
+                                                &key, EC448_LITTLE_ENDIAN);
+            if (ret == 0) {
+                pub_len = CURVE448_KEY_SIZE;
+                ret = wc_curve448_export_public_ex(&key, output, &pub_len,
+                                                   EC448_LITTLE_ENDIAN);
+            }
+            wc_curve448_free(&key);
+        }
     }
     else {
         if (key_buffer_size != CURVE448_KEY_SIZE) {
@@ -371,8 +438,8 @@ psa_status_t psa_asymmetric_key_agreement_x448(
     curve448_key pub;
     word32 out_len;
 
-    if (private_key == NULL || peer_key == NULL || output == NULL ||
-        output_length == NULL) {
+    if (private_key == NULL || peer_key == NULL ||
+        (output == NULL && output_size != 0) || output_length == NULL) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
     if (private_key_length != CURVE448_KEY_SIZE ||
@@ -387,11 +454,13 @@ psa_status_t psa_asymmetric_key_agreement_x448(
     }
     out_len = (word32)output_size;
 
-    ret = wc_curve448_init(&priv);
+    ret = wc_curve448_init_ex(&priv, NULL,
+                              wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
-    ret = wc_curve448_init(&pub);
+    ret = wc_curve448_init_ex(&pub, NULL,
+                              wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_curve448_free(&priv);
         return wc_error_to_psa_status(ret);

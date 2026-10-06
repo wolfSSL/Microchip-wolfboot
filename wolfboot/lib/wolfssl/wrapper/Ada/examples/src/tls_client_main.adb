@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 with Tls_Client;    pragma Elaborate_All (Tls_Client);
 with SPARK_Sockets; pragma Elaborate_All (SPARK_Sockets);
 with WolfSSL;       pragma Elaborate_All (WolfSSL);

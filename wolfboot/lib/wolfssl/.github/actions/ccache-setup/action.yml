@@ -42,9 +42,52 @@ runs:
         if command -v ccache >/dev/null 2>&1; then
           echo "ccache already installed: $(ccache --version | head -1)"
         elif [ "${{ runner.os }}" = "Linux" ]; then
-          sudo apt-get update -q
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            --no-install-recommends ccache
+          export DEBIAN_FRONTEND=noninteractive
+          # install-apt-deps exports the ghcr bundle it unpacked as a local apt
+          # repository, and ccache is in every bundle's package list. Reuse it:
+          # same repository, same versions, no apt-get update, nothing to stall
+          # on. Every other path here reaches the mirror, which is what used to
+          # hang these jobs for 10-40 min after the bundle had already
+          # installed cleanly.
+          sudo dpkg --configure -a >/dev/null 2>&1 || true
+          if [ -n "${WOLFSSL_APT_BUNDLE_SOURCES:-}" ] && \
+             sudo DEBIAN_FRONTEND=noninteractive apt-get \
+               -o Dir::Etc::SourceList="$WOLFSSL_APT_BUNDLE_SOURCES" \
+               -o Dir::Etc::SourceParts=/dev/null \
+               -o Dir::State::Lists="$WOLFSSL_APT_BUNDLE_LISTS" \
+               -o Acquire::Languages=none -o Acquire::Retries=0 \
+               -o APT::Sandbox::User=root \
+               -o Acquire::http::Proxy=http://127.0.0.1:9 \
+               -o Acquire::https::Proxy=http://127.0.0.1:9 \
+               install -y --no-install-recommends ccache; then
+            echo "ccache installed offline from the staged .deb bundle"
+          else
+            # Same defence in depth as install-apt-deps: Acquire timeouts drop
+            # a stalled connection, `timeout` hard-kills a wedged apt-get, and
+            # only then does the retry loop get a non-zero exit to act on.
+            # 60s+90s x2: ccache is a ~700 KB package, and this loop has no
+            # budget input of its own, so it has to stay small enough to chain
+            # after install-apt-deps inside a 10-minute job.
+            APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+                      -o Acquire::https::Timeout=30)
+            ok=""
+            for i in 1 2; do
+              sudo dpkg --configure -a >/dev/null 2>&1 || true
+              if sudo DEBIAN_FRONTEND=noninteractive timeout -k 10 60 \
+                     apt-get "${APT_OPTS[@]}" update -q && \
+                 sudo DEBIAN_FRONTEND=noninteractive timeout -k 10 90 \
+                     apt-get "${APT_OPTS[@]}" install -y \
+                     --no-install-recommends ccache; then
+                ok=1
+                break
+              fi
+              echo "::warning::ccache apt install failed (attempt $i/2)"
+              # No sleep after the last attempt - this loop is not budgeted by
+              # the caller and chains onto install-apt-deps in the same job.
+              [ "$i" -eq 2 ] || sleep 5
+            done
+            [ -n "$ok" ] || { echo "::error::could not install ccache"; exit 1; }
+          fi
         elif [ "${{ runner.os }}" = "macOS" ]; then
           brew install ccache
         else
@@ -83,6 +126,13 @@ runs:
     - name: Configure ccache and PATH
       shell: bash
       run: |
+        # Set CCACHE_DIR for the commands below too, not only via
+        # GITHUB_ENV (which applies to later steps): without it the
+        # settings land in a different default dir on runs where
+        # ~/.ccache does not exist yet, and seed runs then compile
+        # with mismatched hash settings that later runs cannot reuse.
+        export CCACHE_DIR="$HOME/.ccache"
+        mkdir -p "$CCACHE_DIR"
         ccache -M "${{ inputs.max-size }}"
         # base_dir lets ccache reuse hits across different workspace
         # checkout paths (different runs use different /home/.../work/ dirs).
@@ -101,7 +151,7 @@ runs:
           CCACHE_LIBEXEC="/usr/lib/ccache"
         fi
         echo "$CCACHE_LIBEXEC" >> "$GITHUB_PATH"
-        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
 
     # On the scheduled (cron) refresh, force every compile to miss the
     # cache and re-store a fresh result (CCACHE_RECACHE still writes, it

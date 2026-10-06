@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE) && defined(HAVE_ECC)
 
@@ -55,6 +55,7 @@ psa_status_t psa_asymmetric_sign_ecc(psa_key_type_t key_type,
     size_t raw_sig_len;
     byte* der_sig = NULL;
     byte* rs = NULL;
+    int devId;
     
     /* Check if key type is ECC key pair */
     if (!PSA_KEY_TYPE_IS_ECC_KEY_PAIR(key_type)) {
@@ -79,14 +80,32 @@ psa_status_t psa_asymmetric_sign_ecc(psa_key_type_t key_type,
         return PSA_ERROR_INVALID_ARGUMENT;
     }
     
+    /* wc_ecc_set_deterministic_ex() only steers the software signer, and the
+     * crypto callback contract carries no deterministic flag, so an offloaded
+     * sign would silently return a randomized signature. Keep the RFC 6979
+     * guarantee PSA_ALG_DETERMINISTIC_ECDSA makes and stay local. */
+    devId = wolfPSA_GetDefaultDevID();
+    if (PSA_ALG_IS_DETERMINISTIC_ECDSA(alg)) {
+#ifdef WOLF_CRYPTO_CB_ONLY_ECC
+        /* No software signer to stay local on, so the guarantee cannot be
+         * met at all. Say so rather than fail later as NO_VALID_DEVID. */
+        return PSA_ERROR_NOT_SUPPORTED;
+#else
+        devId = INVALID_DEVID;
+#endif
+    }
+
     /* Initialize ECC key */
-    ret = wc_ecc_init(&ecc);
+    ret = wc_ecc_init_ex(&ecc, NULL, devId);
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
     
-    /* Initialize RNG */
-    ret = wc_InitRng(&rng);
+    /* Initialize RNG. The same devId as the signer: k is already derived by
+     * the time any signer runs, so this RNG only blinds, but a deterministic
+     * sign should not depend on a device RNG the pin above just opted out
+     * of. */
+    ret = wc_InitRng_ex(&rng, NULL, devId);
     if (ret != 0) {
         wc_ecc_free(&ecc);
         return wc_error_to_psa_status(ret);
@@ -110,6 +129,7 @@ psa_status_t psa_asymmetric_sign_ecc(psa_key_type_t key_type,
     }
 
     if (PSA_ALG_IS_DETERMINISTIC_ECDSA(alg)) {
+#ifdef WOLFSSL_ECDSA_DETERMINISTIC_K
         int hash_type = wc_psa_get_hash_type(alg);
         if (hash_type == WC_HASH_TYPE_NONE) {
             wc_FreeRng(&rng);
@@ -122,6 +142,12 @@ psa_status_t psa_asymmetric_sign_ecc(psa_key_type_t key_type,
             wc_ecc_free(&ecc);
             return wc_error_to_psa_status(ret);
         }
+#else
+        /* Deterministic ECDSA needs WOLFSSL_ECDSA_DETERMINISTIC_K. */
+        wc_FreeRng(&rng);
+        wc_ecc_free(&ecc);
+        return PSA_ERROR_NOT_SUPPORTED;
+#endif
     }
 
     sig_len = wc_ecc_sig_size(&ecc);
@@ -221,14 +247,17 @@ psa_status_t psa_asymmetric_verify_ecc(psa_key_type_t key_type,
     }
     
     /* Initialize ECC key */
-    ret = wc_ecc_init(&ecc);
+    ret = wc_ecc_init_ex(&ecc, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
     
-    /* Import key */
+    /* Import key, pinning the curve from the key attributes so a
+     * same-size non-default family is not reinterpreted on the default
+     * curve. */
     if (PSA_KEY_TYPE_IS_ECC_PUBLIC_KEY(key_type)) {
-        ret = wc_ecc_import_x963(key_buffer, (word32)key_buffer_size, &ecc);
+        ret = wc_ecc_import_x963_ex(key_buffer, (word32)key_buffer_size,
+                                    &ecc, curve_id);
     }
     else {
         ret = wc_ecc_import_private_key_ex(key_buffer, (word32)key_buffer_size,
@@ -244,9 +273,11 @@ psa_status_t psa_asymmetric_verify_ecc(psa_key_type_t key_type,
 
     key_bytes = PSA_BITS_TO_BYTES(key_bits);
     raw_sig_len = key_bytes * 2u;
+    /* A wrong-length raw signature is malformed peer signature data,
+     * not an API argument error. */
     if (signature_length != raw_sig_len) {
         wc_ecc_free(&ecc);
-        return PSA_ERROR_INVALID_ARGUMENT;
+        return PSA_ERROR_INVALID_SIGNATURE;
     }
 
     der_len = wc_ecc_sig_size(&ecc);
@@ -314,13 +345,13 @@ psa_status_t psa_asymmetric_generate_key_ecc(psa_key_type_t key_type,
     }
     
     /* Initialize ECC key */
-    ret = wc_ecc_init(&ecc);
+    ret = wc_ecc_init_ex(&ecc, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
     
     /* Initialize RNG */
-    ret = wc_InitRng(&rng);
+    ret = wc_InitRng_ex(&rng, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         wc_ecc_free(&ecc);
         return wc_error_to_psa_status(ret);
@@ -346,6 +377,19 @@ psa_status_t psa_asymmetric_generate_key_ecc(psa_key_type_t key_type,
         wc_FreeRng(&rng);
         wc_ecc_free(&ecc);
         return PSA_ERROR_BUFFER_TOO_SMALL;
+    }
+    /* An offload device may keep the scalar and leave ecc.k at zero, which
+     * mp_to_unsigned_bin_len() would happily export as an all-zero private
+     * key. wolfCrypt's own exporters reject that, so check the same way.
+     * wc_ecc_make_key_ex() has already succeeded here, so a device holds a
+     * key this path cannot reclaim: wc_ecc_free() releases the software
+     * struct only, and wolfPSA has no opaque-key model to destroy the device
+     * copy through. An integrator whose backend keeps the scalar has to free
+     * the backend slot itself. */
+    if (ecc.type != ECC_PRIVATEKEY) {
+        wc_FreeRng(&rng);
+        wc_ecc_free(&ecc);
+        return PSA_ERROR_HARDWARE_FAILURE;
     }
     ret = mp_to_unsigned_bin_len(ecc.k, private_key, priv_len);
     if (ret != MP_OKAY) {
@@ -402,7 +446,7 @@ psa_status_t psa_asymmetric_export_public_key_ecc(psa_key_type_t key_type,
     }
     
     /* Initialize ECC key */
-    ret = wc_ecc_init(&ecc);
+    ret = wc_ecc_init_ex(&ecc, NULL, wolfPSA_GetDefaultDevID());
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }
@@ -416,7 +460,11 @@ psa_status_t psa_asymmetric_export_public_key_ecc(psa_key_type_t key_type,
         }
     }
     else {
-        ret = wc_ecc_import_x963(key_buffer, (word32)key_buffer_size, &ecc);
+        /* Pin the point to the curve from the key attributes: a point
+         * that is not on this curve must fail, not be reinterpreted on
+         * the default curve for the coordinate size. */
+        ret = wc_ecc_import_x963_ex(key_buffer, (word32)key_buffer_size,
+                                    &ecc, curve_id);
     }
     
     if (ret != 0) {
@@ -424,7 +472,9 @@ psa_status_t psa_asymmetric_export_public_key_ecc(psa_key_type_t key_type,
         return wc_error_to_psa_status(ret);
     }
     
-    if (output == NULL || output_length == NULL) {
+    /* A NULL output pointer is only an error when the caller declared a
+     * nonzero capacity; (NULL, 0) must reach the backend size check. */
+    if (output_length == NULL || (output == NULL && output_size != 0)) {
         wc_ecc_free(&ecc);
         return PSA_ERROR_INVALID_ARGUMENT;
     }
@@ -432,9 +482,13 @@ psa_status_t psa_asymmetric_export_public_key_ecc(psa_key_type_t key_type,
     /* Export public key */
     out_len = (word32)output_size;
     ret = wc_ecc_export_x963(&ecc, output, &out_len);
-    
+
     wc_ecc_free(&ecc);
-    
+
+    if (ret == LENGTH_ONLY_E) {
+        /* A NULL output probe: the buffer is too small for the point. */
+        ret = BUFFER_E;
+    }
     if (ret != 0) {
         return wc_error_to_psa_status(ret);
     }

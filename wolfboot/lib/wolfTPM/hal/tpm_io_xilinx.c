@@ -1,8 +1,8 @@
 /* tpm_io_xilinx.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -190,7 +190,7 @@
         #ifdef WOLFTPM_DEBUG_TIMEOUT
             printf("SPI Ready Wait %d\n", TPM_SPI_WAIT_RETRY - timeout);
         #endif
-            if (timeout <= 0) {
+            if (status != XST_SUCCESS || timeout <= 0) {
                 XSpiPs_SetSlaveSelect(&SpiInstance, 0xF); /* deselect CS (set high) */
                 XSpiPs_Disable(&SpiInstance);
                 return TPM_RC_FAILURE;

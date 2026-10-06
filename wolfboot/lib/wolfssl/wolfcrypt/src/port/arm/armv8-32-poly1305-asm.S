@@ -15,6 +15,8 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-poly1305-asm.S
  */
 
+#define _WC_BUILDING_ARMV8_32_POLY1305_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -25,6 +27,7 @@
 	.text
 	.align	4
 	.globl	poly1305_arm32_blocks_16
+	WC_ASM_ATT_HIDDEN(poly1305_arm32_blocks_16)
 	.type	poly1305_arm32_blocks_16, %function
 poly1305_arm32_blocks_16:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -254,6 +257,7 @@ L_poly1305_arm32_clamp:
 	.text
 	.align	4
 	.globl	poly1305_set_key
+	WC_ASM_ATT_HIDDEN(poly1305_set_key)
 	.type	poly1305_set_key, %function
 poly1305_set_key:
 	push	{r4, r5, r6, r7, r8, lr}
@@ -293,6 +297,7 @@ poly1305_set_key:
 	.text
 	.align	4
 	.globl	poly1305_final
+	WC_ASM_ATT_HIDDEN(poly1305_final)
 	.type	poly1305_final, %function
 poly1305_final:
 	push	{r4, r5, r6, r7, r8, r9, lr}
@@ -345,6 +350,7 @@ poly1305_final:
 	.text
 	.align	4
 	.globl	poly1305_arm32_blocks_16
+	WC_ASM_ATT_HIDDEN(poly1305_arm32_blocks_16)
 	.type	poly1305_arm32_blocks_16, %function
 poly1305_arm32_blocks_16:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -559,6 +565,7 @@ L_poly1305_arm32_16_done:
 	.text
 	.align	4
 	.globl	poly1305_arm32_blocks
+	WC_ASM_ATT_HIDDEN(poly1305_arm32_blocks)
 	.type	poly1305_arm32_blocks, %function
 poly1305_arm32_blocks:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -1018,6 +1025,7 @@ L_poly1305_arm32_clamp:
 	.text
 	.align	4
 	.globl	poly1305_set_key
+	WC_ASM_ATT_HIDDEN(poly1305_set_key)
 	.type	poly1305_set_key, %function
 poly1305_set_key:
 	push	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -1236,6 +1244,7 @@ poly1305_set_key:
 	.text
 	.align	4
 	.globl	poly1305_final
+	WC_ASM_ATT_HIDDEN(poly1305_final)
 	.type	poly1305_final, %function
 poly1305_final:
 	push	{r4, r5, r6, r7, r8, r9, lr}
@@ -1286,10 +1295,10 @@ poly1305_final:
 	.size	poly1305_final,.-poly1305_final
 #endif /* WOLFSSL_ARMASM_NO_NEON */
 #endif /* HAVE_POLY1305 */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

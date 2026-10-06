@@ -113,8 +113,8 @@ THREAD_RETURN WOLFSSL_THREAD echoserver_test(void* args)
 
     ((func_args*)args)->return_code = -1; /* error state */
 
-#if (defined(NO_RSA) && !defined(HAVE_ECC) && !defined(HAVE_ED25519) && \
-                                !defined(HAVE_ED448)) || defined(WOLFSSL_LEANPSK)
+#if defined(NO_CERTS) || defined(WOLFSSL_LEANPSK) || \
+    (defined(TEST_NO_CLASSIC_AUTH) && !defined(TEST_HAVE_PQC_CERT_AUTH))
     doPSK = 1;
 #else
     doPSK = 0;
@@ -141,7 +141,8 @@ THREAD_RETURN WOLFSSL_THREAD echoserver_test(void* args)
     tcp_listen(&sockfd, &port, useAnyAddr, 0, 0);
 
 #if !defined(NO_TLS)
-    #if defined(WOLFSSL_TLS13) && defined(WOLFSSL_SNIFFER)
+    #if defined(WOLFSSL_TLS13) && defined(WOLFSSL_SNIFFER) && \
+        !defined(WOLFSSL_NO_TLS12)
     method = wolfTLSv1_2_server_method();
     #else
     method = wolfSSLv23_server_method();
@@ -168,7 +169,7 @@ THREAD_RETURN WOLFSSL_THREAD echoserver_test(void* args)
 
 #ifndef NO_FILESYSTEM
     if (doPSK == 0) {
-    #if defined(HAVE_ECC) && !defined(WOLFSSL_SNIFFER)
+    #if defined(HAVE_ECC) && !defined(NO_CERTS) && !defined(WOLFSSL_SNIFFER)
         /* ecc */
         if (wolfSSL_CTX_use_certificate_file(ctx, eccCertFile, CERT_FILETYPE)
                 != WOLFSSL_SUCCESS)
@@ -179,7 +180,7 @@ THREAD_RETURN WOLFSSL_THREAD echoserver_test(void* args)
                 != WOLFSSL_SUCCESS)
             err_sys("can't load server key file, "
                     "Please run from wolfSSL home dir");
-    #elif defined(HAVE_ED25519) && !defined(WOLFSSL_SNIFFER)
+    #elif defined(HAVE_ED25519) && !defined(NO_CERTS) && !defined(WOLFSSL_SNIFFER)
         /* ed25519 */
         if (wolfSSL_CTX_use_certificate_chain_file(ctx, edCertFile)
                 != WOLFSSL_SUCCESS)
@@ -190,7 +191,7 @@ THREAD_RETURN WOLFSSL_THREAD echoserver_test(void* args)
                 != WOLFSSL_SUCCESS)
             err_sys("can't load server key file, "
                     "Please run from wolfSSL home dir");
-    #elif defined(HAVE_ED448) && !defined(WOLFSSL_SNIFFER)
+    #elif defined(HAVE_ED448) && !defined(NO_CERTS) && !defined(WOLFSSL_SNIFFER)
         /* ed448 */
         if (wolfSSL_CTX_use_certificate_chain_file(ctx, ed448CertFile)
                 != WOLFSSL_SUCCESS)
@@ -198,6 +199,30 @@ THREAD_RETURN WOLFSSL_THREAD echoserver_test(void* args)
                     "Please run from wolfSSL home dir");
 
         if (wolfSSL_CTX_use_PrivateKey_file(ctx, ed448KeyFile,
+                CERT_FILETYPE) != WOLFSSL_SUCCESS)
+            err_sys("can't load server key file, "
+                    "Please run from wolfSSL home dir");
+    #elif defined(NO_RSA) && defined(TEST_HAVE_MLDSA_CERTS) && \
+          !defined(NO_CERTS) && !defined(WOLFSSL_SNIFFER)
+        /* ML-DSA (post-quantum-only) */
+        if (wolfSSL_CTX_use_certificate_chain_file(ctx, mldsaCertFile)
+                != WOLFSSL_SUCCESS)
+            err_sys("can't load server cert file, "
+                    "Please run from wolfSSL home dir");
+
+        if (wolfSSL_CTX_use_PrivateKey_file(ctx, mldsaKeyFile, CERT_FILETYPE)
+                != WOLFSSL_SUCCESS)
+            err_sys("can't load server key file, "
+                    "Please run from wolfSSL home dir");
+    #elif defined(NO_RSA) && defined(TEST_HAVE_SLHDSA_CERTS) && \
+          !defined(NO_CERTS) && !defined(WOLFSSL_SNIFFER)
+        /* SLH-DSA (post-quantum-only); entity certs are PEM only */
+        if (wolfSSL_CTX_use_certificate_chain_file(ctx, slhdsaCertFile)
+                != WOLFSSL_SUCCESS)
+            err_sys("can't load server cert file, "
+                    "Please run from wolfSSL home dir");
+
+        if (wolfSSL_CTX_use_PrivateKey_file(ctx, slhdsaKeyFile,
                 CERT_FILETYPE) != WOLFSSL_SUCCESS)
             err_sys("can't load server key file, "
                     "Please run from wolfSSL home dir");
@@ -230,10 +255,13 @@ THREAD_RETURN WOLFSSL_THREAD echoserver_test(void* args)
     }
 #endif
 
-#if defined(WOLFSSL_SNIFFER)
+#if defined(WOLFSSL_SNIFFER) && !defined(WOLFSSL_NO_TLS12)
     /* Only set if not running testsuite */
     if (XSTRSTR(argv[0], "testsuite") == NULL) {
-        /* don't use EDH, can't sniff tmp keys */
+        /* don't use EDH, can't sniff tmp keys. A TLS 1.3 sniffer needs a key
+         * log file or static ephemeral keys instead, so this static RSA suite
+         * is only pinned where TLS 1.2 exists. Advisory: a build without the
+         * suite's ciphers keeps the default list. */
         wolfSSL_CTX_set_cipher_list(ctx, "AES256-SHA");
     }
 #endif

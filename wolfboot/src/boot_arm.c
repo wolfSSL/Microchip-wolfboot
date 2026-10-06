@@ -163,7 +163,7 @@ static void mpu_init(void)
     mpu_setattr(6, MPUSIZE_1G | MPU_RASR_ENABLE | MPU_RASR_ATTR_S |
         MPU_RASR_ATTR_B | MPU_RASR_ATTR_AP_PRW_UNO | MPU_RASR_ATTR_XN);
 
-    /* System control 0xE0000000:0xEFFFFFF */
+    /* System control 0xE0000000:0xEFFFFFFF (256M) */
     mpu_setaddr(7, 0xE0000000);
     mpu_setattr(7, MPUSIZE_256M | MPU_RASR_ENABLE | MPU_RASR_ATTR_S |
         MPU_RASR_ATTR_B | MPU_RASR_ATTR_AP_PRW_UNO | MPU_RASR_ATTR_XN);
@@ -452,10 +452,18 @@ void isr_empty(void)
     /* Ignore unmapped event and continue */
 }
 
+#ifdef TARGET_m2354
+/* Overridden by the M2354 HAL when CRPT offload is built. */
+void isr_crpt(void) __attribute__((weak, alias("isr_empty")));
+#endif
 
 
 
-#if defined (__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U) && defined(TZEN)
+
+/* ARMv8-M baseline (Cortex-M23) has no SecureFault: slot 7 is reserved and
+ * secure faults escalate to HardFault. */
+#if defined (__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U) && \
+    defined(TZEN) && !defined(CORTEX_M23)
 #   define isr_securefault isr_fault
 #else
 #   define isr_securefault 0
@@ -473,7 +481,7 @@ void isr_empty(void)
  */
 
 #if defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U) && \
-    defined(TZEN)
+    defined(TZEN) && !defined(WOLFBOOT_SECURE_APP)
 #include "hal.h"
 #define VTOR (*(volatile uint32_t *)(0xE002ED08)) /* Non-secure VTOR */
 #else
@@ -483,6 +491,10 @@ void isr_empty(void)
 
 static void  *app_entry;
 static uint32_t app_end_stack;
+#if defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U) && defined(TZEN) && \
+    !defined(WOLFBOOT_SECURE_APP)
+static uint32_t ns_entry;
+#endif
 
 
 void RAMFUNCTION do_boot(const uint32_t *app_offset)
@@ -494,7 +506,9 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
     asm volatile("do_boot_r5:\n"
                  "  mov     pc, r0\n");
 
-#elif defined(CORTEX_M33) || defined(CORTEX_M55) /* Armv8 boot procedure */
+#elif defined(CORTEX_M33) || defined(CORTEX_M55) || defined(CORTEX_M23)
+      /* Armv8 boot procedure. CORTEX_M23 is ARMv8-M baseline: same sequence,
+       * different instruction encodings where noted. */
 
     /* Get stack pointer, entry point */
     app_end_stack = (*((uint32_t *)(app_offset)));
@@ -521,7 +535,15 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
      * and VTOR_NS points there directly. */
     VTOR = ((uint32_t)app_offset);
     asm volatile("msr msplim, %0" ::"r"(0));
-#   if defined (__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U) && \
+#   if defined(WOLFBOOT_SECURE_APP)
+    /* A secure application is a signed Secure runtime, not a Non-secure guest:
+     * stay in Secure state and branch through its own reset vector. wolfBoot's
+     * MPU stays off across the jump; the runtime installs its own map. */
+    mpu_off();
+    asm volatile("msr msp, %0" :: "r"(app_end_stack));
+    asm volatile("cpsie i");
+    asm volatile("mov pc, %0" :: "r"(app_entry));
+#   elif defined (__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U) && \
        defined(TZEN)
     asm volatile("msr msp_ns, %0" ::"r"(app_end_stack));
 #if defined(TARGET_stm32n6)
@@ -537,9 +559,10 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
         asm volatile("isb");
     }
 #endif
-    /* Jump to non secure app_entry */
-    asm volatile("mov r7, %0" ::"r"(app_entry));
-    asm volatile("bic.w   r7, r7, #1");
+    /* BLXNS requires bit 0 clear. Masked in C rather than with "bic.w",
+     * which does not exist on ARMv8-M baseline, and into a local so
+     * app_entry is left unmodified. */
+    ns_entry = ((uint32_t)app_entry) & ~1UL;
 #if !defined(TARGET_stm32n6)
     /* Re-enable interrupts to allow non-secure OS handlers. Skipped
      * for N6: cpsie here can dispatch a pending NS exception before
@@ -548,7 +571,9 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
      * Reset_Handler will re-enable interrupts itself. */
     asm volatile("cpsie i");
 #endif
-    asm volatile("blxns   r7" );
+    /* One asm holding the branch register, so the compiler cannot place a
+     * live value in it between the load and BLXNS. */
+    asm volatile("blxns %0" :: "r"(ns_entry) : "memory");
 #   else
     asm volatile("msr msp, %0" ::"r"(app_end_stack));
     asm volatile("mov pc, %0":: "r"(app_entry));
@@ -692,8 +717,333 @@ void (* const IV[])(void) =
     isr_empty,
     isr_empty,
     isr_empty,
+#elif defined(TARGET_m2354)
+    /* Nuvoton M2354 external interrupts, IRQ 0 through TMR5_IRQn (115).
+     * Slot 71 is CRPT_IRQn, which crypto offload needs a real handler for. */
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_crpt,                    /* 71 CRPT */
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+#elif defined(TARGET_va416x0)
+    /* IRQ 0 through TXEV_IRQn (195), for 212 entries. wolfBoot enables the
+     * EDAC error IRQs (76, 77), so those slots must exist. */
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
+    isr_empty,
 #endif
 };
+
+#ifdef TARGET_va416x0
+/* 16 system exceptions + 196 external IRQs. A short table sends the EDAC
+ * error IRQs (76, 77) into .text; fail the build instead. */
+typedef char va416x0_iv_len_check[
+    (sizeof(IV) / sizeof(IV[0]) == 212) ? 1 : -1];
+#endif
 #endif
 
 #ifdef RAM_CODE

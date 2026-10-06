@@ -1,8 +1,8 @@
 /* quote.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -200,6 +200,7 @@ int TPM2_PCR_Quote_Test(void* userCtx, int argc, char *argv[])
         pubKey = (byte*)XMALLOC(pubKeySz, NULL, DYNAMIC_TYPE_PUBLIC_KEY);
         if (pubKey == NULL) {
             printf("Failed to malloc buffer for public key\n");
+            rc = MEMORY_E;
             goto exit;
         }
 
@@ -285,14 +286,21 @@ int TPM2_PCR_Quote_Test(void* userCtx, int argc, char *argv[])
     }
 
     /* Save quote blob to the disk */
-    data = (UINT8*)&cmdOut.quoteResult.quoted;
-    data += sizeof(UINT16); /* skip the size field of TPMS_ATTEST */
-    dataSz = (int)sizeof(TPMS_ATTEST) - sizeof(UINT16);
+    data = cmdOut.quoteResult.quoted.attestationData;
+    dataSz = cmdOut.quoteResult.quoted.size;
 #if !defined(NO_FILESYSTEM) && !defined(NO_WRITE_TEMP_FILES)
     f = XFOPEN(outputFile, "wb");
-    if (f != XBADFILE) {
-        dataSz = (int)XFWRITE(data, 1, dataSz, f);
-        XFCLOSE(f);
+    if (f == XBADFILE) {
+        printf("Failed to open %s for writing\n", outputFile);
+        rc = BAD_FUNC_ARG;
+        goto exit;
+    }
+    dataSz = (int)XFWRITE(data, 1, dataSz, f);
+    XFCLOSE(f);
+    if (dataSz != (int)cmdOut.quoteResult.quoted.size) {
+        printf("Failed to write quote to %s\n", outputFile);
+        rc = BAD_FUNC_ARG;
+        goto exit;
     }
     printf("Wrote %d bytes to %s\n", dataSz, outputFile);
 #else

@@ -54,6 +54,7 @@ WOLFSSL_SHAKE256
 WOLFSSL_DES3
 WOLFSSL_DES_ECB
 HAVE_AESGCM
+WOLFSSL_AESGCM_STREAM
 HAVE_AESCCM
 HAVE_AES_ECB
 WOLFSSL_AES_COUNTER
@@ -112,9 +113,14 @@ for tok in ${flags}; do
     cppflags="${cppflags} -D${tok}"
 done
 
+# BUILD_TARGET lets a lane compile only part of the library (e.g.
+# psa-objects for a configuration the bundled wolfCrypt sources do not
+# support).
+target="${BUILD_TARGET:-libwolfpsa.a}"
+
 make -C "${repo_root}" clean BUILD_DIR="${repo_root}/build-test/out/${variant_name}" >/dev/null
 make -C "${repo_root}" \
     BUILD_DIR="${repo_root}/build-test/out/${variant_name}" \
     USER_SETTINGS_PATH="${repo_root}/build-test" \
     WOLFSSL_CPPFLAGS="${cppflags}" \
-    libwolfpsa.a
+    "${target}"

@@ -32,6 +32,8 @@
  */
 
 /* Linux kernel command line arguments */
+/* Must stay below the fdt.h include: the LINUX_BOOTARGS_OVERRIDE default
+ * there keys off build-supplied macros only, not this fallback. */
 #ifndef LINUX_BOOTARGS
 #ifndef LINUX_BOOTARGS_ROOT
 /* Default Versal SD layout: rootfs on partition 2. Configurations that use
@@ -208,21 +210,10 @@ void uart_write(const char *buf, uint32_t len)
  * ============================================================================
  */
 
-/* Get current timer count (physical counter) */
-static inline uint64_t timer_get_count(void)
-{
-    uint64_t cntpct;
-    __asm__ volatile("mrs %0, cntpct_el0" : "=r" (cntpct));
-    return cntpct;
-}
-
-/* Get timer frequency with fallback to TIMER_CLK_FREQ if not configured */
-static inline uint64_t timer_get_freq(void)
-{
-    uint64_t cntfrq;
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r" (cntfrq));
-    return cntfrq ? cntfrq : TIMER_CLK_FREQ;
-}
+/* The counter accessors come from the shared AArch64 helpers. The three
+ * conversions below stay local: each picks a different way to avoid overflow,
+ * and the header deliberately takes no position on that. */
+#include "aarch64_arch.h"
 
 /* Get current time in milliseconds */
 uint64_t hal_timer_ms(void)
@@ -668,67 +659,79 @@ static int qspi_transfer(QspiDev_t *dev, const uint8_t *txData, uint32_t txLen,
             if ((GQSPI_CFG & GQSPI_CFG_MODE_EN_MASK) == GQSPI_CFG_MODE_EN_DMA) {
                 uint8_t *dmaPtr;
                 uint32_t dmaLen;
+                uint32_t rxDone = 0;
                 int useTemp = 0;
 
                 /* Check alignment - DMA requires cache-line aligned buffer.
                  * If unaligned or not a multiple of 4 bytes, use temp buffer.
                  * CRITICAL: GenFIFO transfer size must match DMA size! */
-                if (((uintptr_t)rxData & (GQSPI_DMA_ALIGN - 1)) || (rxLen & 3)) {
-                    /* Use temp buffer for unaligned data */
-                    dmaPtr = dma_tmpbuf;
-                    /* Bounds check before alignment to prevent integer overflow */
-                    if (rxLen > sizeof(dma_tmpbuf)) {
-                        dmaLen = sizeof(dma_tmpbuf);
-                    } else {
-                        dmaLen = (rxLen + GQSPI_DMA_ALIGN - 1) & ~(GQSPI_DMA_ALIGN - 1);
-                        if (dmaLen > sizeof(dma_tmpbuf)) {
+                useTemp = (((uintptr_t)rxData & (GQSPI_DMA_ALIGN - 1)) ||
+                           (rxLen & 3)) ? 1 : 0;
+
+                /* Run the RX in passes: through the temp buffer (at most
+                 * sizeof(dma_tmpbuf) per pass) when the destination is
+                 * unaligned, directly into rxData otherwise. Only the
+                 * bytes actually DMA'd in a pass may be copied out. */
+                while (ret == 0 && rxDone < rxLen) {
+                    uint32_t copyLen = rxLen - rxDone;
+
+                    if (useTemp) {
+                        dmaPtr = dma_tmpbuf;
+                        if (copyLen > sizeof(dma_tmpbuf))
+                            copyLen = sizeof(dma_tmpbuf);
+                        /* Bounds check before alignment to prevent integer overflow */
+                        dmaLen = (copyLen + GQSPI_DMA_ALIGN - 1) &
+                                 ~(GQSPI_DMA_ALIGN - 1);
+                        if (dmaLen > sizeof(dma_tmpbuf))
                             dmaLen = sizeof(dma_tmpbuf);
-                        }
+                        if (copyLen > dmaLen)
+                            copyLen = dmaLen;
+                    } else {
+                        dmaPtr = rxData + rxDone;
+                        dmaLen = copyLen;
                     }
-                    useTemp = 1;
-                } else {
-                    dmaPtr = rxData;
-                    dmaLen = rxLen;
-                }
 
-                /* GenFIFO must request the same number of bytes as DMA expects */
-                remaining = dmaLen;
+                    /* GenFIFO must request the same number of bytes as DMA expects */
+                    remaining = dmaLen;
 
-                /* Setup DMA destination */
-                GQSPIDMA_DST = ((uintptr_t)dmaPtr & 0xFFFFFFFFUL);
-                GQSPIDMA_DST_MSB = ((uintptr_t)dmaPtr >> 32);
-                GQSPIDMA_SIZE = dmaLen;
+                    /* Setup DMA destination */
+                    GQSPIDMA_DST = ((uintptr_t)dmaPtr & 0xFFFFFFFFUL);
+                    GQSPIDMA_DST_MSB = ((uintptr_t)dmaPtr >> 32);
+                    GQSPIDMA_SIZE = dmaLen;
 
-                /* Enable DMA done interrupt */
-                GQSPIDMA_IER = GQSPIDMA_ISR_DONE;
+                    /* Enable DMA done interrupt */
+                    GQSPIDMA_IER = GQSPIDMA_ISR_DONE;
 
-                /* Flush dcache for DMA coherency */
-                flush_dcache_range((uintptr_t)dmaPtr, (uintptr_t)dmaPtr + dmaLen);
+                    /* Flush dcache for DMA coherency */
+                    flush_dcache_range((uintptr_t)dmaPtr, (uintptr_t)dmaPtr + dmaLen);
 
-                /* Push all GenFIFO entries first (use EXP mode for large transfers) */
-                while (ret == 0 && remaining > 0) {
-                    xferSz = qspi_calc_exp(remaining, &rxEntry);
-                    ret = qspi_gen_fifo_push(rxEntry);
-                    remaining -= xferSz;
-                }
+                    /* Push all GenFIFO entries first (use EXP mode for large transfers) */
+                    while (ret == 0 && remaining > 0) {
+                        xferSz = qspi_calc_exp(remaining, &rxEntry);
+                        ret = qspi_gen_fifo_push(rxEntry);
+                        remaining -= xferSz;
+                    }
 
-                /* Trigger GenFIFO */
-                if (ret == 0) {
-                    GQSPI_CFG |= GQSPI_CFG_START_GEN_FIFO;
-                    dsb();
-                }
+                    /* Trigger GenFIFO */
+                    if (ret == 0) {
+                        GQSPI_CFG |= GQSPI_CFG_START_GEN_FIFO;
+                        dsb();
+                    }
 
-                /* Wait for DMA completion */
-                if (ret == 0) {
-                    ret = qspi_dma_wait();
-                }
+                    /* Wait for DMA completion */
+                    if (ret == 0) {
+                        ret = qspi_dma_wait();
+                    }
 
-                /* Invalidate cache after DMA */
-                flush_dcache_range((uintptr_t)dmaPtr, (uintptr_t)dmaPtr + dmaLen);
+                    /* Invalidate cache after DMA */
+                    flush_dcache_range((uintptr_t)dmaPtr, (uintptr_t)dmaPtr + dmaLen);
 
-                /* Copy from temp buffer if needed (only copy requested bytes) */
-                if (ret == 0 && useTemp) {
-                    memcpy(rxData, dmaPtr, rxLen);
+                    /* Copy from temp buffer if needed (only the bytes this
+                     * pass actually transferred) */
+                    if (ret == 0 && useTemp) {
+                        memcpy(rxData + rxDone, dmaPtr, copyLen);
+                    }
+                    rxDone += copyLen;
                 }
             } else {
                 /* IO mode: Use FIFO polling (fallback when DMA mode not enabled) */
@@ -1136,6 +1139,18 @@ void hal_init(void)
 #endif
         "========================================\n");
     wolfBoot_printf("Current EL: %d\n", current_el());
+
+    /* BL31 enters wolfBoot with all of DAIF masked (SPSR 0x3c9), so an
+     * asynchronous external abort - e.g. a DDR uncorrectable ECC error
+     * returned to the A72 - stays pending and invisible while the boot
+     * dies downstream. Unmask SError now that the console is up so it is
+     * taken at EL2 and reported by SErrorInterrupt() instead. */
+#if defined(EL2_HYPERVISOR) && EL2_HYPERVISOR == 1
+    if (current_el() == 2) {
+        __asm__ volatile("msr daifclr, #4");
+        __asm__ volatile("isb");
+    }
+#endif
 #endif
 
 #ifdef EXT_FLASH
@@ -1227,43 +1242,37 @@ void* hal_get_dts_update_address(void)
  * Called from do_boot() before jumping to the kernel.
  *
  * @param dts_addr: Pointer to the device tree blob in memory
+ * @param capacity: Bytes readable/writable at dts_addr; bounds every
+ *                  in-place fixup made here
  * @return: 0 on success, negative error code on failure
  */
-int hal_dts_fixup(void* dts_addr)
+int hal_dts_fixup(void* dts_addr, uint32_t capacity)
 {
-    int off, ret;
-    struct fdt_header *fdt = (struct fdt_header *)dts_addr;
+    fdt_ctx ctx;
+    int ret;
 
-    /* Verify FDT header */
-    ret = fdt_check_header(dts_addr);
+    /* Validate the blob against the window it actually occupies. */
+    ret = fdt_open(&ctx, dts_addr, capacity);
     if (ret != 0) {
         wolfBoot_printf("FDT: Invalid header! %d\n", ret);
         return ret;
     }
 
-    wolfBoot_printf("FDT: Version %d, Size %d\n",
-        fdt_version(fdt), fdt_totalsize(fdt));
+    wolfBoot_printf("FDT: Size %d\n", (int)fdt_size(&ctx));
 
-    /* Expand total size to allow adding/modifying properties (bootargs and,
-     * when WOLFBOOT_FIT_RAMDISK is in play, linux,initrd-{start,end}).
+    /* Reserve free space to allow adding/modifying properties (bootargs
+     * and, when WOLFBOOT_FIT_RAMDISK is in play, linux,initrd-{start,end}).
      * Sizing comes from WOLFBOOT_FDT_FIXUP_HEADROOM in include/fdt.h. */
-    fdt_set_totalsize(fdt,
-        fdt_totalsize(fdt) + WOLFBOOT_FDT_FIXUP_HEADROOM);
-
-    /* Find /chosen node; create it only if genuinely missing. Any other
-     * negative return (malformed FDT, etc.) is surfaced directly rather
-     * than masked by a follow-on fdt_add_subnode() failure. */
-    off = fdt_find_node_offset(fdt, -1, "chosen");
-    if (off == -FDT_ERR_NOTFOUND) {
-        off = fdt_add_subnode(fdt, 0, "chosen");
+    ret = fdt_grow(&ctx, WOLFBOOT_FDT_FIXUP_HEADROOM);
+    if (ret != 0) {
+        wolfBoot_printf("FDT: No headroom for fixups (%d)\n", ret);
+        return ret;
     }
 
-    if (off >= 0) {
-        /* Set bootargs property */
-        fdt_fixup_str(fdt, off, "chosen", "bootargs", LINUX_BOOTARGS);
-    } else {
-        wolfBoot_printf("FDT: Failed to find/create chosen node (%d)\n", off);
-        return off;
+    ret = fdt_fixup_bootargs(&ctx, LINUX_BOOTARGS, LINUX_BOOTARGS_OVERRIDE);
+    if (ret < 0) {
+        wolfBoot_printf("FDT: Failed to set bootargs (%d)\n", ret);
+        return ret;
     }
 
     return 0;
@@ -1363,7 +1372,7 @@ int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
 {
     int ret = 0;
     uint8_t cmd[5];
-    uint32_t xferSz, page, pages;
+    uint32_t xferSz, page_room;
     uintptr_t addr;
     const uint8_t *pageData;
 
@@ -1381,17 +1390,19 @@ int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
     QSPI_DEBUG_PRINTF("ext_flash_write: addr=0x%lx, len=%d\n",
                       (unsigned long)address, len);
 
-    /* Write by page */
-    pages = ((len + (FLASH_PAGE_SIZE - 1)) / FLASH_PAGE_SIZE);
-    for (page = 0; page < pages && ret == 0; page++) {
+    /* Write by page, capping each transfer at the end of the physical
+     * page holding its start address: NOR wraps the write pointer at
+     * the page boundary, so a program crossing it clobbers the start
+     * of the page. */
+    while (len > 0) {
+        page_room = FLASH_PAGE_SIZE - ((uint32_t)address % FLASH_PAGE_SIZE);
+        xferSz = ((uint32_t)len > page_room) ? page_room
+                                             : (uint32_t)len;
+
         ret = qspi_write_enable(&qspiDev);
         if (ret != 0) break;
 
-        xferSz = len;
-        if (xferSz > FLASH_PAGE_SIZE)
-            xferSz = FLASH_PAGE_SIZE;
-
-        addr = address + (page * FLASH_PAGE_SIZE);
+        addr = address;
         if (qspiDev.stripe) {
             /* For dual parallel the address is divided by 2 */
             addr /= 2;
@@ -1404,14 +1415,19 @@ int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
         cmd[3] = (addr >> 8) & 0xFF;
         cmd[4] = addr & 0xFF;
 
-        pageData = data + (page * FLASH_PAGE_SIZE);
+        pageData = data;
         ret = qspi_transfer(&qspiDev, cmd, sizeof(cmd), NULL, 0, 0, pageData, xferSz);
 
-        QSPI_DEBUG_PRINTF("Flash Page %d Write: Ret %d\n", page, ret);
+        QSPI_DEBUG_PRINTF("Flash Page Write: addr=0x%lx, len=%u, ret=%d\n",
+                          (unsigned long)address, xferSz, ret);
         if (ret != 0) break;
 
         ret = qspi_wait_ready(&qspiDev);
         qspi_write_disable(&qspiDev);
+        if (ret != 0) break;
+
+        data = pageData + xferSz;
+        address += xferSz;
         len -= xferSz;
     }
 

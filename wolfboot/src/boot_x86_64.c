@@ -24,15 +24,15 @@ extern unsigned int __bss_end__;
 static volatile unsigned int cpu_id;
 extern unsigned int *END_STACK;
 
-extern void RAMFUNCTION x86_64_efi_do_boot(uint8_t *kernel);
+extern void RAMFUNCTION x86_64_efi_do_boot(const uint32_t *boot_addr);
 
-#ifdef MMU
+#if defined(MMU) || defined(WOLFBOOT_FDT)
 void RAMFUNCTION do_boot(const uint32_t *app_offset, const uint32_t* dts_offset)
 #else
 void RAMFUNCTION do_boot(const uint32_t *app_offset)
 #endif
 {
-    x86_64_efi_do_boot((uint8_t *)app_offset);
+    x86_64_efi_do_boot(app_offset);
 }
 
 #endif /* TARGET_X86_64_EFI */

@@ -33,24 +33,144 @@
 #define HAVE_EMPTY_AGGREGATES 0
 #define HAVE_ANONYMOUS_INLINE_AGGREGATES 0
 
+#ifdef HAVE_FIPS
+    /* wolfCrypt FIPS 140-3 module boundary algorithm set. FIPS requires the
+     * whole validated module (all approved algorithms) to be present so the
+     * power-on self-tests and in-core integrity check operate. See
+     * docs/FIPS.md. Enabled via FIPS=1 (-DHAVE_FIPS in options.mk). */
+    /* WOLFSSL_FIPS_READY selects the evaluation "FIPS-ready" bundle and forces
+     * HAVE_FIPS_VERSION 7 (settings.h). Gated on WOLFBOOT_FIPS_READY (set by
+     * FIPS_READY=1, the default) so a production build with the licensed
+     * validated bundle (FIPS_READY=0) keeps the bundle's own declared version. */
+    #ifdef WOLFBOOT_FIPS_READY
+        #define WOLFSSL_FIPS_READY
+    #endif
+    /* Single-threaded: the FIPS POST runs at init before any other access, so
+     * the module's thread-local state is a plain global (no pthread TLS). */
+    #define NO_THREAD_LS
+    /* wolfBoot's bare-metal startup does not run C constructors (.init_array),
+     * so the FIPS module's power-on self-test entry (fipsEntry) must be a
+     * normal callable function that wolfBoot invokes explicitly at startup. */
+    #define NO_ATTRIBUTE_CONSTRUCTOR
+    #define WOLFSSL_BASE16          /* fips_test.c hash hex encode/decode */
+    #define WOLFSSL_BASE64_ENCODE
+    #define WOLFSSL_SHA224
+    #define WOLFSSL_SHA384
+    #define WOLFSSL_SHA512
+    #define WOLFSSL_SHA3
+    #define HAVE_AESGCM
+    #define HAVE_AESCCM
+    #define HAVE_AES_ECB          /* AES CAST uses wc_AesEcbEncrypt */
+    #define HAVE_AES_CBC          /* AES-CBC CAST */
+    #define WOLFSSL_AES_COUNTER
+    #define WOLFSSL_AES_DIRECT
+    #define WOLFSSL_AES_CFB
+    #define WOLFSSL_AES_OFB
+    #define WOLFSSL_AES_XTS
+    #define WOLFSSL_CMAC
+    #define HAVE_HKDF
+    #define HAVE_ECC
+    #define WOLFSSL_ECDSA_SET_K
+    #define WOLFSSL_VALIDATE_ECC_IMPORT
+    #define WOLFSSL_VALIDATE_ECC_KEYGEN
+    #define WOLFSSL_KEY_GEN
+    #define WOLFSSL_PUBLIC_MP
+    #define WOLFSSL_SP_MATH_ALL
+    /* Use native 64-bit SP digits on 64-bit targets (portable C via __uint128_t;
+     * NOT the ARM64 SP asm, which sits outside the validated FIPS boundary and
+     * is disabled by NO_ARM_ASM). Without this, WOLFSSL_SP_MATH_ALL leaves the
+     * word-size gate further below - which keys off WOLFSSL_HAVE_SP_ECC/RSA,
+     * neither set in the FIPS build - unselected, so ECDSA verify would regress
+     * to 32-bit limbs (~4x the multiply work) on the boot-critical path. */
+    /* Key the 64-bit limb selection off the compiler macro __x86_64__ as well
+     * as ARCH_x86_64: ARCH=sim emits only ARCH_SIM, so sim-fips on an x86_64
+     * host would otherwise fall back to 32-bit SP limbs. */
+    #if !defined(SP_WORD_SIZE) && \
+        (defined(__aarch64__) || defined(ARCH_RISCV64) || \
+         ((defined(ARCH_x86_64) || defined(__x86_64__)) && \
+          !defined(FORCE_32BIT)))
+        #define HAVE___UINT128_T
+        #define SP_WORD_SIZE 64
+    #endif
+    /* FIPS DRBG entropy seed source. The RNG must NOT be disabled in FIPS mode
+     * (see the undef block below which removes WC_NO_RNG/WC_NO_HASHDRBG). The
+     * seed is a HAL hook: every FIPS target implements
+     *   int wolfBoot_fips_seed(unsigned char* output, unsigned int sz);
+     * (e.g. /dev/urandom on sim in hal/sim.c, the BCM2711 RNG200 TRNG on CM4 in
+     * hal/cm4.c). A new FIPS target just provides this function in its HAL - no
+     * wolfCrypt settings edit needed (a missing implementation is a clear link
+     * error). Allow a target to pre-define CUSTOM_RAND_GENERATE_SEED to opt out. */
+    #ifndef CUSTOM_RAND_GENERATE_SEED
+        #define CUSTOM_RAND_GENERATE_SEED wolfBoot_fips_seed
+        #ifndef __ASSEMBLER__
+        extern int wolfBoot_fips_seed(unsigned char* output, unsigned int sz);
+        #endif
+    #endif
+#endif /* HAVE_FIPS */
+
+/* TI C2000 C28x: word-addressed, 16-bit int, CHAR_BIT==16.  wolfCrypt's
+ * WOLFSSL_WIDE_BYTE support auto-enables on __TMS320C28XX__; configure the
+ * integer widths, pull in <limits.h> (for CHAR_BIT and sp_int size detection),
+ * and disable asm/inline paths that don't apply. */
+#if defined(WOLFBOOT_ARCH_C2000) || defined(__TMS320C28XX__)
+#   undef  SIZEOF_LONG
+#   define SIZEOF_LONG 4
+#   undef  HAVE_LIMITS_H
+#   define HAVE_LIMITS_H
+#   undef  WC_16BIT_CPU
+#   define WC_16BIT_CPU
+#   undef  WOLFSSL_GENERAL_ALIGNMENT
+#   define WOLFSSL_GENERAL_ALIGNMENT 2
+#   undef  WOLFSSL_NO_ASM
+#   define WOLFSSL_NO_ASM
+#   undef  WC_SHA3_NO_ASM
+#   define WC_SHA3_NO_ASM
+    /* cl2000 treats plain inline as C99 extern-inline, leaving misc.c helpers
+     * unresolved at link; make them ordinary extern functions (misc.o linked). */
+#   undef  NO_INLINE
+#   define NO_INLINE
+#   undef  WOLFSSL_SP_ALLOW_16BIT_CPU
+#   define WOLFSSL_SP_ALLOW_16BIT_CPU
+#   undef  WOLFSSL_SP_NO_MALLOC
+#   define WOLFSSL_SP_NO_MALLOC
+#endif
+
 /* Stdlib Types */
 #define CTYPE_USER /* don't let wolfCrypt types.h include ctype.h */
 
 #ifndef WOLFSSL_ARMASM
+/* Not when preprocessing a .S: this header is pulled into wolfSSL's generated
+ * assembly (riscv64 and others) via libwolfssl_sources_asm.h, and a C
+ * declaration reaching the assembler is a syntax error.  The macros below are
+ * harmless there; only the prototypes need hiding. */
+#ifndef __ASSEMBLER__
 #ifndef toupper
 extern int toupper(int c);
 #endif
 #ifndef tolower
 extern int tolower(int c);
 #endif
+#endif /* !__ASSEMBLER__ */
 #define XTOUPPER(c)     toupper((c))
 #define XTOLOWER(c)     tolower((c))
 #endif
 
 #ifdef USE_FAST_MATH
-    /* wolfBoot only does public asymmetric operations,
-     * so timing resistance and hardening is not required */
-#   define WC_NO_HARDEN
+    /* WC_NO_HARDEN suits verify-only builds, which do public-key
+     * operations only. Secure-mode worlds (TZ_PSA/PKCS11/FWTPM/WOLFHSM)
+     * process private keys in software, so they keep the timing-
+     * resistant TFM path. Hardware DICE (WOLFBOOT_DICE_HW) only moves the
+     * DICE attestation key to the crypto engine; the secure PSA service
+     * still runs software RSA/ECC on keys created or imported through the
+     * IPC, so it needs the hardening too. */
+#   if defined(WOLFCRYPT_SECURE_MODE)
+#       define TFM_TIMING_RESISTANT
+#   else
+        /* tfm.c never tests WC_NO_HARDEN, so dropping it alone changes
+         * no code and only un-silences an advisory that -Werror turns
+         * into a build failure. */
+#       define WC_NO_HARDEN
+#   endif
 #endif
 
 #if defined(WOLFBOOT_TPM_KEYSTORE) || defined(WOLFBOOT_TPM_SEAL)
@@ -63,8 +183,80 @@ extern int tolower(int c);
     #define CUSTOM_RAND_GENERATE_SEED hal_trng_get_entropy
 #endif
 
+/* Algorithm inclusion union.
+ * An algorithm's wolfCrypt code is compiled in when it is the primary
+ * (WOLFBOOT_SIGN_*), secondary (WOLFBOOT_SIGN_SECONDARY_*), or auxiliary
+ * (WOLFBOOT_AUX_PK_* / WOLFBOOT_AUX_HASH_*, from the AUX_PK_ALGOS and
+ * AUX_HASH_ALGOS build options) algorithm. Auxiliary algorithms serve
+ * features like cert-chain verification and TPM; they are never used to
+ * verify image signatures, which stay keyed on WOLFBOOT_SIGN_*.
+ * The WOLFBOOT_ENABLE_* macros below are internal to this file. */
+#if defined(WOLFBOOT_SIGN_ECC256) || defined(WOLFBOOT_SIGN_SECONDARY_ECC256) \
+    || defined(WOLFBOOT_AUX_PK_ECC256)
+#   define WOLFBOOT_ENABLE_PK_ECC256
+#endif
+#if defined(WOLFBOOT_SIGN_ECC384) || defined(WOLFBOOT_SIGN_SECONDARY_ECC384) \
+    || defined(WOLFBOOT_AUX_PK_ECC384)
+#   define WOLFBOOT_ENABLE_PK_ECC384
+#endif
+#if defined(WOLFBOOT_SIGN_ECC521) || defined(WOLFBOOT_SIGN_SECONDARY_ECC521) \
+    || defined(WOLFBOOT_AUX_PK_ECC521)
+#   define WOLFBOOT_ENABLE_PK_ECC521
+#endif
+#if defined(WOLFBOOT_SIGN_RSA2048) || defined(WOLFBOOT_SIGN_SECONDARY_RSA2048) \
+    || defined(WOLFBOOT_AUX_PK_RSA2048)
+#   define WOLFBOOT_ENABLE_PK_RSA2048
+#endif
+#if defined(WOLFBOOT_SIGN_RSA3072) || defined(WOLFBOOT_SIGN_SECONDARY_RSA3072) \
+    || defined(WOLFBOOT_AUX_PK_RSA3072)
+#   define WOLFBOOT_ENABLE_PK_RSA3072
+#endif
+#if defined(WOLFBOOT_SIGN_RSA4096) || defined(WOLFBOOT_SIGN_SECONDARY_RSA4096) \
+    || defined(WOLFBOOT_AUX_PK_RSA4096)
+#   define WOLFBOOT_ENABLE_PK_RSA4096
+#endif
+#if defined(WOLFBOOT_SIGN_RSAPSS2048) || \
+    defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS2048) || \
+    defined(WOLFBOOT_AUX_PK_RSAPSS2048)
+#   define WOLFBOOT_ENABLE_PK_RSAPSS2048
+#endif
+#if defined(WOLFBOOT_SIGN_RSAPSS3072) || \
+    defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS3072) || \
+    defined(WOLFBOOT_AUX_PK_RSAPSS3072)
+#   define WOLFBOOT_ENABLE_PK_RSAPSS3072
+#endif
+#if defined(WOLFBOOT_SIGN_RSAPSS4096) || \
+    defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS4096) || \
+    defined(WOLFBOOT_AUX_PK_RSAPSS4096)
+#   define WOLFBOOT_ENABLE_PK_RSAPSS4096
+#endif
+#if defined(WOLFBOOT_SIGN_ED25519) || defined(WOLFBOOT_SIGN_SECONDARY_ED25519) \
+    || defined(WOLFBOOT_AUX_PK_ED25519)
+#   define WOLFBOOT_ENABLE_PK_ED25519
+#endif
+#if defined(WOLFBOOT_SIGN_ED448) || defined(WOLFBOOT_SIGN_SECONDARY_ED448) \
+    || defined(WOLFBOOT_AUX_PK_ED448)
+#   define WOLFBOOT_ENABLE_PK_ED448
+#endif
+
+/* Hash inclusion: the primary image hash plus any auxiliary hashes.
+ * SHA-256 is the default image hash when no other primary hash is set. */
+#if defined(WOLFBOOT_AUX_HASH_SHA256) || \
+    (!defined(WOLFBOOT_HASH_SHA384) && !defined(WOLFBOOT_HASH_SHA3_384))
+#   define WOLFBOOT_ENABLE_HASH_SHA256
+#endif
+#if defined(WOLFBOOT_HASH_SHA384) || defined(WOLFBOOT_AUX_HASH_SHA384)
+#   define WOLFBOOT_ENABLE_HASH_SHA384
+#endif
+#ifdef WOLFBOOT_AUX_HASH_SHA512
+#   define WOLFBOOT_ENABLE_HASH_SHA512
+#endif
+#if defined(WOLFBOOT_HASH_SHA3_384) || defined(WOLFBOOT_AUX_HASH_SHA3)
+#   define WOLFBOOT_ENABLE_HASH_SHA3
+#endif
+
 /* ED25519 and SHA512 */
-#if defined(WOLFBOOT_SIGN_ED25519) || defined(WOLFBOOT_SIGN_SECONDARY_ED25519)
+#ifdef WOLFBOOT_ENABLE_PK_ED25519
 #   define HAVE_ED25519
 #   define ED25519_SMALL
 #   if !defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
@@ -76,7 +268,7 @@ extern int tolower(int c);
 #endif
 
 /* ED448 and SHA3/SHAKE256 */
-#if defined(WOLFBOOT_SIGN_ED448) || defined(WOLFBOOT_SIGN_SECONDARY_ED448)
+#ifdef WOLFBOOT_ENABLE_PK_ED448
 #   define HAVE_ED448
 #   define HAVE_ED448_VERIFY
 #   define ED448_SMALL
@@ -90,12 +282,9 @@ extern int tolower(int c);
 #endif
 
 /* ECC */
-#if defined(WOLFBOOT_SIGN_ECC256) || \
-    defined(WOLFBOOT_SIGN_ECC384) || \
-    defined(WOLFBOOT_SIGN_ECC521) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_ECC256) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_ECC384) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_ECC521) || \
+#if defined(WOLFBOOT_ENABLE_PK_ECC256) || \
+    defined(WOLFBOOT_ENABLE_PK_ECC384) || \
+    defined(WOLFBOOT_ENABLE_PK_ECC521) || \
     defined(WOLFCRYPT_SECURE_MODE) || \
     defined(WOLFCRYPT_TEST) || defined(WOLFCRYPT_BENCHMARK)
 
@@ -116,12 +305,12 @@ extern int tolower(int c);
        !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK) && \
        !defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) && \
        !defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
-#       if !defined(WOLFBOOT_TPM)
+#       if !defined(WOLFBOOT_TPM) && !defined(HAVE_FIPS)
 #          define NO_ECC_SIGN
 #          define NO_ECC_DHE
-           /* For Renesas RX do not enable the misc.c constant time code
-            * due to issue with 64-bit types */
-#          if defined(__RX__)
+           /* Old GNU RX 4.x miscompiled misc.c 64-bit constant-time ops;
+            * newer RX needs them (sp_int.c uses ctMaskLT). */
+#          if defined(__RX__) && defined(__GNUC__) && (__GNUC__ < 5)
 #              define WOLFSSL_NO_CT_OPS /* don't use constant time ops in misc.c */
 #          endif
 #          if !defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) && \
@@ -138,8 +327,12 @@ extern int tolower(int c);
 #if !defined(PKCS11_SMALL) && !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
 #       define HAVE_ECC_CDH
 #endif
+        /* Don't force SP_MATH when a config selects SP_MATH_ALL (SPMATHALL=1,
+         * e.g. T1024/T1040); the two SP math backends are mutually exclusive. */
+#   if !defined(WOLFSSL_SP_MATH_ALL)
 #       define WOLFSSL_SP_MATH
 #       define WOLFSSL_SP_SMALL
+#   endif
 #       define WOLFSSL_HAVE_SP_ECC
 #       define WOLFSSL_KEY_GEN
 #       define HAVE_ECC_KEY_EXPORT
@@ -156,21 +349,18 @@ extern int tolower(int c);
 #define WOLFSSL_PUBLIC_MP
 
     /* Curve */
-#   if defined(WOLFBOOT_SIGN_ECC256) || defined(WOLFCRYPT_SECURE_MODE) || \
-        defined(WOLFBOOT_SIGN_SECONDARY_ECC256) || \
+#   if defined(WOLFBOOT_ENABLE_PK_ECC256) || defined(WOLFCRYPT_SECURE_MODE) || \
         defined(WOLFCRYPT_TEST) || defined(WOLFCRYPT_BENCHMARK)
 #       define HAVE_ECC256
 #   endif
-#   if defined(WOLFBOOT_SIGN_ECC384) || \
-        defined(WOLFBOOT_SIGN_SECONDARY_ECC384) || \
+#   if defined(WOLFBOOT_ENABLE_PK_ECC384) || \
         defined(WOLFCRYPT_SECURE_MODE) || \
         defined(WOLFCRYPT_TEST) || defined(WOLFCRYPT_BENCHMARK)
 #       define HAVE_ECC384
 #       define WOLFSSL_SP_384
 #   endif
     /* ECC521 only enabled if specifically requested (not for tests - too large) */
-#   if defined(WOLFBOOT_SIGN_ECC521) || \
-        defined(WOLFBOOT_SIGN_SECONDARY_ECC521) || \
+#   if defined(WOLFBOOT_ENABLE_PK_ECC521) || \
         defined(WOLFCRYPT_SECURE_MODE)
 #       define HAVE_ECC521
 #       define WOLFSSL_SP_521
@@ -200,24 +390,17 @@ extern int tolower(int c);
 #      define WOLFSSL_SP_NO_256
 #      endif
 #   endif
-#endif /* WOLFBOOT_SIGN_ECC521 || WOLFBOOT_SIGN_ECC384 || WOLFBOOT_SIGN_ECC256 ||
-        * WOLFBOOT_SIGN_SECONDARY_ECC521 || WOLFBOOT_SIGN_SECONDARY_ECC384 ||
-        * WOLFBOOT_SIGN_SECONDARY_ECC256 || WOLFCRYPT_SECURE_MODE */
+#endif /* WOLFBOOT_ENABLE_PK_ECC521 || WOLFBOOT_ENABLE_PK_ECC384 ||
+        * WOLFBOOT_ENABLE_PK_ECC256 || WOLFCRYPT_SECURE_MODE */
 
 
 /* RSA */
-#if defined(WOLFBOOT_SIGN_RSA2048) || \
-    defined(WOLFBOOT_SIGN_RSA3072) || \
-    defined(WOLFBOOT_SIGN_RSA4096) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_RSA2048) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_RSA3072) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_RSA4096) || \
-    defined(WOLFBOOT_SIGN_RSAPSS2048) || \
-    defined(WOLFBOOT_SIGN_RSAPSS3072) || \
-    defined(WOLFBOOT_SIGN_RSAPSS4096) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS2048) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS3072) || \
-    defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS4096) || \
+#if defined(WOLFBOOT_ENABLE_PK_RSA2048) || \
+    defined(WOLFBOOT_ENABLE_PK_RSA3072) || \
+    defined(WOLFBOOT_ENABLE_PK_RSA4096) || \
+    defined(WOLFBOOT_ENABLE_PK_RSAPSS2048) || \
+    defined(WOLFBOOT_ENABLE_PK_RSAPSS3072) || \
+    defined(WOLFBOOT_ENABLE_PK_RSAPSS4096) || \
     (defined(WOLFCRYPT_SECURE_MODE) && (!defined(PKCS11_SMALL)))
 
     /* RSA blinding protects RSA private-key operations against timing
@@ -238,11 +421,9 @@ extern int tolower(int c);
 #   define WC_RSA_DIRECT
 #   define RSA_LOW_MEM
 #   define WC_ASN_HASH_SHA256
-#   if defined(WOLFBOOT_SIGN_RSAPSS2048) || defined(WOLFBOOT_SIGN_RSAPSS3072) || \
-       defined(WOLFBOOT_SIGN_RSAPSS4096) || \
-       defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS2048) || \
-       defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS3072) || \
-       defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS4096)
+#   if defined(WOLFBOOT_ENABLE_PK_RSAPSS2048) || \
+       defined(WOLFBOOT_ENABLE_PK_RSAPSS3072) || \
+       defined(WOLFBOOT_ENABLE_PK_RSAPSS4096)
 #       define WC_RSA_PSS
 #   endif
 #   if !defined(WOLFBOOT_TPM) && !defined(WOLFCRYPT_SECURE_MODE) && \
@@ -252,7 +433,11 @@ extern int tolower(int c);
 #       define WOLFSSL_RSA_VERIFY_INLINE
 #       define WOLFSSL_RSA_VERIFY_ONLY
 #       define WOLFSSL_RSA_PUBLIC_ONLY
-#       if !defined(WC_RSA_PSS)
+        /* With WC_NO_RSA_OAEP set, wolfssl settings.h may strip
+         * ConstantCompare (WOLFSSL_NO_CONST_CMP), which ed25519/ed448
+         * verify still needs. Keep OAEP when an Ed algo is compiled in. */
+#       if !defined(WC_RSA_PSS) && !defined(WOLFBOOT_ENABLE_PK_ED25519) && \
+           !defined(WOLFBOOT_ENABLE_PK_ED448)
 #           define WC_NO_RSA_OAEP
 #       endif
 #       define NO_RSA_BOUNDS_CHECK
@@ -263,46 +448,59 @@ extern int tolower(int c);
 #       define WOLFSSL_SP_SMALL
 #       define WOLFSSL_SP_MATH
 #   endif
-#   if defined(WOLFBOOT_SIGN_RSA2048) || defined(WOLFBOOT_SIGN_SECONDARY_RSA2048) || \
-       defined(WOLFBOOT_SIGN_RSAPSS2048) || defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS2048)
-#       define FP_MAX_BITS (2048 * 2)
-#       define SP_INT_BITS 2048
-#       define WOLFSSL_SP_NO_3072
-#       define WOLFSSL_SP_NO_4096
-#       define WOLFSSL_SP_2048
-#       define RSA_MIN_SIZE 2048
-#       define RSA_MAX_SIZE 2048
+    /* Key sizes in use (secure mode serves all of them) */
+#   if defined(WOLFBOOT_ENABLE_PK_RSA2048) || \
+       defined(WOLFBOOT_ENABLE_PK_RSAPSS2048) || defined(WOLFCRYPT_SECURE_MODE)
+#       define WOLFBOOT_ENABLE_RSA2048_SIZE
 #   endif
-#   if defined(WOLFBOOT_SIGN_RSA3072) || defined(WOLFBOOT_SIGN_SECONDARY_RSA3072) || \
-       defined(WOLFBOOT_SIGN_RSAPSS3072) || defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS3072)
+#   if defined(WOLFBOOT_ENABLE_PK_RSA3072) || \
+       defined(WOLFBOOT_ENABLE_PK_RSAPSS3072) || defined(WOLFCRYPT_SECURE_MODE)
+#       define WOLFBOOT_ENABLE_RSA3072_SIZE
+#   endif
+#   if defined(WOLFBOOT_ENABLE_PK_RSA4096) || \
+       defined(WOLFBOOT_ENABLE_PK_RSAPSS4096) || defined(WOLFCRYPT_SECURE_MODE)
+#       define WOLFBOOT_ENABLE_RSA4096_SIZE
+#   endif
+    /* SP code for each selected size; strip the others */
+#   ifdef WOLFBOOT_ENABLE_RSA2048_SIZE
+#       define WOLFSSL_SP_2048
+#   else
+#       define WOLFSSL_SP_NO_2048
+#   endif
+#   ifdef WOLFBOOT_ENABLE_RSA3072_SIZE
+#       define WOLFSSL_SP_3072
+#   else
+#       define WOLFSSL_SP_NO_3072
+#   endif
+#   ifdef WOLFBOOT_ENABLE_RSA4096_SIZE
+#       define WOLFSSL_SP_4096
+#   else
+#       define WOLFSSL_SP_NO_4096
+#   endif
+    /* Math sized for the largest key; any RSA key needs more than any
+     * ECC curve enabled above */
+#   ifdef FP_MAX_BITS
+#       undef FP_MAX_BITS
+#   endif
+#   if defined(WOLFBOOT_ENABLE_RSA4096_SIZE)
+#       define FP_MAX_BITS (4096 * 2)
+#       define SP_INT_BITS 4096
+#       define RSA_MAX_SIZE 4096
+#   elif defined(WOLFBOOT_ENABLE_RSA3072_SIZE)
 #       define FP_MAX_BITS (3072 * 2)
 #       define SP_INT_BITS 3072
-#       define WOLFSSL_SP_NO_2048
-#       define WOLFSSL_SP_NO_4096
-#       define WOLFSSL_SP_3072
-#       define RSA_MIN_SIZE 3072
 #       define RSA_MAX_SIZE 3072
+#   elif defined(WOLFBOOT_ENABLE_RSA2048_SIZE)
+#       define FP_MAX_BITS (2048 * 2)
+#       define SP_INT_BITS 2048
+#       define RSA_MAX_SIZE 2048
 #   endif
-
-#   if defined(WOLFBOOT_SIGN_RSA4096) || defined(WOLFBOOT_SIGN_SECONDARY_RSA4096) || \
-       defined(WOLFBOOT_SIGN_RSAPSS4096) || defined(WOLFBOOT_SIGN_SECONDARY_RSAPSS4096)
-#       define FP_MAX_BITS (4096 * 2)
-#       define SP_INT_BITS 4096
-#       define WOLFSSL_SP_NO_2048
-#       define WOLFSSL_SP_NO_3072
-#       define WOLFSSL_SP_4096
-#       define RSA_MIN_SIZE 4096
-#       define RSA_MAX_SIZE 4096
-#   endif
-#   ifdef WOLFCRYPT_SECURE_MODE
-#       undef FP_MAX_BITS
-#       define FP_MAX_BITS (4096 * 2)
-#       define SP_INT_BITS 4096
-#       define WOLFSSL_SP_2048
-#       define WOLFSSL_SP_3072
-#       define WOLFSSL_SP_4096
+#   if defined(WOLFBOOT_ENABLE_RSA2048_SIZE)
 #       define RSA_MIN_SIZE 2048
-#       define RSA_MAX_SIZE 4096
+#   elif defined(WOLFBOOT_ENABLE_RSA3072_SIZE)
+#       define RSA_MIN_SIZE 3072
+#   elif defined(WOLFBOOT_ENABLE_RSA4096_SIZE)
+#       define RSA_MIN_SIZE 4096
 #   endif
 #else
 #   define NO_RSA
@@ -333,27 +531,31 @@ extern int tolower(int c);
 #   define WOLFSSL_SP_NO_DYN_STACK
 #endif /* WOLFBOOT_SIGN_ML_DSA || WOLFBOOT_SIGN_SECONDARY_ML_DSA */
 
-#ifdef WOLFBOOT_HASH_SHA3_384
+#ifdef WOLFBOOT_ENABLE_HASH_SHA3
 #   define WOLFSSL_SHA3
-#   if defined(NO_RSA) && !defined(WOLFBOOT_TPM) && \
-        !defined(WOLFCRYPT_SECURE_MODE) && \
-        !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
-#       define NO_SHA256
-#   endif
 #endif
 
-#ifdef WOLFBOOT_HASH_SHA384
+#ifdef WOLFBOOT_ENABLE_HASH_SHA384
 #   define WOLFSSL_SHA384
-#   if defined(NO_RSA) && !defined(WOLFBOOT_TPM) && \
-    !defined(WOLFCRYPT_SECURE_MODE) && \
-    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
-#       define NO_SHA256
-#   endif
+#endif
+
+/* SHA-384 is computed through the SHA-512 core */
+#if defined(WOLFBOOT_ENABLE_HASH_SHA384) || defined(WOLFBOOT_ENABLE_HASH_SHA512)
 #   ifndef WOLFSSL_SHA512
 #       define WOLFSSL_SHA512
 #       define WOLFSSL_NOSHA512_224
 #       define WOLFSSL_NOSHA512_256
 #   endif
+#endif
+
+/* Drop SHA-256 when neither the image hash nor any other user needs it.
+ * FIPS keeps SHA-256: the module's in-core integrity check is HMAC-SHA-256. */
+#if (defined(WOLFBOOT_HASH_SHA384) || defined(WOLFBOOT_HASH_SHA3_384)) && \
+    !defined(WOLFBOOT_ENABLE_HASH_SHA256) && defined(NO_RSA) && \
+    !defined(WOLFBOOT_TPM) && !defined(WOLFCRYPT_SECURE_MODE) && \
+    !defined(HAVE_FIPS) && \
+    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
+#   define NO_SHA256
 #endif
 
 /* If SP math is enabled determine word size */
@@ -375,8 +577,10 @@ extern int tolower(int c);
 #       define SP_WORD_SIZE 32
 #   endif
 
-    /* SP Math needs to understand long long */
-#   ifndef ULLONG_MAX
+    /* SP Math needs to understand long long. Skip this fallback when limits.h
+     * is available (HAVE_LIMITS_H), which defines ULLONG_MAX itself - otherwise
+     * the two definitions clash (e.g. TI cl2000 / CHAR_BIT!=8 builds). */
+#   if !defined(ULLONG_MAX) && !defined(HAVE_LIMITS_H)
 #       define ULLONG_MAX 18446744073709551615ULL
 #   endif
 #endif
@@ -503,7 +707,9 @@ extern int tolower(int c);
 #endif
 
 #if !defined(WOLFCRYPT_SECURE_MODE) && !defined(WOLFBOOT_TPM_PARMENC) && \
-    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
+    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK) && \
+    !defined(WOLFCRYPT_MAX32666_TEST) && \
+    !defined(HAVE_FIPS)
     #if !(defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) && \
         defined(WOLFBOOT_SIGN_ML_DSA)) && \
         !defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
@@ -536,6 +742,15 @@ extern int tolower(int c);
             #define CUSTOM_RAND_GENERATE_SEED my_rng_seed_gen
             #define CUSTOM_RAND_GENERATE_BLOCK my_rng_seed_gen
             extern int my_rng_seed_gen(unsigned char* output, unsigned int sz);
+
+            /* Full test/benchmark algo set: AES ECB/CBC/CTR/GCM/XTS,
+             * SHA-256/384/512, SHA-3. (AES-CBC/GCM added below; SHA-384/512
+             * from HASH=SHA384.) */
+            #define WOLFSSL_AES_COUNTER
+            #define HAVE_AES_ECB
+            #define WOLFSSL_AES_XTS
+            #define WOLFSSL_AES_DIRECT
+            #define WOLFSSL_SHA3
         #endif
 
         #define HAVE_AESGCM
@@ -550,17 +765,20 @@ extern int tolower(int c);
 #if !defined(ENCRYPT_WITH_AES128) && !defined(ENCRYPT_WITH_AES256) && \
     !defined(WOLFBOOT_TPM_PARMENC) && !defined(WOLFCRYPT_SECURE_MODE) && \
     !defined(SECURE_PKCS11) && !defined(WOLFCRYPT_TZ_PSA) && \
-    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
+    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK) && \
+    !defined(HAVE_FIPS)
     #define NO_AES
 #endif
 
 #if !defined(WOLFBOOT_TPM) && !defined(WOLFCRYPT_SECURE_MODE) && \
-    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
+    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK) && \
+    !defined(WOLFCRYPT_MAX32666_TEST)
 #   define NO_HMAC
 #endif
 
 #if !defined(WOLFBOOT_TPM) && !defined(WOLFCRYPT_SECURE_MODE) && \
-    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
+    !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK) && \
+    !defined(WOLFCRYPT_MAX32666_TEST)
 #   if !(defined(WOLFBOOT_ENABLE_WOLFHSM_CLIENT) && \
        defined(WOLFBOOT_SIGN_ML_DSA)) &&          \
       !defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER)
@@ -612,6 +830,34 @@ extern int tolower(int c);
 #define NO_PKCS8
 #define NO_CHECK_PRIVATE_KEY
 #define NO_KDF
+
+#ifdef HAVE_FIPS
+    /* The FIPS validated module requires its whole boundary present; undo the
+     * lean verify-only disables above so the module's approved algorithms and
+     * their power-on self-tests operate (see docs/FIPS.md). */
+    #undef  NO_HMAC
+    #undef  NO_CMAC
+    #undef  NO_SHA
+    #undef  NO_KDF
+    #undef  NO_ASN
+    #undef  NO_DEV_RANDOM
+    #undef  NO_ECC_KEY_EXPORT
+    #undef  WC_NO_RNG
+    #undef  WC_NO_HASHDRBG
+    #undef  NO_PWDBASED
+    #undef  NO_CODING
+    #undef  NO_AES_CBC          /* FIPS AES-CBC CAST needs CBC mode */
+    #define HAVE_PBKDF2
+#endif /* HAVE_FIPS */
+
+/* wolfSSL derives WOLFSSL_DER_TO_PEM from WOLFSSL_KEY_GEN (see settings.h), but
+ * wc_DerToPemEx() calls Base64_Encode(), which NO_CODING compiles out of
+ * coding.c.  wolfBoot never emits PEM, so drop the conversion rather than pull
+ * base64 back in.  Checked after the FIPS block above, which may undef
+ * NO_CODING. */
+#if defined(NO_CODING) && !defined(WOLFSSL_NO_DER_TO_PEM)
+#   define WOLFSSL_NO_DER_TO_PEM
+#endif
 
 /* wolfCrypt Test/Benchmark Configuration */
 #ifdef WOLFCRYPT_TEST
@@ -703,7 +949,8 @@ extern int tolower(int c);
 #   endif
 #   if !defined(SECURE_PKCS11) && !defined(WOLFCRYPT_TZ_PSA) && \
        !defined(WOLFBOOT_ENABLE_WOLFHSM_SERVER) && \
-       !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK)
+       !defined(WOLFCRYPT_TEST) && !defined(WOLFCRYPT_BENCHMARK) && \
+       !defined(WOLFCRYPT_MAX32666_TEST)
 #       define NO_WOLFSSL_MEMORY
 #       define WOLFSSL_NO_MALLOC
 #   endif
@@ -784,12 +1031,14 @@ extern int tolower(int c);
      * SHA384/SHA512 on the secure side, WC_MAX_DIGEST_SIZE caps at
      * SHA256's 32 and wc_ecc_sign_hash (ecc.c:7281) rejects legitimately
      * oversized hashes (e.g. ECDSA truncation tests) with BAD_LENGTH_E. */
-#   ifndef WOLFSSL_SHA384
-#       define WOLFSSL_SHA384
-#   endif
-#   ifndef WOLFSSL_SHA512
-#       define WOLFSSL_SHA512
-#   endif
+#   ifdef WOLFCRYPT_TZ_WOLFHSM
+#       ifndef WOLFSSL_SHA384
+#           define WOLFSSL_SHA384
+#       endif
+#       ifndef WOLFSSL_SHA512
+#           define WOLFSSL_SHA512
+#       endif
+#   endif /* WOLFCRYPT_TZ_WOLFHSM */
     /* Match the keycache sizing the wolfHSM test suite is validated
      * against (test/config/wolfhsm_cfg.h: 9 regular + 3 big). The
      * library defaults (8 + 1) are one regular slot short of the
@@ -849,8 +1098,13 @@ extern int tolower(int c);
 
 /* WOLF_CRYPTO_CB requires WC_RNG type for cryptocb.h function declarations.
  * Forward-declare as incomplete type — sufficient for WC_RNG* pointers in
- * function signatures. We never call functions that dereference WC_RNG. */
-#if defined(WOLF_CRYPTO_CB) && defined(WC_NO_RNG)
+ * function signatures. We never call functions that dereference WC_RNG.
+ *
+ * Skipped under __ASSEMBLER__: wolfSSL's ARM .S sources pull settings.h in
+ * through the assembler, which cannot parse a C typedef. Only targets that
+ * combine a crypto callback (e.g. wolfHSM client) with ARM assembly reach
+ * this, which is why it went unnoticed. */
+#if defined(WOLF_CRYPTO_CB) && defined(WC_NO_RNG) && !defined(__ASSEMBLER__)
 typedef struct WC_RNG WC_RNG;
 #endif
 

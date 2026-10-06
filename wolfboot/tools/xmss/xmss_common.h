@@ -42,6 +42,8 @@ static enum wc_XmssRc xmss_write_key(const byte * priv, word32 privSz, void * co
             return WC_XMSS_RC_WRITE_FAIL;
         }
     }
+    /* Unbuffered: keep no libc-owned copy of the private state. */
+    setvbuf(file, NULL, _IONBF, 0);
 
     n_write = fwrite(priv, 1, privSz, file);
 
@@ -64,6 +66,8 @@ static enum wc_XmssRc xmss_write_key(const byte * priv, word32 privSz, void * co
         fprintf(stderr, "error: fopen(%s, \"r+\") failed.\n", filename);
         return WC_XMSS_RC_WRITE_FAIL;
     }
+    /* Unbuffered: keep no libc-owned copy of the private state. */
+    setvbuf(file, NULL, _IONBF, 0);
 
     buff = malloc(privSz);
     if (buff == NULL) {
@@ -120,6 +124,8 @@ static enum wc_XmssRc xmss_read_key(byte * priv, word32 privSz, void * context)
         fprintf(stderr, "error: fopen(%s, \"rb\") failed\n", filename);
         return WC_XMSS_RC_READ_FAIL;
     }
+    /* Unbuffered: keep no libc-owned copy of the private state. */
+    setvbuf(file, NULL, _IONBF, 0);
 
     n_read = fread(priv, 1, privSz, file);
 

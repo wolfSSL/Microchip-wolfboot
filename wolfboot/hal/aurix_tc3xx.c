@@ -28,7 +28,8 @@
 #ifdef TC3_CFG_HAVE_BOARD
 #include "tc3/tc3_board.h"
 #endif
-#ifdef WOLFBOOT_AURIX_TC3XX_HSM
+/* TARGET_aurix_tc3xx_hsm: HSM core build, see hal/aurix_tc3xx_hsm.c */
+#ifdef TARGET_aurix_tc3xx_hsm
 #include "tc3/tc3arm.h"
 #else
 #include "tc3/tc3tc.h"
@@ -151,6 +152,18 @@ void uart_vprintf(const char* fmt, va_list argp) TC3_LONGCALL;
 void wolfBoot_panic(void) TC3_LONGCALL;
 #endif
 
+#ifdef WOLFBOOT_ENABLE_WOLFHSM_CLIENT
+/* Every flash command from this core must be wrapped in a park/unpark sequence
+ * to force the HSM core to execute from RAM while the host-driven flash
+ * command completes.
+ * The server app must be running first to process a park request */
+#define HSM_PARK() (void)tchsmHhHost_HsmPark()
+#define HSM_RELEASE() (void)tchsmHhHost_HsmRelease()
+#else
+#define HSM_PARK()
+#define HSM_RELEASE()
+#endif /* WOLFBOOT_ENABLE_WOLFHSM_CLIENT */
+
 /* RAM buffer to hold the contents of an entire flash sector*/
 static uint32_t sectorBuffer[WOLFBOOT_SECTOR_SIZE / sizeof(uint32_t)];
 
@@ -203,11 +216,11 @@ static void RAMFUNCTION cacheSector(uint32_t sectorAddress)
 
         ret = tc3_flash_BlankCheck(page, TC3_PFLASH_PAGE_SIZE);
         if (ret == 0) {
-            /* Page is erased, fill with erased value */
+            /* Page is erased, fill with the erased word value */
             {
                 uint32_t i;
                 for (i = 0; i < TC3_PFLASH_PAGE_SIZE / sizeof(uint32_t); i++) {
-                    pageInSectorBuffer[i] = FLASH_BYTE_ERASED;
+                    pageInSectorBuffer[i] = FLASH_WORD_ERASED;
                 }
             }
         }
@@ -288,7 +301,7 @@ void uart_write(const char* buf, unsigned int sz)
  * the firmware images*/
 void hal_init(void)
 {
-#ifndef WOLFBOOT_AURIX_TC3XX_HSM
+#ifndef TARGET_aurix_tc3xx_hsm
     /* Update BTV to use RAM Trap Table */
     tc3tc_traps_InitBTV();
 
@@ -313,7 +326,7 @@ void hal_init(void)
 
 #ifdef DEBUG_UART
     uart_init();
-#ifndef WOLFBOOT_AURIX_TC3XX_HSM
+#ifndef TARGET_aurix_tc3xx_hsm
     wolfBoot_printf("Hello from TC3xx wolfBoot on Tricore: V%d\n",
                     WOLFBOOT_VERSION);
 #else
@@ -347,7 +360,7 @@ void hal_prepare_boot(void)
 
     tc3_clock_SetBoot();
 
-#ifndef WOLFBOOT_AURIX_TC3XX_HSM
+#ifndef TARGET_aurix_tc3xx_hsm
     tc3tc_isr_Cleanup();
     tc3tc_traps_DeinitBTV();
 
@@ -359,7 +372,7 @@ void hal_prepare_boot(void)
     TC3_ENFORCE_BUS_ERRORS();
 }
 
-#ifndef WOLFBOOT_AURIX_TC3XX_HSM
+#ifndef TARGET_aurix_tc3xx_hsm
 void do_boot(const uint32_t* app_offset)
 {
     LED_OFF(LED_WOLFBOOT);
@@ -369,7 +382,7 @@ void do_boot(const uint32_t* app_offset)
 
 RAMFUNCTION void arch_reboot(void)
 {
-#ifdef WOLFBOOT_AURIX_TC3XX_HSM
+#ifdef TARGET_aurix_tc3xx_hsm
     tc3arm_HsmBridgeSysReset();
 #else
     tc3_Scu_TriggerSwReset(1, WOLFBOOT_AURIX_RESET_REASON);
@@ -397,11 +410,11 @@ static int RAMFUNCTION programBytesToErasedFlash(uint32_t       address,
             toWrite = (uint32_t)size;
         }
 
-        /* Fill the page buffer with the erased byte value */
+        /* Fill the page buffer with the erased word value */
         {
             uint32_t i;
             for (i = 0; i < TC3_PFLASH_PAGE_SIZE / sizeof(uint32_t); i++) {
-                pageBuffer[i] = FLASH_BYTE_ERASED;
+                pageBuffer[i] = FLASH_WORD_ERASED;
             }
         }
 
@@ -451,7 +464,13 @@ static void RAMFUNCTION programCachedSector(uint32_t sectorAddress)
  * interface, and len is the size of the payload. hal_flash_write should return
  * 0 upon success, or a negative value in case of failure.
  */
-int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t* data, int size)
+/* Write, erase and the blank-checked read below are each split into a worker
+ * and a public wrapper. The wrapper parks the HSM for the whole call, so the
+ * workers can call each other without nesting park requests. */
+static int RAMFUNCTION _flashErase(uint32_t address, int len);
+
+static int RAMFUNCTION _flashWrite(uint32_t address, const uint8_t* data,
+                                   int size)
 {
     int      ret               = 0;
     uint32_t currentAddress    = address;
@@ -500,7 +519,7 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t* data, int size)
             cacheSector(currentSectorAddress);
 
             /* Erase the entire sector */
-            ret = hal_flash_erase(currentSectorAddress, WOLFBOOT_SECTOR_SIZE);
+            ret = _flashErase(currentSectorAddress, WOLFBOOT_SECTOR_SIZE);
             if (ret != 0) {
                 break;
             }
@@ -534,13 +553,24 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t* data, int size)
     return ret;
 }
 
+int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t* data, int size)
+{
+    int ret;
+
+    HSM_PARK();
+    ret = _flashWrite(address, data, size);
+    HSM_RELEASE();
+
+    return ret;
+}
+
 /* Called by the bootloader to erase part of the flash memory to allow
  * subsequent boots. Erase operations must be performed via the specific IAP
  * interface of the target microcontroller. address marks the start of the area
  * that the bootloader wants to erase, and len specifies the size of the area to
  * be erased. This function must take into account the geometry of the flash
  * sectors, and erase all the sectors in between. */
-int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
+static int RAMFUNCTION _flashErase(uint32_t address, int len)
 {
     LED_ON(LED_ERASE);
 
@@ -631,6 +661,17 @@ int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
     return ret;
 }
 
+int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
+{
+    int ret;
+
+    HSM_PARK();
+    ret = _flashErase(address, len);
+    HSM_RELEASE();
+
+    return ret;
+}
+
 
 /* If the IAP interface of the flash memory of the target requires it, this
  * function is called before every write and erase operations to unlock write
@@ -650,9 +691,11 @@ RAMFUNCTION int ext_flash_write(uintptr_t address, const uint8_t* data, int len)
 
 /*
  * Reads data from flash memory, first checking if the data is erased and
- * returning dummy erased byte values to prevent ECC errors
+ * returning dummy erased byte values to prevent ECC errors. Returns the
+ * number of bytes read, or -1 on error
  */
-int RAMFUNCTION ext_flash_read(uintptr_t address, uint8_t* data, int len)
+static int RAMFUNCTION _extFlashRead(uintptr_t address, uint8_t* data,
+                                     int len)
 {
     int bytesRead;
 
@@ -705,7 +748,18 @@ int RAMFUNCTION ext_flash_read(uintptr_t address, uint8_t* data, int len)
     }
 
     LED_OFF(LED_READ);
-    return 0;
+    return bytesRead;
+}
+
+int RAMFUNCTION ext_flash_read(uintptr_t address, uint8_t* data, int len)
+{
+    int ret;
+
+    HSM_PARK();
+    ret = _extFlashRead(address, data, len);
+    HSM_RELEASE();
+
+    return ret;
 }
 
 RAMFUNCTION int ext_flash_erase(uintptr_t address, int len)

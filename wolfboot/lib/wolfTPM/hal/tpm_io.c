@@ -1,8 +1,8 @@
 /* tpm_io.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -67,6 +67,8 @@
 #include "hal/tpm_io_espressif.c"
 #elif defined(WOLFSSL_ZEPHYR)
 #include "hal/tpm_io_zephyr.c"
+#elif defined(WOLFTPM_WOLFHAL)
+#include "hal/tpm_io_wolfhal.c"
 #endif
 
 #if !defined(WOLFTPM_I2C) && !defined(WOLFTPM_MMIO) && !defined(WOLFTPM_FWTPM_HAL)
@@ -97,6 +99,8 @@ static int TPM2_IoCb_SPI(TPM2_CTX* ctx, const byte* txBuf, byte* rxBuf,
     ret = TPM2_IoCb_Microchip_SPI(ctx, txBuf, rxBuf, xferSz, userCtx);
 #elif defined(WOLFSSL_ESPIDF)
     ret = TPM2_IoCb_Espressif_SPI(ctx, txBuf, rxBuf, xferSz, userCtx);
+#elif defined(WOLFTPM_WOLFHAL)
+    ret = TPM2_IoCb_Wolfhal_SPI(ctx, txBuf, rxBuf, xferSz, userCtx);
 #else
 
     /* TODO: Add your platform here for HW SPI interface */
@@ -157,6 +161,8 @@ int TPM2_IoCb(TPM2_CTX* ctx, INT32 isRead, UINT32 addr,
         ret = TPM2_IoCb_MicrochipHarmony_I2C(ctx, isRead, addr, buf, size, userCtx);
     #elif defined(WOLFSSL_ZEPHYR)
         ret = TPM2_IoCb_Zephyr_I2C(ctx, isRead, addr, buf, size, userCtx);
+    #elif defined(WOLFTPM_WOLFHAL)
+        ret = TPM2_IoCb_Wolfhal_I2C(ctx, isRead, addr, buf, size, userCtx);
     #else
         /* TODO: Add your platform here for HW I2C interface */
         printf("Add your platform here for HW I2C interface\n");
@@ -167,27 +173,33 @@ int TPM2_IoCb(TPM2_CTX* ctx, INT32 isRead, UINT32 addr,
         (void)userCtx;
     #endif
 #else
-    /* Build TPM header */
-    txBuf[1] = (addr>>16) & 0xFF;
-    txBuf[2] = (addr>>8)  & 0xFF;
-    txBuf[3] = (addr)     & 0xFF;
-    if (isRead) {
-        txBuf[0] = TPM_TIS_READ | ((size & 0xFF) - 1);
-        XMEMSET(&txBuf[TPM_TIS_HEADER_SZ], 0,
-            sizeof(txBuf) - TPM_TIS_HEADER_SZ);
+    if (buf == NULL || size == 0 ||
+            size > (UINT16)(sizeof(txBuf) - TPM_TIS_HEADER_SZ)) {
+        ret = BAD_FUNC_ARG;
     }
     else {
-        txBuf[0] = TPM_TIS_WRITE | ((size & 0xFF) - 1);
-        XMEMCPY(&txBuf[TPM_TIS_HEADER_SZ], buf, size);
-        XMEMSET(&txBuf[TPM_TIS_HEADER_SZ + size], 0,
-            sizeof(txBuf) - TPM_TIS_HEADER_SZ - size);
-    }
-    XMEMSET(rxBuf, 0, sizeof(rxBuf));
+        /* Build TPM header */
+        txBuf[1] = (addr>>16) & 0xFF;
+        txBuf[2] = (addr>>8)  & 0xFF;
+        txBuf[3] = (addr)     & 0xFF;
+        if (isRead) {
+            txBuf[0] = TPM_TIS_READ | ((size & 0xFF) - 1);
+            XMEMSET(&txBuf[TPM_TIS_HEADER_SZ], 0,
+                sizeof(txBuf) - TPM_TIS_HEADER_SZ);
+        }
+        else {
+            txBuf[0] = TPM_TIS_WRITE | ((size & 0xFF) - 1);
+            XMEMCPY(&txBuf[TPM_TIS_HEADER_SZ], buf, size);
+            XMEMSET(&txBuf[TPM_TIS_HEADER_SZ + size], 0,
+                sizeof(txBuf) - TPM_TIS_HEADER_SZ - size);
+        }
+        XMEMSET(rxBuf, 0, sizeof(rxBuf));
 
-    ret = TPM2_IoCb_SPI(ctx, txBuf, rxBuf, size + TPM_TIS_HEADER_SZ, userCtx);
+        ret = TPM2_IoCb_SPI(ctx, txBuf, rxBuf, size + TPM_TIS_HEADER_SZ, userCtx);
 
-    if (isRead) {
-        XMEMCPY(buf, &rxBuf[TPM_TIS_HEADER_SZ], size);
+        if (isRead) {
+            XMEMCPY(buf, &rxBuf[TPM_TIS_HEADER_SZ], size);
+        }
     }
 #endif
 
@@ -196,6 +208,12 @@ int TPM2_IoCb(TPM2_CTX* ctx, INT32 isRead, UINT32 addr,
         printf("Read Size %d\n", size);
         TPM2_PrintBin(buf, size);
     }
+#endif
+
+#if !defined(WOLFTPM_I2C) && !defined(WOLFTPM_MMIO) && !defined(WOLFTPM_FWTPM_HAL)
+    /* the FIFO register transfers plaintext command/response payload */
+    TPM2_ForceZero(txBuf, sizeof(txBuf));
+    TPM2_ForceZero(rxBuf, sizeof(rxBuf));
 #endif
 
     (void)ctx;
@@ -229,6 +247,29 @@ int TPM2_IoCb(TPM2_CTX* ctx, const BYTE* txBuf, BYTE* rxBuf,
 }
 
 #endif /* WOLFTPM_ADV_IO */
+
+#ifdef WOLFTPM_HAL_RESET
+/* Pulse the TPM hardware reset (nRST) line to reset the TPM. Dispatches to the
+ * platform implementation. Returns TPM_RC_SUCCESS on success. */
+int TPM2_IoCb_Reset(TPM2_CTX* ctx, void* userCtx)
+{
+    int ret;
+#if defined(__linux__)
+    ret = TPM2_IoCb_Linux_Reset(ctx, userCtx);
+#else
+    /* No reset HAL for this OS - return NOT_COMPILED_IN so callers can tell it
+     * apart from a genuine reset failure (TPM_RC_FAILURE) on a supported OS. */
+    (void)ctx;
+    (void)userCtx;
+    ret = NOT_COMPILED_IN;
+    #ifdef DEBUG_WOLFTPM
+    printf("TPM reset HAL not implemented for this platform\n");
+    #endif
+#endif
+    return ret;
+}
+#endif /* WOLFTPM_HAL_RESET */
+
 #endif /* !(WOLFTPM_LINUX_DEV || WOLFTPM_SWTPM || WOLFTPM_WINAPI) */
 
 /******************************************************************************/

@@ -1,8 +1,8 @@
 /* fwtpm_nv.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -99,6 +99,32 @@ static int FwNvFileWrite(void* ctx, word32 offset, const byte* buf,
     int ret;
     long fileSize;
 
+    /* The journal holds plaintext hierarchy seeds, auth values and private
+     * keys, so it must never be created (or left) group/other readable. */
+#if !defined(_WIN32)
+    int fd;
+    int oflags = O_RDWR | O_CREAT;
+    #ifdef O_CLOEXEC
+    oflags |= O_CLOEXEC;
+    #endif
+    #ifdef O_NOFOLLOW
+    oflags |= O_NOFOLLOW;
+    #endif
+    fd = open(path, oflags, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
+        return TPM_RC_FAILURE;
+    }
+    /* Tighten an existing journal a prior umask left too permissive. */
+    if (fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+        close(fd);
+        return TPM_RC_FAILURE;
+    }
+    f = fdopen(fd, "r+b");
+    if (f == NULL) {
+        close(fd);
+        return TPM_RC_FAILURE;
+    }
+#else
     /* Open for read+write if exists, otherwise create */
     f = fopen(path, "r+b");
     if (f == NULL) {
@@ -107,6 +133,7 @@ static int FwNvFileWrite(void* ctx, word32 offset, const byte* buf,
             return TPM_RC_FAILURE;
         }
     }
+#endif
 
     /* If writing past current end, extend with zeros */
     fseek(f, 0, SEEK_END);
@@ -151,16 +178,45 @@ static int FwNvFileWrite(void* ctx, word32 offset, const byte* buf,
 static int FwNvFileErase(void* ctx, word32 offset, word32 size)
 {
     const char* path = (const char*)ctx;
+#if !defined(_WIN32)
+    int fd;
+    int oflags = O_WRONLY | O_CREAT;
+#else
     FILE* f;
+#endif
     (void)offset;
     (void)size;
 
-    /* For file-based backend, truncate the file */
+    /* For file-based backend, truncate the file (owner-only, see write).
+     * Truncate only after the permission check so a failed hardening does
+     * not destroy an existing journal. */
+#if !defined(_WIN32)
+    #ifdef O_CLOEXEC
+    oflags |= O_CLOEXEC;
+    #endif
+    #ifdef O_NOFOLLOW
+    oflags |= O_NOFOLLOW;
+    #endif
+    fd = open(path, oflags, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
+        return TPM_RC_FAILURE;
+    }
+    if (fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+        close(fd);
+        return TPM_RC_FAILURE;
+    }
+    if (ftruncate(fd, 0) != 0) {
+        close(fd);
+        return TPM_RC_FAILURE;
+    }
+    close(fd);
+#else
     f = fopen(path, "wb");
     if (f == NULL) {
         return TPM_RC_FAILURE;
     }
     fclose(f);
+#endif
     return TPM_RC_SUCCESS;
 }
 
@@ -566,6 +622,12 @@ static int FwNvMarshalObject(byte* buf, word32* pos, word32 maxSz,
     if (rc == 0) {
         rc = FwNvMarshalName(buf, pos, maxSz, &obj->name);
     }
+    /* Hierarchy trails the historic layout so a pre-existing journal (which
+     * lacks it) still unmarshals; access control needs it to enforce a
+     * disabled hierarchy against reloaded persistent objects. */
+    if (rc == 0) {
+        rc = FwNvMarshalU32(buf, pos, maxSz, obj->hierarchy);
+    }
     return rc;
 }
 
@@ -606,6 +668,17 @@ static int FwNvUnmarshalObject(const byte* buf, word32* pos, word32 maxSz,
     }
     if (rc == 0) {
         rc = FwNvUnmarshalName(buf, pos, maxSz, &obj->name);
+    }
+    /* Optional trailing hierarchy. A pre-existing journal lacks it: a
+     * platform-range record is unambiguously platform, but an owner-range
+     * record's owner-vs-endorsement provenance is unknown, so it is left 0
+     * and the access-control gate enforces both storage and endorsement
+     * disables conservatively for it. */
+    if (rc == 0 && *pos + 4 <= maxSz) {
+        rc = FwNvUnmarshalU32(buf, pos, maxSz, &obj->hierarchy);
+    }
+    else if (rc == 0 && obj->handle >= PLATFORM_PERSISTENT) {
+        obj->hierarchy = TPM_RH_PLATFORM;
     }
     if (rc == 0) {
         obj->used = 1;
@@ -1018,6 +1091,16 @@ static int FwNvAppendCheckpoint(FWTPM_CTX* ctx)
 }
 #endif /* WOLFTPM_FWTPM_NV_APPEND_ONLY */
 
+/* A deletion cannot be captured by compaction of the live context (which
+ * still holds the item), so these tombstone tags must not be treated as
+ * committed-by-compaction. */
+static int FwNvTagIsDelete(UINT16 tag)
+{
+    return tag == FWTPM_NV_TAG_NV_INDEX_DEL ||
+           tag == FWTPM_NV_TAG_PERSISTENT_DEL ||
+           tag == FWTPM_NV_TAG_PRIMARY_CACHE_DEL;
+}
+
 /* Append a single TLV entry to the journal */
 static int FwNvAppendEntry(FWTPM_CTX* ctx, UINT16 tag,
     const byte* value, UINT16 valueLen)
@@ -1026,11 +1109,28 @@ static int FwNvAppendEntry(FWTPM_CTX* ctx, UINT16 tag,
     word32 entrySize = TLV_HDR_SIZE + valueLen;
     word32 reserve = FWTPM_NV_MAC_SIZE;
     byte tlvHdr[TLV_HDR_SIZE];
+    word32 savedWritePos;
     int rc;
 
     if (hal->write == NULL) {
+#ifdef FWTPM_NO_NV
+        /* Volatile-only build: there is no backing store, so a state change
+         * succeeds without being persisted rather than reporting a failure. */
+        return TPM_RC_SUCCESS;
+#else
         return TPM_RC_FAILURE;
+#endif
     }
+
+#ifdef WOLFTPM_FWTPM_NV_APPEND_ONLY
+    /* A rejected append left an unsealed entry on the log that the next
+     * checkpoint would authenticate. Rewriting the single region now would
+     * erase the last committed image while the medium may still be failing,
+     * so refuse further mutations; the loader compacts the tail on restart. */
+    if (FW_NV_APPEND_ONLY(hal) && ctx->nvRebuild && !ctx->nvCompacting) {
+        return TPM_RC_NV_UNAVAILABLE;
+    }
+#endif
 
     /* Append-only also appends a checkpoint and rounds up to a granule. */
     if (FW_NV_APPEND_ONLY(hal)) {
@@ -1043,12 +1143,17 @@ static int FwNvAppendEntry(FWTPM_CTX* ctx, UINT16 tag,
         if (ctx->nvCompacting) {
             return TPM_RC_NV_SPACE;
         }
-        /* Compact and retry */
+        /* Compact. The rewrite from the live context is the commit for a
+         * non-delete change, and for a deletion whose target the rewrite
+         * omitted; appending a redundant record afterwards would only put the
+         * compacted journal's seal at risk. */
         rc = FWTPM_NV_Save(ctx);
         if (rc != TPM_RC_SUCCESS) {
             return rc;
         }
-        /* After compaction, check again */
+        if (!FwNvTagIsDelete(tag) || ctx->nvDeleteHandle != 0) {
+            return TPM_RC_SUCCESS;
+        }
         if (ctx->nvWritePos + entrySize + reserve > hal->maxSize) {
             return TPM_RC_NV_SPACE;
         }
@@ -1058,6 +1163,7 @@ static int FwNvAppendEntry(FWTPM_CTX* ctx, UINT16 tag,
     FwStoreU16LE(tlvHdr, tag);
     FwStoreU16LE(tlvHdr + 2, valueLen);
 
+    savedWritePos = ctx->nvWritePos;
     rc = FwNvHalWrite(ctx, ctx->nvWritePos, tlvHdr, TLV_HDR_SIZE);
     if (rc == TPM_RC_SUCCESS && valueLen > 0) {
         rc = FwNvHalWrite(ctx, ctx->nvWritePos + TLV_HDR_SIZE,
@@ -1066,16 +1172,33 @@ static int FwNvAppendEntry(FWTPM_CTX* ctx, UINT16 tag,
     if (rc == TPM_RC_SUCCESS) {
         ctx->nvWritePos += entrySize;
 #ifdef WOLFTPM_FWTPM_NV_APPEND_ONLY
-        /* Commit via a checkpoint; compaction emits one at the end instead. */
+        /* Commit via a checkpoint; compaction emits one at the end instead. An
+         * entry whose checkpoint fails is not durable, yet it stays on the log
+         * where the next checkpoint would seal it: no more appends until the
+         * loader has compacted it away. */
         if (FW_NV_APPEND_ONLY(hal)) {
             if (!ctx->nvCompacting) {
                 rc = FwNvAppendCheckpoint(ctx);
+                if (rc != TPM_RC_SUCCESS) {
+                    ctx->nvRebuild = 1;
+                }
             }
         }
         else
 #endif
         {
             rc = FwNvWriteHeader(ctx); /* byte-addressable: header + MAC */
+        }
+    }
+    if (rc != TPM_RC_SUCCESS) {
+        /* A failed append must leave no committable remnant. On a byte-
+         * addressable backend roll the write cursor back so the partial entry
+         * is overwritten by the next append and never sealed into the journal
+         * by a later header write. Append-only flash cannot overwrite, so its
+         * cursor and granule state are left intact for recovery at the next
+         * compaction. */
+        if (!FW_NV_APPEND_ONLY(hal)) {
+            ctx->nvWritePos = savedWritePos;
         }
     }
     return rc;
@@ -1213,6 +1336,12 @@ static int FwNvProcessEntry(FWTPM_CTX* ctx, UINT16 tag,
             FwNvUnmarshalU8(value, &vPos, vMax, &flags8);
             ctx->disableClear = (flags8 & 0x01) ? 1 : 0;
             ctx->globalNvWriteLock = (flags8 & 0x02) ? 1 : 0;
+            /* Inverted bits: a pre-existing journal (clear) leaves every
+             * hierarchy enabled. */
+            ctx->shDisabled = (flags8 & 0x10) ? 1 : 0;
+            ctx->ehDisabled = (flags8 & 0x20) ? 1 : 0;
+            ctx->phDisabled = (flags8 & 0x40) ? 1 : 0;
+            ctx->phNvDisabled = (flags8 & 0x80) ? 1 : 0;
         #ifndef FWTPM_NO_DA
             FwNvUnmarshalU32(value, &vPos, vMax, &ctx->daMaxTries);
             FwNvUnmarshalU32(value, &vPos, vMax, &ctx->daRecoveryTime);
@@ -1620,6 +1749,7 @@ static int FwNvInitAppendOnly(FWTPM_CTX* ctx, byte** valueBufP,
                     rc = TPM_RC_MEMORY;
                     break;
                 }
+                TPM2_ForceZero(valueBuf, valueBufSz);
                 XFREE(valueBuf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
                 valueBuf = newBuf;
                 valueBufSz = len;
@@ -1666,6 +1796,10 @@ int FWTPM_NV_Init(FWTPM_CTX* ctx)
     if (ctx == NULL) {
         return BAD_FUNC_ARG;
     }
+
+#ifdef WOLFTPM_FWTPM_NV_APPEND_ONLY
+    ctx->nvRebuild = 0;
+#endif
 
     /* Use custom HAL if set, otherwise default file-based */
     if (ctx->nvHal.read != NULL && ctx->nvHal.write != NULL) {
@@ -1790,6 +1924,7 @@ int FWTPM_NV_Init(FWTPM_CTX* ctx)
                     rc = TPM_RC_MEMORY;
                     break;
                 }
+                TPM2_ForceZero(valueBuf, valueBufSz);
                 XFREE(valueBuf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
                 valueBuf = newBuf;
                 valueBufSz = len;
@@ -1827,6 +1962,7 @@ int FWTPM_NV_Init(FWTPM_CTX* ctx)
         rc = FwNvGenFreshState(ctx);
     }
 
+    TPM2_ForceZero(valueBuf, valueBufSz);
     XFREE(valueBuf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     return rc;
 }
@@ -1954,6 +2090,7 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
                     rc = TPM_RC_MEMORY;
                 }
                 else {
+                    TPM2_ForceZero(buf, bufSz);
                     XFREE(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
                     buf = newBuf;
                     bufSz = needed;
@@ -1985,6 +2122,12 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
             | (ctx->orderly ? 0x04 : 0x00)
             | (ctx->lockoutAuthFailed ? 0x08 : 0x00)
         #endif
+            /* Hierarchy-disabled bits are inverted so a pre-existing journal
+             * (bits clear) loads as all hierarchies enabled. */
+            | (ctx->shDisabled ? 0x10 : 0x00)
+            | (ctx->ehDisabled ? 0x20 : 0x00)
+            | (ctx->phDisabled ? 0x40 : 0x00)
+            | (ctx->phNvDisabled ? 0x80 : 0x00)
             ));
     #ifndef FWTPM_NO_DA
         FwNvMarshalU32(buf, &pos, bufSz, ctx->daMaxTries);
@@ -2047,9 +2190,10 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
         }
     }
 
-    /* --- NV indices (only used slots) --- */
+    /* --- NV indices (only used slots, minus a pending deletion) --- */
     for (i = 0; i < FWTPM_MAX_NV_INDICES && rc == 0; i++) {
-        if (ctx->nvIndices[i].inUse) {
+        if (ctx->nvIndices[i].inUse &&
+                ctx->nvIndices[i].nvPublic.nvIndex != ctx->nvDeleteHandle) {
             word32 needed;
             pos = 0;
             /* Estimate: ensure buf is large enough */
@@ -2064,6 +2208,7 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
                     rc = TPM_RC_MEMORY;
                     break;
                 }
+                TPM2_ForceZero(buf, bufSz);
                 XFREE(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
                 buf = newBuf;
                 bufSz = needed;
@@ -2076,9 +2221,10 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
         }
     }
 
-    /* --- Persistent objects (only used slots) --- */
+    /* --- Persistent objects (only used slots, minus a pending deletion) --- */
     for (i = 0; i < FWTPM_MAX_PERSISTENT && rc == 0; i++) {
-        if (ctx->persistent[i].used) {
+        if (ctx->persistent[i].used &&
+                ctx->persistent[i].handle != ctx->nvDeleteHandle) {
             word32 needed;
             pos = 0;
             needed = 4 + FWTPM_NV_PUBAREA_EST + FWTPM_NV_NAME_EST + 2 +
@@ -2091,6 +2237,7 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
                     rc = TPM_RC_MEMORY;
                     break;
                 }
+                TPM2_ForceZero(buf, bufSz);
                 XFREE(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
                 buf = newBuf;
                 bufSz = needed;
@@ -2118,6 +2265,7 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
                     rc = TPM_RC_MEMORY;
                     break;
                 }
+                TPM2_ForceZero(buf, bufSz);
                 XFREE(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
                 buf = newBuf;
                 bufSz = needed;
@@ -2144,6 +2292,11 @@ int FWTPM_NV_Save(FWTPM_CTX* ctx)
             rc = FwNvWriteHeader(ctx);
         }
     }
+#ifdef WOLFTPM_FWTPM_NV_APPEND_ONLY
+    /* A compaction that did not reach its checkpoint leaves the rewritten
+     * snapshot unsealed on the log, so it must be rebuilt before any append. */
+    ctx->nvRebuild = (rc != TPM_RC_SUCCESS);
+#endif
 
 #ifdef DEBUG_WOLFTPM
     printf("fwTPM: NV saved (compact, %d bytes)\n", (int)ctx->nvWritePos);
@@ -2215,6 +2368,7 @@ int FWTPM_NV_SaveAuth(FWTPM_CTX* ctx, UINT32 hierarchy)
     if (rc == 0) {
         rc = FwNvAppendEntry(ctx, tag, buf, (UINT16)pos);
     }
+    TPM2_ForceZero(buf, sizeof(buf));
     return rc;
 }
 
@@ -2270,6 +2424,7 @@ int FWTPM_NV_SavePcrAuth(FWTPM_CTX* ctx)
 
     rc = FwNvAppendEntry(ctx, FWTPM_NV_TAG_PCR_AUTH, buf, (UINT16)pos);
 
+    TPM2_ForceZero(buf, bufSz);
     XFREE(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     return rc;
 }
@@ -2298,6 +2453,10 @@ int FWTPM_NV_SaveFlags(FWTPM_CTX* ctx)
             | (ctx->orderly ? 0x04 : 0x00)
             | (ctx->lockoutAuthFailed ? 0x08 : 0x00)
 #endif
+            | (ctx->shDisabled ? 0x10 : 0x00)
+            | (ctx->ehDisabled ? 0x20 : 0x00)
+            | (ctx->phDisabled ? 0x40 : 0x00)
+            | (ctx->phNvDisabled ? 0x80 : 0x00)
             ));
 #ifndef FWTPM_NO_DA
     FwNvMarshalU32(buf, &pos, sizeof(buf), ctx->daMaxTries);
@@ -2415,6 +2574,7 @@ int FWTPM_NV_SaveNvIndex(FWTPM_CTX* ctx, int slot)
 
 int FWTPM_NV_DeleteNvIndex(FWTPM_CTX* ctx, UINT32 nvHandle)
 {
+    int rc;
     byte buf[4];
     word32 pos = 0;
 
@@ -2423,8 +2583,10 @@ int FWTPM_NV_DeleteNvIndex(FWTPM_CTX* ctx, UINT32 nvHandle)
     }
 
     FwNvMarshalU32(buf, &pos, sizeof(buf), nvHandle);
-    return FwNvAppendEntry(ctx, FWTPM_NV_TAG_NV_INDEX_DEL,
-        buf, (UINT16)pos);
+    ctx->nvDeleteHandle = nvHandle;
+    rc = FwNvAppendEntry(ctx, FWTPM_NV_TAG_NV_INDEX_DEL, buf, (UINT16)pos);
+    ctx->nvDeleteHandle = 0;
+    return rc;
 }
 
 int FWTPM_NV_SavePersistent(FWTPM_CTX* ctx, int slot)
@@ -2465,6 +2627,7 @@ int FWTPM_NV_SavePersistent(FWTPM_CTX* ctx, int slot)
 
 int FWTPM_NV_DeletePersistent(FWTPM_CTX* ctx, UINT32 handle)
 {
+    int rc;
     byte buf[4];
     word32 pos = 0;
 
@@ -2473,8 +2636,10 @@ int FWTPM_NV_DeletePersistent(FWTPM_CTX* ctx, UINT32 handle)
     }
 
     FwNvMarshalU32(buf, &pos, sizeof(buf), handle);
-    return FwNvAppendEntry(ctx, FWTPM_NV_TAG_PERSISTENT_DEL,
-        buf, (UINT16)pos);
+    ctx->nvDeleteHandle = handle;
+    rc = FwNvAppendEntry(ctx, FWTPM_NV_TAG_PERSISTENT_DEL, buf, (UINT16)pos);
+    ctx->nvDeleteHandle = 0;
+    return rc;
 }
 
 int FWTPM_NV_SavePrimaryCache(FWTPM_CTX* ctx, int slot)

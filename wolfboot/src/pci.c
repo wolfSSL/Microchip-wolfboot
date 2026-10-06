@@ -90,18 +90,18 @@
 static int pci_enum_is_64bit(uint32_t value);
 static int pci_enum_is_mmio(uint32_t value);
 
-static inline uint32_t align_up(uint32_t address, uint32_t alignment) {
-    return (address + alignment - 1) & ~(alignment - 1);
+static inline uint64_t align_up(uint64_t address, uint32_t alignment) {
+    return (address + alignment - 1) & ~(uint64_t)(alignment - 1);
 }
 
 static inline uint32_t align_down(uint32_t address, uint32_t alignment) {
     return address & ~(alignment - 1);
 }
 
-static int pci_align_check_up(uint32_t address, uint32_t alignment,
-                              uint32_t limit, uint32_t *aligned)
+static int pci_align_check_up(uint64_t address, uint32_t alignment,
+                              uint64_t limit, uint64_t *aligned)
 {
-    uint32_t a;
+    uint64_t a;
     a = align_up(address, alignment);
     if (a < address || a >= limit)
         return -1;
@@ -353,17 +353,20 @@ static int pci_enum_is_mmio(uint32_t value)
     return (value & PCI_ENUM_MMIND_MASK) == 0;
 }
 
-static int pci_enum_next_aligned32(uint32_t address, uint32_t *next,
-                                   uint32_t align, uint32_t limit)
+static int pci_enum_next_aligned32(uint64_t address, uint32_t *next,
+                                   uint32_t align, uint64_t limit)
 {
-    uintptr_t addr;
+    uint64_t addr;
 
-    addr = (uintptr_t)address;
+    /* 64-bit on purpose: an exhausted pool leaves the cursor at
+     * 0x100000000, which a 32-bit type (uintptr_t included on 32-bit
+     * targets) would truncate back to 0. */
+    addr = address;
     align = align-1;
-    addr = (addr + align) & (~align);
+    addr = (addr + align) & (~(uint64_t)align);
     if (addr > 0xffffffff)
         return -1;
-    if (addr < (uintptr_t)address)
+    if (addr < address)
         return -1;
     if (addr >= limit)
         return -1;
@@ -407,12 +410,12 @@ static int pci_program_bar(uint8_t bus, uint8_t dev, uint8_t fun,
 {
 
     uint32_t bar_align, bar_value;
-    uint32_t orig_bar, orig_bar2;
+    uint32_t orig_bar, orig_bar2 = 0;
     uint32_t length, align;
     uint8_t bar_off;
     int is_prefetch;
-    uint32_t *base;
-    uint32_t limit;
+    uint64_t *base;
+    uint64_t limit;
     uint32_t reg;
     int is_mmio;
     int ret = 0;
@@ -454,7 +457,6 @@ static int pci_program_bar(uint8_t bus, uint8_t dev, uint8_t fun,
             PCI_DEBUG_PRINTF("bar high 32bit: %d\r\n", reg);
             if (reg != 0xffffffff) {
                 PCI_DEBUG_PRINTF("Device wants too much memory, skipping\r\n");
-                pci_config_write32(bus, dev, fun, bar_off + 4, orig_bar2);
                 goto restore_bar;
             }
         }
@@ -515,7 +517,7 @@ static int pci_program_bar(uint8_t bus, uint8_t dev, uint8_t fun,
     pci_config_write32(bus, dev, fun, bar_off, bar_value);
     if (*is_64bit)
         pci_config_write32(bus, dev, fun, bar_off + 4, 0x0);
-    *base = bar_value + length;
+    *base = (uint64_t)bar_value + length;
     PCI_DEBUG_PRINTF("PCI enum: %s bus: %x:%x.%x bar: %d [%x,%x] (0x%x %s %s)\r\n",
                     (is_mmio ? "mm" : "io"), bus, dev, fun, bar_idx, bar_value,
                      bar_value + length, length, (*is_64bit) ? "64bit" : "",
@@ -524,6 +526,8 @@ static int pci_program_bar(uint8_t bus, uint8_t dev, uint8_t fun,
     return 0;
 
 restore_bar:
+    if (*is_64bit)
+        pci_config_write32(bus, dev, fun, bar_off + 4, orig_bar2);
     pci_config_write32(bus, dev, fun, bar_off, orig_bar);
 
     return ret;
@@ -606,14 +610,15 @@ static inline void pci_dump_bridge(uint8_t bus, uint8_t dev, uint8_t fun)
 static int pci_program_bridge(uint8_t bus, uint8_t dev, uint8_t fun,
                                    struct pci_enum_info *info)
 {
-    uint32_t prefetch_start;
-    uint32_t mem_start;
-    uint32_t io_start;
-    uint32_t orig_cmd;
+    uint64_t prefetch_start;
+    uint64_t mem_start;
+    uint64_t io_start;
+    uint32_t saved_cmd;
+    uint32_t new_cmd;
     uint8_t  saved_bus;
-    uint32_t saved_mem;
-    uint32_t saved_pf;
-    uint32_t saved_io;
+    uint64_t saved_mem;
+    uint64_t saved_pf;
+    uint64_t saved_io;
     int ret;
 
     saved_bus = info->curr_bus_number;
@@ -621,8 +626,19 @@ static int pci_program_bridge(uint8_t bus, uint8_t dev, uint8_t fun,
     saved_pf  = info->mem_pf;
     saved_io  = info->io;
 
-    orig_cmd = pci_config_read16(bus, dev, fun, PCI_COMMAND_OFFSET);
+    saved_cmd = pci_config_read16(bus, dev, fun, PCI_COMMAND_OFFSET);
     pci_config_write16(bus, dev, fun, PCI_COMMAND_OFFSET, 0);
+    /* decode bits are accumulated from the original value so the
+     * success path preserves the bits it did not manage; the error
+     * path restores saved_cmd itself */
+    new_cmd = saved_cmd;
+
+    /* curr_bus_number is one bus per bridge level; at 0xFF the next
+     * increment wraps to 0, which would write SECONDARY_BUS 0 and
+     * re-enumerate bus 0 over the already configured tree.  Disable
+     * this bridge instead. */
+    if (info->curr_bus_number == 0xFF)
+        goto err;
 
     info->curr_bus_number++;
     PCI_DEBUG_PRINTF("Bridge: %x.%x.%x (using bus number: %d)\r\n",
@@ -678,7 +694,7 @@ static int pci_program_bridge(uint8_t bus, uint8_t dev, uint8_t fun,
                            prefetch_start >> 16);
         pci_config_write16(bus, dev, fun, PCI_PREFETCH_LIMIT_OFF,
                            (info->mem_pf - 1) >> 16);
-        orig_cmd |= PCI_COMMAND_MEM_SPACE;
+        new_cmd |= PCI_COMMAND_MEM_SPACE;
     } else {
         /* disable prefetch */
         pci_config_write16(bus, dev, fun, PCI_PREFETCH_BASE_OFF,
@@ -698,7 +714,7 @@ static int pci_program_bridge(uint8_t bus, uint8_t dev, uint8_t fun,
                            mem_start >> 16);
         pci_config_write16(bus, dev, fun, PCI_MMIO_LIMIT_OFF,
                            (info->mem - 1) >> 16);
-        orig_cmd |= PCI_COMMAND_MEM_SPACE;
+        new_cmd |= PCI_COMMAND_MEM_SPACE;
     } else {
         /* disable mem */
         pci_config_write16(bus, dev, fun, PCI_MMIO_BASE_OFF,
@@ -718,7 +734,7 @@ static int pci_program_bridge(uint8_t bus, uint8_t dev, uint8_t fun,
                            io_start >> 8);
         pci_config_write8(bus, dev, fun, PCI_IO_LIMIT_OFF,
                           (info->io - 1) >> 8);
-        orig_cmd |= PCI_COMMAND_IO_SPACE;
+        new_cmd |= PCI_COMMAND_IO_SPACE;
     }
     else {
         pci_config_write8(bus, dev, fun, PCI_IO_BASE_OFF,
@@ -727,8 +743,8 @@ static int pci_program_bridge(uint8_t bus, uint8_t dev, uint8_t fun,
                           0x0);
     }
 
-    orig_cmd |= PCI_COMMAND_BUS_MASTER;
-    pci_config_write16(bus, dev, fun, PCI_COMMAND_OFFSET, orig_cmd);
+    new_cmd |= PCI_COMMAND_BUS_MASTER;
+    pci_config_write16(bus, dev, fun, PCI_COMMAND_OFFSET, new_cmd);
 
     pci_dump_bridge(bus,dev,fun);
     return 0;
@@ -738,10 +754,21 @@ static int pci_program_bridge(uint8_t bus, uint8_t dev, uint8_t fun,
     info->mem     = saved_mem;
     info->mem_pf  = saved_pf;
     info->io      = saved_io;
+    /* Disable every window that may have been programmed before the
+     * error: the allocator cursors are rolled back, so the bridge must
+     * not keep decoding the returned address ranges. */
+    pci_config_write16(bus, dev, fun, PCI_PREFETCH_BASE_OFF, 0xffff);
+    pci_config_write16(bus, dev, fun, PCI_PREFETCH_LIMIT_OFF, 0x0);
+    pci_config_write16(bus, dev, fun, PCI_MMIO_BASE_OFF, 0xffff);
+    pci_config_write16(bus, dev, fun, PCI_MMIO_LIMIT_OFF, 0x0);
+    pci_config_write8(bus, dev, fun, PCI_IO_BASE_OFF, 0xff);
+    pci_config_write8(bus, dev, fun, PCI_IO_LIMIT_OFF, 0x0);
     pci_config_write8(bus, dev, fun, PCI_PRIMARY_BUS, 0);
     pci_config_write8(bus, dev, fun, PCI_SECONDARY_BUS, 0);
     pci_config_write8(bus, dev, fun, PCI_SUB_SEC_BUS, 0);
-    pci_config_write16(bus, dev, fun, PCI_COMMAND_OFFSET, orig_cmd);
+    /* restore the original COMMAND value, not the decode bits
+     * accumulated for the discarded windows */
+    pci_config_write16(bus, dev, fun, PCI_COMMAND_OFFSET, saved_cmd);
     return -1;
 }
 
@@ -915,11 +942,28 @@ int pci_enum_do(void)
     struct pci_enum_info enum_info;
     int ret;
 
+    /* Pool limits are exclusive ends: the allocator accepts a region
+     * when its end is <= limit (pci_enum_next_aligned32, the BAR end
+     * check, pci_align_check_up) and the IO limit is the 16-bit IO
+     * ceiling, not the last usable address.  A region ending exactly
+     * at base + length must fit, so initialize base + length.  The
+     * limit fields are 64-bit because a pool may end exactly at
+     * 0x100000000 (4 GiB), the top of the 32-bit space; reject only
+     * pools whose end is above it. */
+    if ((uint64_t)PCI_MMIO32_BASE + PCI_MMIO32_LENGTH > 0x100000000ULL ||
+        (uint64_t)PCI_MMIO32_PREFETCH_BASE +
+            PCI_MMIO32_PREFETCH_LENGTH > 0x100000000ULL)
+    {
+        PCI_DEBUG_PRINTF("PCI MMIO pool overflows the 32-bit address "
+                         "space\r\n");
+        return -1;
+    }
+
     enum_info.mem = PCI_MMIO32_BASE;
-    enum_info.mem_limit = enum_info.mem + (PCI_MMIO32_LENGTH - 1);
+    enum_info.mem_limit = (uint64_t)enum_info.mem + PCI_MMIO32_LENGTH;
     enum_info.mem_pf = PCI_MMIO32_PREFETCH_BASE;
-    enum_info.mem_pf_limit = enum_info.mem_pf +
-        (PCI_MMIO32_PREFETCH_LENGTH - 1);
+    enum_info.mem_pf_limit = (uint64_t)enum_info.mem_pf +
+        PCI_MMIO32_PREFETCH_LENGTH;
     enum_info.io = PCI_IO32_BASE;
     enum_info.curr_bus_number = 0;
 
@@ -932,16 +976,17 @@ int pci_enum_do(void)
     ret = pci_enum_bus(0, &enum_info);
 
     PCI_DEBUG_PRINTF("PCI Memory Mapped I/O range [0x%x,0x%x] (0x%x)\r\n",
-                     (uint32_t)PCI_MMIO32_BASE, enum_info.mem,
-                     enum_info.mem - PCI_MMIO32_BASE);
+                     (uint32_t)PCI_MMIO32_BASE, (uint32_t)enum_info.mem,
+                     (uint32_t)(enum_info.mem - PCI_MMIO32_BASE));
 
     PCI_DEBUG_PRINTF("PCI Memory Mapped I/O range (prefetch) [0x%x,0x%x] (0x%x)\r\n",
-                     (uint32_t)PCI_MMIO32_PREFETCH_BASE, enum_info.mem_pf,
-                     enum_info.mem_pf - PCI_MMIO32_PREFETCH_BASE);
+                     (uint32_t)PCI_MMIO32_PREFETCH_BASE,
+                     (uint32_t)enum_info.mem_pf,
+                     (uint32_t)(enum_info.mem_pf - PCI_MMIO32_PREFETCH_BASE));
 
     PCI_DEBUG_PRINTF("PCI I/O range [0x%x,0x%x] (0x%x)\r\n",
-                     (uint32_t)PCI_IO32_BASE, enum_info.io,
-                     enum_info.io - PCI_IO32_BASE);
+                     (uint32_t)PCI_IO32_BASE, (uint32_t)enum_info.io,
+                     (uint32_t)(enum_info.io - PCI_IO32_BASE));
 
     return ret;
 }

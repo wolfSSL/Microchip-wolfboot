@@ -15,7 +15,9 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-chacha-asm.c
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+#define _WC_BUILDING_ARMV8_32_CHACHA_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -60,11 +62,6 @@ WC_OMIT_FRAME_POINTER void wc_chacha_setiv(word32* x, const byte* iv,
         "ldr	r12, [%[iv], #4]\n\t"
         "ldr	lr, [%[iv], #8]\n\t"
         "str	%[counter], [%[x], #48]\n\t"
-#ifdef BIG_ENDIAN_ORDER
-        "rev	r4, r4\n\t"
-        "rev	r12, r12\n\t"
-        "rev	lr, lr\n\t"
-#endif /* BIG_ENDIAN_ORDER */
         "stm	r3, {r4, r12, lr}\n\t"
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
         : [x] "+r" (x), [iv] "+r" (iv), [counter] "+r" (counter)
@@ -114,12 +111,6 @@ WC_OMIT_FRAME_POINTER void wc_chacha_setkey(word32* x, const byte* key,
         "ldr	r5, [%[key], #4]\n\t"
         "ldr	r12, [%[key], #8]\n\t"
         "ldr	lr, [%[key], #12]\n\t"
-#ifdef BIG_ENDIAN_ORDER
-        "rev	r4, r4\n\t"
-        "rev	r5, r5\n\t"
-        "rev	r12, r12\n\t"
-        "rev	lr, lr\n\t"
-#endif /* BIG_ENDIAN_ORDER */
         "stm	%[x]!, {r4, r5, r12, lr}\n\t"
         /* Next 16 bytes of key. */
         "beq	L_chacha_arm32_setkey_same_key_bytes_%=\n\t"
@@ -1324,15 +1315,9 @@ WC_OMIT_FRAME_POINTER void wc_chacha_setkey(word32* x, const byte* key,
         /* Start with constants */
         "vldm	r3, {q0}\n\t"
         "vld1.8	{q1}, [%[key]]!\n\t"
-#ifdef BIG_ENDIAN_ORDER
-        "vrev32.16	q1, q1\n\t"
-#endif /* BIG_ENDIAN_ORDER */
         "vstm	%[x]!, {q0-q1}\n\t"
         "beq	L_chacha_setkey_arm32_done_%=\n\t"
         "vld1.8	{q1}, [%[key]]\n\t"
-#ifdef BIG_ENDIAN_ORDER
-        "vrev32.16	q1, q1\n\t"
-#endif /* BIG_ENDIAN_ORDER */
         "\n"
     "L_chacha_setkey_arm32_done_%=:\n\t"
         "vstm	%[x], {q1}\n\t"
@@ -1425,7 +1410,7 @@ WC_OMIT_FRAME_POINTER void wc_chacha_use_over(byte* over, byte* output,
 
 #endif /* !WOLFSSL_ARMASM_NO_NEON */
 #endif /* HAVE_CHACHA */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #endif /* WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

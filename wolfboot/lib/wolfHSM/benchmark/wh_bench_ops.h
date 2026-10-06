@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -15,11 +15,6 @@
 #define WH_BENCH_OPS_H_
 
 #include <stdint.h>
-
-/* Maximum number of operations that can be registered */
-#define MAX_BENCH_OPS 119
-/* Maximum length of operation name */
-#define MAX_OP_NAME 64
 
 /* Throughput metric types */
 typedef enum {
@@ -40,8 +35,9 @@ typedef enum {
 } whBenchTransportType;
 
 typedef struct whBenchOp {
-    /* Name of the operation being timed */
-    char name[MAX_OP_NAME];
+    /* Name of the operation being timed. Stored by reference: the string
+     * must stay valid until wh_Bench_Cleanup */
+    const char* name;
     /* Is this a valid benchmark entry */
     int valid;
     /* Is this operation currently in progress? */
@@ -65,8 +61,9 @@ typedef struct whBenchOp {
 } whBenchOp;
 
 typedef struct whBenchOpContext {
-    whBenchOp ops[MAX_BENCH_OPS]; /* Array of operations */
-    int       opCount;            /* Number of registered operations */
+    whBenchOp*           ops;     /* Caller-supplied array of operations */
+    int                  maxOps;  /* Number of entries in ops */
+    int                  opCount; /* Number of registered operations */
     whBenchTransportType transportType;      /* Type of transport */
 } whBenchOpContext;
 
@@ -74,10 +71,13 @@ typedef struct whBenchOpContext {
  * Benchmark Timing API
  */
 
-/* Initialize benchmark context */
-int wh_Bench_Init(whBenchOpContext* ctx);
+/* Initialize benchmark context. The caller supplies the array used to hold the
+ * registered operations, which must stay valid until wh_Bench_Cleanup. */
+int wh_Bench_Init(whBenchOpContext* ctx, whBenchOp* ops, int maxOps);
 
-/* Register a new benchmark operation with a name, returns ID via pointer */
+/* Register a new benchmark operation with a name, returns ID via pointer.
+ * The name is stored by reference and must stay valid until
+ * wh_Bench_Cleanup */
 int wh_Bench_RegisterOp(whBenchOpContext* ctx, const char* name,
                         whBenchOpThroughputType tpType, int* id);
 

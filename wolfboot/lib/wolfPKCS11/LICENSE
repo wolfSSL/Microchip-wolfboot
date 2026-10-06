@@ -1,10 +1,9 @@
+Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
 
-wolfSSL and wolfPKCS11 support is licensed for use under the GPLv3 or a
-standard commercial license. For our users who cannot use a GPLv3 license,
-a commercial license is available. Please contact wolfSSL Inc. directly at:
+This file is part of wolfPKCS11.
 
-Email: licensing@wolfssl.com
+Contact licensing@wolfssl.com with any questions or comments.
 
-More information can be found on the wolfSSL website at www.wolfssl.com.
+https://www.wolfssl.com
 
-See gpl-3.0.txt for the GPLv3 license.
+See WolfSSL_LicenseAgmt_JAN-2024.pdf for details.

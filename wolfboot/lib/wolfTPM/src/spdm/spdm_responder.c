@@ -1,8 +1,8 @@
 /* spdm_responder.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -33,6 +33,7 @@ struct WOLFSPDM_RESP_CTX {
         unsigned int spdmOnlyLock    : 1;  /* SPDMONLY lock: plaintext TPM
                                             * rejected with TPM_RC_DISABLED */
         unsigned int pskProvisioned  : 1;  /* PSK_SET / PSK_CLR vendor state */
+        unsigned int clearAuthSet    : 1;  /* a ClearAuth digest is stored */
     } flags;
 
     /* SHA-384(ClearAuth) stored on PSK_SET, verified on PSK_CLR. */
@@ -56,10 +57,10 @@ struct WOLFSPDM_RESP_CTX {
 
     /* Per-context working buffers. Previously file-scope `static` -
      * moved here so each ctx is independently reentrant. */
-    byte   secureInPlain[WOLFSPDM_MAX_MSG_SIZE];
-    byte   secureOutPlain[WOLFSPDM_MAX_MSG_SIZE];
-    byte   vdInPayload[WOLFSPDM_MAX_MSG_SIZE];
-    byte   vdOutPayload[WOLFSPDM_MAX_MSG_SIZE];
+    byte   secureInPlain[WOLFSPDM_MAX_TPM_MSG_SIZE];
+    byte   secureOutPlain[WOLFSPDM_MAX_TPM_MSG_SIZE];
+    byte   vdInPayload[WOLFSPDM_MAX_TPM_MSG_SIZE];
+    byte   vdOutPayload[WOLFSPDM_MAX_TPM_MSG_SIZE];
 };
 
 /* Compile-time guarantee that the public static-size macro is large
@@ -141,11 +142,18 @@ int wolfSPDM_RespSetPSK(WOLFSPDM_RESP_CTX* ctx,
     (void)hintSz;
     return WOLFSPDM_E_NOT_AVAILABLE;
 #else
+    int rc;
     if (ctx == NULL || !ctx->flags.initialized) {
         return WOLFSPDM_E_INVALID_ARG;
     }
     if (psk == NULL || pskSz == 0 || pskSz > sizeof(ctx->pskStore)) {
         return WOLFSPDM_E_INVALID_ARG;
+    }
+    /* Commit the inner context first so a rejected PSK leaves no partially
+     * provisioned responder state */
+    rc = wolfSPDM_SetPSK(&ctx->ctx, psk, pskSz, hint, hintSz);
+    if (rc != WOLFSPDM_SUCCESS) {
+        return rc;
     }
     XMEMCPY(ctx->pskStore, psk, pskSz);
     ctx->pskStoreSz = pskSz;
@@ -157,7 +165,7 @@ int wolfSPDM_RespSetPSK(WOLFSPDM_RESP_CTX* ctx,
         ctx->pskHintStoreSz = 0;
     }
     ctx->flags.pskProvisioned = 1;
-    return wolfSPDM_SetPSK(&ctx->ctx, psk, pskSz, hint, hintSz);
+    return WOLFSPDM_SUCCESS;
 #endif
 }
 
@@ -240,7 +248,8 @@ void wolfSPDM_RespReset(WOLFSPDM_RESP_CTX* ctx)
 #define WOLFSPDM_ALGORITHMS             0x63
 
 static int RespHandleVendorDefined(WOLFSPDM_RESP_CTX* rctx,
-    const byte* in, word32 inSz, byte* out, word32* outSz);
+    const byte* in, word32 inSz, byte* out, word32* outSz, int fromSecured,
+    char* vdCodeOut);
 static int RespBuildKeyExchangeRsp(WOLFSPDM_RESP_CTX* rctx,
     const byte* in, word32 inSz, byte* out, word32* outSz);
 static int RespHandleFinish(WOLFSPDM_RESP_CTX* rctx,
@@ -303,15 +312,29 @@ static int RespDecrypt(WOLFSPDM_CTX* ctx,
     return rc;
 }
 
+/* The responder FINISH path has no 1.4 OpaqueData handling, so it tops out
+ * at 1.3 even when the requester build allows 1.4. */
+#if WOLFSPDM_MAX_SPDM_VERSION > SPDM_VERSION_13
+#define WOLFSPDM_RESP_MAX_VERSION       SPDM_VERSION_13
+#else
+#define WOLFSPDM_RESP_MAX_VERSION       WOLFSPDM_MAX_SPDM_VERSION
+#endif
+#if WOLFSPDM_MIN_SPDM_VERSION > WOLFSPDM_RESP_MAX_VERSION
+#error "SPDM responder version range is empty"
+#endif
+#define WOLFSPDM_RESP_VERSION_COUNT \
+    (WOLFSPDM_RESP_MAX_VERSION - WOLFSPDM_MIN_SPDM_VERSION + 1)
+
 static int RespBuildVersion(WOLFSPDM_CTX* ctx,
     const byte* req, word32 reqSz,
     byte* out, word32* outSz)
 {
     word32 off;
+    byte ver;
 
     (void)req;
     (void)reqSz;
-    if (*outSz < 12) {
+    if (*outSz < 6 + 2 * WOLFSPDM_RESP_VERSION_COUNT) {
         return WOLFSPDM_E_BUFFER_SMALL;
     }
     off = 0;
@@ -320,14 +343,40 @@ static int RespBuildVersion(WOLFSPDM_CTX* ctx,
     out[off++] = 0x00;
     out[off++] = 0x00;
     /* VersionNumberEntryCount (LE) at offset 4. */
-    out[off++] = 0x03;
+    out[off++] = WOLFSPDM_RESP_VERSION_COUNT;
     out[off++] = 0x00;
     /* Entries: 2 bytes each, byte+1 holds the version (Major<<4 | Minor). */
-    out[off++] = 0x00; out[off++] = 0x10;
-    out[off++] = 0x00; out[off++] = 0x12;
-    out[off++] = 0x00; out[off++] = 0x13;
+    for (ver = WOLFSPDM_MIN_SPDM_VERSION; ver <= WOLFSPDM_RESP_MAX_VERSION;
+         ver++) {
+        out[off++] = 0x00;
+        out[off++] = ver;
+    }
     *outSz = off;
-    ctx->spdmVersion = SPDM_VERSION_13;
+    /* The requester picks from the advertised set; its next request
+     * carries the selection (see RespSelectVersion). */
+    ctx->spdmVersion = 0;
+    ctx->state = WOLFSPDM_STATE_VERSION;
+    return WOLFSPDM_SUCCESS;
+}
+
+/* Adopt the version the requester selects on its first request after
+ * VERSION and pin it for the rest of the connection. Before any VERSION
+ * exchange only pre-negotiation vendor commands (GET_STS_, PSK_SET_) may
+ * pass, and they select nothing. */
+static int RespSelectVersion(WOLFSPDM_CTX* ctx, byte reqVer, int isVendor)
+{
+    if (ctx->spdmVersion != 0) {
+        return (reqVer == ctx->spdmVersion) ? WOLFSPDM_SUCCESS :
+            WOLFSPDM_E_VERSION_MISMATCH;
+    }
+    if (ctx->state != WOLFSPDM_STATE_VERSION) {
+        return isVendor ? WOLFSPDM_SUCCESS : WOLFSPDM_E_BAD_STATE;
+    }
+    if (reqVer < WOLFSPDM_MIN_SPDM_VERSION ||
+        reqVer > WOLFSPDM_RESP_MAX_VERSION) {
+        return WOLFSPDM_E_VERSION_MISMATCH;
+    }
+    ctx->spdmVersion = reqVer;
     return WOLFSPDM_SUCCESS;
 }
 
@@ -384,6 +433,7 @@ static int RespBuildAlgorithms(WOLFSPDM_CTX* ctx,
     out[off++] = 0x00;
     out[off++] = 0x34; out[off++] = 0x00;
     out[off++] = 0x00; out[off++] = 0x02;
+    XMEMSET(out + off, 0, 4); off += 4;
     out[off++] = 0x80; out[off++] = 0x00; out[off++] = 0x00; out[off++] = 0x00;
     out[off++] = 0x02; out[off++] = 0x00; out[off++] = 0x00; out[off++] = 0x00;
     XMEMSET(out + off, 0, 12); off += 12;
@@ -431,9 +481,10 @@ static int RespBuildPskExchangeRsp(WOLFSPDM_RESP_CTX* rctx,
     reqHintLen = SPDM_Get16LE(&in[6]);
     reqContextLen = SPDM_Get16LE(&in[8]);
     reqOpaqueLen = SPDM_Get16LE(&in[10]);
-    (void)reqHintLen;
-    (void)reqContextLen;
-    (void)reqOpaqueLen;
+    /* Every declared variable-length field must fit within the request */
+    if ((word32)12 + reqHintLen + reqContextLen + reqOpaqueLen > inSz) {
+        return WOLFSPDM_E_FRAMING;
+    }
 
     ctx->rspSessionId = 0xFFFE;
     ctx->sessionId = (word32)ctx->reqSessionId |
@@ -492,15 +543,29 @@ static int RespDispatchClear(WOLFSPDM_RESP_CTX* rctx,
     byte code;
     int rc;
     int handlerManagesTranscript = 0;
+    char vdCode[WOLFSPDM_VDCODE_LEN + 1];
 
     if (inSz < 2) {
         return WOLFSPDM_E_FRAMING;
     }
     code = in[1];
+    XMEMSET(vdCode, 0, sizeof(vdCode));
 
     if (code == SPDM_GET_VERSION) {
         wolfSPDM_TranscriptReset(ctx);
         wolfSPDM_RespReset(rctx);
+    }
+    else {
+        rc = RespSelectVersion(ctx, in[0],
+            code == SPDM_VENDOR_DEFINED_REQUEST);
+        if (rc == WOLFSPDM_E_BAD_STATE) {
+            return RespBuildErrorClear(ctx,
+                SPDM_ERROR_UNEXPECTED_REQUEST, 0, out, outSz);
+        }
+        if (rc != WOLFSPDM_SUCCESS) {
+            return RespBuildErrorClear(ctx,
+                SPDM_ERROR_MAJOR_VERSION_MISMATCH, 0, out, outSz);
+        }
     }
 
     /* VENDOR_DEFINED bytes don't go into the SPDM transcript - the
@@ -536,13 +601,14 @@ static int RespDispatchClear(WOLFSPDM_RESP_CTX* rctx,
             handlerManagesTranscript = 1;
             break;
         case SPDM_VENDOR_DEFINED_REQUEST:
-            rc = RespHandleVendorDefined(rctx, in, inSz, out, outSz);
+            rc = RespHandleVendorDefined(rctx, in, inSz, out, outSz, 0,
+                vdCode);
             handlerManagesTranscript = 1;
             /* For GET_PUBK specifically, mirror what the requester does:
-             * add Ct = SHA-384(rspPubKey) to the transcript. Detected by
-             * checking the VdCode in the inbound bytes at offset 9. */
-            if (rc == WOLFSPDM_SUCCESS && inSz >= 17 &&
-                XMEMCMP(in + 9, WOLFSPDM_VDCODE_GET_PUBK,
+             * add Ct = SHA-384(rspPubKey) to the transcript. Keyed on the
+             * parsed VdCode, whose wire offset varies with vendorIdLen. */
+            if (rc == WOLFSPDM_SUCCESS &&
+                XMEMCMP(vdCode, WOLFSPDM_VDCODE_GET_PUBK,
                         WOLFSPDM_VDCODE_LEN) == 0) {
                 byte ct[WOLFSPDM_HASH_SIZE];
                 int hrc = wolfSPDM_Sha384Hash(ct,
@@ -826,7 +892,7 @@ static int RespBuildEndSessionAck(WOLFSPDM_CTX* ctx,
         return WOLFSPDM_E_BUFFER_SMALL;
     }
     out[0] = ctx->spdmVersion;
-    out[1] = 0x6B;  /* END_SESSION_ACK */
+    out[1] = SPDM_END_SESSION_ACK;
     out[2] = 0x00;
     out[3] = 0x00;
     *outSz = 4;
@@ -834,7 +900,8 @@ static int RespBuildEndSessionAck(WOLFSPDM_CTX* ctx,
 }
 
 static int RespHandleVendorDefined(WOLFSPDM_RESP_CTX* rctx,
-    const byte* in, word32 inSz, byte* out, word32* outSz)
+    const byte* in, word32 inSz, byte* out, word32* outSz, int fromSecured,
+    char* vdCodeOut)
 {
     WOLFSPDM_CTX* ctx = &rctx->ctx;
     char vdCode[WOLFSPDM_VDCODE_LEN + 1];
@@ -849,10 +916,24 @@ static int RespHandleVendorDefined(WOLFSPDM_RESP_CTX* rctx,
     word32 off;
     int rc;
 
-    payloadSz = WOLFSPDM_MAX_MSG_SIZE;
+    payloadSz = WOLFSPDM_MAX_TPM_MSG_SIZE;
     rc = wolfSPDM_ParseVendorDefined(in, inSz, vdCode, payload, &payloadSz);
     if (rc < 0) {
         return rc;
+    }
+    if (vdCodeOut != NULL) {
+        XMEMCPY(vdCodeOut, vdCode, WOLFSPDM_VDCODE_LEN + 1);
+    }
+
+    /* TPM2_CMD, GIVE_PUB and SPDMONLY are only ever sent inside a secured
+     * message; honouring them from a clear frame would defeat the
+     * bus-snooping defence. GET_PUBK / GET_STS_ / PSK_* are pre-session by
+     * design and stay reachable in the clear. */
+    if (!fromSecured &&
+            (XSTRCMP(vdCode, WOLFSPDM_VDCODE_TPM2_CMD) == 0 ||
+             XSTRCMP(vdCode, WOLFSPDM_VDCODE_GIVE_PUB) == 0 ||
+             XSTRCMP(vdCode, WOLFSPDM_VDCODE_SPDMONLY) == 0)) {
+        return WOLFSPDM_E_BAD_STATE;
     }
 
     if (XSTRCMP(vdCode, WOLFSPDM_VDCODE_TPM2_CMD) == 0) {
@@ -861,7 +942,7 @@ static int RespHandleVendorDefined(WOLFSPDM_RESP_CTX* rctx,
          * cannot return more data than will fit inside the response
          * envelope. Otherwise the wrapper below silently returns
          * E_BUFFER_SMALL on the largest TPM responses. */
-        word32 tpmRespCap = WOLFSPDM_MAX_MSG_SIZE
+        word32 tpmRespCap = WOLFSPDM_MAX_TPM_MSG_SIZE
             - (9 + WOLFSPDM_VDCODE_LEN);
         if (rctx->tpmCb == NULL) {
             return WOLFSPDM_E_BAD_STATE;
@@ -923,10 +1004,17 @@ static int RespHandleVendorDefined(WOLFSPDM_RESP_CTX* rctx,
         if (payloadSz != pskLen + WOLFSPDM_HASH_SIZE) {
             return WOLFSPDM_E_INVALID_ARG;
         }
+        /* Once a ClearAuth is registered, replacing the PSK requires
+         * PSK_CLR_ first, or that check is trivially skipped. A PSK set by
+         * configuration has no ClearAuth, so it may still be provisioned. */
+        if (rctx->flags.clearAuthSet) {
+            return WOLFSPDM_E_BAD_STATE;
+        }
         XMEMCPY(rctx->pskStore, payload, pskLen);
         rctx->pskStoreSz = pskLen;
         XMEMCPY(rctx->clearAuthDigest, payload + pskLen, WOLFSPDM_HASH_SIZE);
         rctx->flags.pskProvisioned = 1;
+        rctx->flags.clearAuthSet = 1;
         /* Mirror into ctx->psk so the next PSK_EXCHANGE can use it. */
         XMEMCPY(ctx->psk, rctx->pskStore, rctx->pskStoreSz);
         ctx->pskSz = rctx->pskStoreSz;
@@ -957,6 +1045,7 @@ static int RespHandleVendorDefined(WOLFSPDM_RESP_CTX* rctx,
         wc_ForceZero(rctx->clearAuthDigest, sizeof(rctx->clearAuthDigest));
         rctx->pskStoreSz = 0;
         rctx->flags.pskProvisioned = 0;
+        rctx->flags.clearAuthSet = 0;
         wc_ForceZero(ctx->psk, sizeof(ctx->psk));
         ctx->pskSz = 0;
         respPayloadSz = 0;
@@ -1005,6 +1094,14 @@ static int RespDispatchSecured(WOLFSPDM_RESP_CTX* rctx,
     int sessionEnded = 0;
     int derivedAppKeys = 0;
 
+    /* KEY_EX has handshake traffic keys; CONNECTED has application traffic
+     * keys. In every other state, decryption would use unestablished key
+     * material (zeroed by initialization and reset). */
+    if ((ctx->state != WOLFSPDM_STATE_KEY_EX &&
+         ctx->state != WOLFSPDM_STATE_CONNECTED) || ctx->sessionId == 0) {
+        return WOLFSPDM_E_BAD_STATE;
+    }
+
     plainSz = WOLFSPDM_MAX_MSG_SIZE;
     rc = RespDecrypt(ctx, securedIn, securedInSz, plain, &plainSz);
     if (rc != WOLFSPDM_SUCCESS) {
@@ -1036,7 +1133,7 @@ static int RespDispatchSecured(WOLFSPDM_RESP_CTX* rctx,
             break;
         case SPDM_VENDOR_DEFINED_REQUEST:
             rc = RespHandleVendorDefined(rctx, plain, plainSz,
-                respPlain, &respPlainSz);
+                respPlain, &respPlainSz, 1, NULL);
             break;
         default:
             rc = RespBuildErrorClear(ctx,
@@ -1053,7 +1150,7 @@ static int RespDispatchSecured(WOLFSPDM_RESP_CTX* rctx,
         rc = wolfSPDM_DeriveAppDataKeys(ctx);
     }
 
-    if (sessionEnded) {
+    if (sessionEnded && rc == WOLFSPDM_SUCCESS) {
         wolfSPDM_RespReset(rctx);
     }
     return rc;

@@ -21,6 +21,7 @@ int test_wolfSSL_OBJ_txt2nid(void);
 int test_wolfSSL_OBJ_txt2obj(void);
 int test_wolfSSL_OBJ_ln(void);
 int test_wolfSSL_OBJ_sn(void);
+int test_wolfSSL_OBJ_find_sigid_algs(void);
 
 #define TEST_OSSL_OBJ_DECLS                                 \
     TEST_DECL_GROUP("ossl_obj", test_OBJ_NAME_do_all),      \
@@ -29,7 +30,8 @@ int test_wolfSSL_OBJ_sn(void);
     TEST_DECL_GROUP("ossl_obj", test_wolfSSL_OBJ_txt2nid),  \
     TEST_DECL_GROUP("ossl_obj", test_wolfSSL_OBJ_txt2obj),  \
     TEST_DECL_GROUP("ossl_obj", test_wolfSSL_OBJ_ln),       \
-    TEST_DECL_GROUP("ossl_obj", test_wolfSSL_OBJ_sn)
+    TEST_DECL_GROUP("ossl_obj", test_wolfSSL_OBJ_sn),       \
+    TEST_DECL_GROUP("ossl_obj", test_wolfSSL_OBJ_find_sigid_algs)
 
 #endif /* WOLFCRYPT_TEST_OSSL_OBJ_H */
 

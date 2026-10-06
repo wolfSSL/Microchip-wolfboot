@@ -38,12 +38,12 @@
 
 
 #ifndef STAGE1_AUTH
-/* When STAGE1_AUTH is disabled, create dummy images to fill
- * the space used by wolfBoot manifest headers to authenticate FSPs
+/* When STAGE1_AUTH is disabled, fill the stage2 manifest header slot with
+ * a zeroed placeholder so the image layout matches the authenticated build.
+ * Only the stage2 wolfBoot payload is authenticated; the FSP-M and FSP-S
+ * blobs are outside the scope of STAGE1_AUTH.
  */
 #define HEADER_SIZE IMAGE_HEADER_SIZE
-const uint8_t __attribute__((section(".sig_fsp_s")))
-    empty_sig_fsp_s[HEADER_SIZE] = {};
 const uint8_t __attribute__((section(".sig_wolfboot_raw")))
     empty_sig_wolfboot_raw[HEADER_SIZE] = {};
 #endif
@@ -68,8 +68,7 @@ const uint8_t __attribute__((section(".sig_wolfboot_raw")))
 /* offset of the header from the base image  */
 #define FSP_INFO_HEADER_OFFSET 0x94
 #define EFI_SUCCESS 0x0
-#define FSP_STATUS_RESET_REQUIRED_COLD  0x40000001
-#define FSP_STATUS_RESET_REQUIRED_WARM  0x40000002
+/* FSP_STATUS_RESET_REQUIRED_* are defined in x86/fsp.h */
 #define MEMORY_4GB (4ULL * 1024 * 1024 * 1024)
 #define ENDLINE "\r\n"
 /* Standard PCI capabilities live in conventional config space at 0x40-0xFC,
@@ -137,11 +136,10 @@ static int get_top_address(uint64_t *top, struct efi_hob *hoblist)
  * \brief Change the stack and invoke a function with the new stack.
  *
  * This function changes the stack to the specified 'new_stack' value and then
- * calls the function pointed to by 'other_func', passing the 'ptr' parameter as an argument.
+ * calls the function pointed to by 'other_func'.
  *
  * \param new_stack The new stack address.
  * \param other_func Pointer to the function to be invoked with the new stack.
- * \param ptr Pointer to the parameter to be passed to the invoked function.
  */
 static void change_stack_and_invoke(uint32_t new_stack,
                                     void (*other_func)(void))
@@ -525,18 +523,15 @@ void start(uint32_t stack_base, uint32_t stack_top, uint64_t timestamp,
     struct stage2_ptr_holder stage2_holder;
     struct stage2_parameter temp_params;
     uint8_t *fsp_m_base, done = 0;
-    struct efi_hob *hobList, *it;
+    /* FspMemInit writes hobList only on EFI_SUCCESS; init so the reset-required
+     * and error paths never carry a stale pointer. */
+    struct efi_hob *hobList = NULL, *it;
     memory_init_cb MemoryInit;
     uint64_t top_address = MEMORY_4GB;
     uint32_t new_stack;
     uint32_t status;
     uint16_t type;
     uint32_t esp;
-
-#ifdef STAGE1_AUTH
-    int ret;
-    struct wolfBoot_image fsp_m;
-#endif
 
     (void)stack_top;
     (void)timestamp;
@@ -596,15 +591,8 @@ void start(uint32_t stack_base, uint32_t stack_top, uint64_t timestamp,
     MemoryInit = (memory_init_cb)(fsp_m_base +
                                   fsp_m_info_header->FspMemoryInitEntryOffset);
     status = MemoryInit((void *)udp_m_parameter, &hobList);
-    if (status == FSP_STATUS_RESET_REQUIRED_WARM) {
-        wolfBoot_printf("warm reset required" ENDLINE);
-        reset(1);
-    }
-    else if (status == FSP_STATUS_RESET_REQUIRED_COLD) {
-        wolfBoot_printf("cold reset required" ENDLINE);
-        reset(0);
-    }
-    else if (status != EFI_SUCCESS) {
+    fsp_handle_reset(status);
+    if (status != EFI_SUCCESS) {
         wolfBoot_printf("failed: 0x%x" ENDLINE, status);
         panic();
     }

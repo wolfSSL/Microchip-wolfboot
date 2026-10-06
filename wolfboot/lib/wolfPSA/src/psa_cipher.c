@@ -13,7 +13,7 @@
     #include <config.h>
 #endif
 
-#include <wolfssl/wolfcrypt/settings.h>
+#include "psa_config.h"
 
 #if defined(WOLFSSL_PSA_ENGINE)
 
@@ -175,7 +175,10 @@ static psa_status_t wolfpsa_cipher_check_key(
         }
     }
     else if (attributes->type == PSA_KEY_TYPE_DES) {
-        if (alg != PSA_ALG_CBC_NO_PADDING && alg != PSA_ALG_ECB_NO_PADDING) {
+        /* The update/finish block and padding logic is generic over
+         * block_size, so CBC_PKCS7 works for DES exactly as for AES. */
+        if (alg != PSA_ALG_CBC_NO_PADDING && alg != PSA_ALG_ECB_NO_PADDING &&
+            alg != PSA_ALG_CBC_PKCS7) {
             wolfpsa_forcezero_free_key_data(*key_data, *key_data_length);
             *key_data = NULL;
             *key_data_length = 0;
@@ -208,7 +211,7 @@ static psa_status_t wolfpsa_cipher_check_key(
     }
 
     key_usage = psa_get_key_usage_flags(attributes);
-    if ((key_usage & usage) == 0) {
+    if ((key_usage & usage) != usage) {
         wolfpsa_forcezero_free_key_data(*key_data, *key_data_length);
         *key_data = NULL;
         *key_data_length = 0;
@@ -676,7 +679,9 @@ psa_status_t psa_cipher_generate_iv(psa_cipher_operation_t *operation,
     if (ctx->direction != AES_ENCRYPTION) {
         return PSA_ERROR_BAD_STATE;
     }
-    if (iv == NULL || iv_length == NULL) {
+    /* A NULL iv pointer is only an error when the caller declared a
+     * nonzero capacity; (NULL, 0) must reach the size check below. */
+    if (iv_length == NULL || (iv == NULL && iv_size != 0)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -730,6 +735,28 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
         return wolfpsa_cipher_fail(operation, PSA_ERROR_INVALID_ARGUMENT);
     }
 
+    /* The block-cipher paths write completed blocks to the output before
+     * all of the input has been read (the partial-block assembly reads
+     * only the first bytes of the input, then the full-block pass reads
+     * the rest), so overlapping input and output ranges would corrupt
+     * unread input. The stream modes buffer nothing in the operation and
+     * read each input byte before writing the output byte, so in-place
+     * updates are safe there. Overlap is not supported in the block
+     * modes; reject it only for those. */
+    /* The range test runs on uintptr_t: comparing pointers into two
+     * different objects with < is undefined (C99 6.5.8p5), and forming
+     * output + output_size one past the end is undefined (6.5.6p8).
+     * The flat address comparison is what every target does anyway. */
+    if ((ctx->alg == PSA_ALG_CBC_NO_PADDING ||
+         ctx->alg == PSA_ALG_CBC_PKCS7 ||
+         ctx->alg == PSA_ALG_ECB_NO_PADDING) &&
+        input != NULL && output != NULL && input_length > 0 &&
+        output_size > 0 &&
+        (uintptr_t)input < (uintptr_t)output + output_size &&
+        (uintptr_t)output < (uintptr_t)input + input_length) {
+        return wolfpsa_cipher_fail(operation, PSA_ERROR_NOT_SUPPORTED);
+    }
+
     if (input_length == 0) {
         return PSA_SUCCESS;
     }
@@ -762,6 +789,7 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
             if (ctx->partial_len > 0) {
                 size_t needed = block_size - ctx->partial_len;
                 uint8_t block[AES_BLOCK_SIZE];
+                psa_status_t status = PSA_SUCCESS;
 
                 XMEMCPY(block, ctx->partial, ctx->partial_len);
                 XMEMCPY(block + ctx->partial_len, input, needed);
@@ -777,7 +805,8 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                                                 (word32)block_size);
                     }
 #else
-                    return wolfpsa_cipher_fail(operation, PSA_ERROR_NOT_SUPPORTED);
+                    status = PSA_ERROR_NOT_SUPPORTED;
+                    goto cbc_nopad_partial_done;
 #endif
                 }
                 else {
@@ -791,13 +820,18 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                     }
                 }
                 if (ret != 0) {
-                    return wolfpsa_cipher_fail(operation,
-                                               wc_error_to_psa_status(ret));
+                    status = wc_error_to_psa_status(ret);
+                    goto cbc_nopad_partial_done;
                 }
-                wc_ForceZero(block, sizeof(block));
                 output_offset += block_size;
                 input_offset += needed;
                 ctx->partial_len = 0;
+
+cbc_nopad_partial_done:
+                wc_ForceZero(block, sizeof(block));
+                if (status != PSA_SUCCESS) {
+                    return wolfpsa_cipher_fail(operation, status);
+                }
             }
 
             if (input_length > input_offset) {
@@ -886,6 +920,7 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                 if (ctx->partial_len > 0) {
                     size_t needed = block_size - ctx->partial_len;
                     uint8_t block[AES_BLOCK_SIZE];
+                    psa_status_t status = PSA_SUCCESS;
 
                     XMEMCPY(block, ctx->partial, ctx->partial_len);
                     XMEMCPY(block + ctx->partial_len, input, needed);
@@ -895,8 +930,8 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                         ret = wc_Des3_CbcEncrypt(&ctx->des3, output, block,
                                                 (word32)block_size);
 #else
-                        return wolfpsa_cipher_fail(operation,
-                                                   PSA_ERROR_NOT_SUPPORTED);
+                        status = PSA_ERROR_NOT_SUPPORTED;
+                        goto pkcs7_enc_partial_done;
 #endif
                     }
                     else {
@@ -904,13 +939,18 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                                                (word32)block_size);
                     }
                     if (ret != 0) {
-                        return wolfpsa_cipher_fail(operation,
-                                                   wc_error_to_psa_status(ret));
+                        status = wc_error_to_psa_status(ret);
+                        goto pkcs7_enc_partial_done;
                     }
-                    wc_ForceZero(block, sizeof(block));
                     output_offset += block_size;
                     input_offset += needed;
                     ctx->partial_len = 0;
+
+pkcs7_enc_partial_done:
+                    wc_ForceZero(block, sizeof(block));
+                    if (status != PSA_SUCCESS) {
+                        return wolfpsa_cipher_fail(operation, status);
+                    }
                 }
 
                 if (input_length > input_offset) {
@@ -980,6 +1020,7 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                 if (ctx->partial_len > 0) {
                     size_t needed = block_size - ctx->partial_len;
                     uint8_t block[AES_BLOCK_SIZE];
+                    psa_status_t status = PSA_SUCCESS;
 
                     XMEMCPY(block, ctx->partial, ctx->partial_len);
                     XMEMCPY(block + ctx->partial_len, input, needed);
@@ -989,8 +1030,8 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                         ret = wc_Des3_CbcDecrypt(&ctx->des3, output, block,
                                                 (word32)block_size);
 #else
-                        return wolfpsa_cipher_fail(operation,
-                                                   PSA_ERROR_NOT_SUPPORTED);
+                        status = PSA_ERROR_NOT_SUPPORTED;
+                        goto pkcs7_dec_partial_done;
 #endif
                     }
                     else {
@@ -998,12 +1039,18 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                                                (word32)block_size);
                     }
                     if (ret != 0) {
-                        return wolfpsa_cipher_fail(operation,
-                                                   wc_error_to_psa_status(ret));
+                        status = wc_error_to_psa_status(ret);
+                        goto pkcs7_dec_partial_done;
                     }
                     output_offset += block_size;
                     input_offset += needed;
                     ctx->partial_len = 0;
+
+pkcs7_dec_partial_done:
+                    wc_ForceZero(block, sizeof(block));
+                    if (status != PSA_SUCCESS) {
+                        return wolfpsa_cipher_fail(operation, status);
+                    }
                 }
 
                 full_blocks_len = process_len - output_offset;
@@ -1096,6 +1143,7 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
             if (ctx->partial_len > 0) {
                 size_t needed = block_size - ctx->partial_len;
                 uint8_t block[AES_BLOCK_SIZE];
+                psa_status_t status = PSA_SUCCESS;
 
                 XMEMCPY(block, ctx->partial, ctx->partial_len);
                 XMEMCPY(block + ctx->partial_len, input, needed);
@@ -1111,7 +1159,8 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                                                 (word32)block_size);
                     }
 #else
-                    return wolfpsa_cipher_fail(operation, PSA_ERROR_NOT_SUPPORTED);
+                    status = PSA_ERROR_NOT_SUPPORTED;
+                    goto ecb_partial_done;
 #endif
                 }
                 else {
@@ -1125,17 +1174,23 @@ psa_status_t psa_cipher_update(psa_cipher_operation_t *operation,
                                                (word32)block_size);
                     }
 #else
-                    return wolfpsa_cipher_fail(operation, PSA_ERROR_NOT_SUPPORTED);
+                    status = PSA_ERROR_NOT_SUPPORTED;
+                    goto ecb_partial_done;
 #endif
                 }
                 if (ret != 0) {
-                    return wolfpsa_cipher_fail(operation,
-                                               wc_error_to_psa_status(ret));
+                    status = wc_error_to_psa_status(ret);
+                    goto ecb_partial_done;
                 }
-                wc_ForceZero(block, sizeof(block));
                 output_offset += block_size;
                 input_offset += needed;
                 ctx->partial_len = 0;
+
+ecb_partial_done:
+                wc_ForceZero(block, sizeof(block));
+                if (status != PSA_SUCCESS) {
+                    return wolfpsa_cipher_fail(operation, status);
+                }
             }
 
             if (input_length > input_offset) {
@@ -1304,6 +1359,9 @@ psa_status_t psa_cipher_finish(psa_cipher_operation_t *operation,
     if (ctx == NULL) {
         return wolfpsa_cipher_fail(operation, PSA_ERROR_BAD_STATE);
     }
+    if (output == NULL && output_size > 0) {
+        return wolfpsa_cipher_fail(operation, PSA_ERROR_INVALID_ARGUMENT);
+    }
 
     if (ctx->alg == PSA_ALG_CBC_PKCS7) {
         size_t block_size = ctx->block_size;
@@ -1312,12 +1370,17 @@ psa_status_t psa_cipher_finish(psa_cipher_operation_t *operation,
         }
         if (ctx->direction == AES_ENCRYPTION) {
             uint8_t block[AES_BLOCK_SIZE];
-            size_t pad_len = block_size - ctx->partial_len;
+            size_t pad_len;
             psa_status_t status = PSA_SUCCESS;
 
-            if (pad_len == 0) {
-                pad_len = block_size;
+            /* psa_cipher_update keeps the encrypt-path residue strictly
+             * below one full block, so pad_len always lands in
+             * [1, block_size]. Fail loudly if that invariant ever breaks
+             * instead of guessing a padding length. */
+            if (ctx->partial_len >= block_size) {
+                return wolfpsa_cipher_fail(operation, PSA_ERROR_BAD_STATE);
             }
+            pad_len = block_size - ctx->partial_len;
             if (output_size < block_size) {
                 return wolfpsa_cipher_fail(operation, PSA_ERROR_BUFFER_TOO_SMALL);
             }
@@ -1469,6 +1532,29 @@ psa_status_t psa_cipher_encrypt(psa_key_id_t key,
     size_t offset = 0;
     wolfpsa_cipher_ctx_t *ctx;
 
+    if (output_length == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    if (output == NULL && output_size > 0) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    /* The one-shot API rejects any overlap between the declared input
+     * and output ranges. The generated IV is written to the output
+     * before the input is consumed, and the block modes read input
+     * while writing output. The stream modes are in-place safe in the
+     * multipart API, but the one-shot entry points do not make that
+     * distinction; psa_cipher_overlap_test.c pins both contracts.
+     * The range test runs on uintptr_t: comparing pointers into two
+     * different objects with < is undefined (C99 6.5.8p5), and forming
+     * output + output_size one past the end is undefined (6.5.6p8). */
+    if (input != NULL && output != NULL && input_length > 0 &&
+        output_size > 0 &&
+        (uintptr_t)input < (uintptr_t)output + output_size &&
+        (uintptr_t)output < (uintptr_t)input + input_length) {
+        return PSA_ERROR_NOT_SUPPORTED;
+    }
+
     status = psa_cipher_encrypt_setup(&operation, key, alg);
     if (status != PSA_SUCCESS) {
         return status;
@@ -1495,14 +1581,23 @@ psa_status_t psa_cipher_encrypt(psa_key_id_t key,
         offset = iv_len;
     }
 
-    status = psa_cipher_update(&operation, input, input_length, output + offset,
+    /* A NULL output with output_size 0 is a legal zero-length buffer;
+     * pointer arithmetic on it is undefined, so advance the pointer only
+     * when it is non-NULL and pass NULL through. */
+    if (output != NULL) {
+        output += offset;
+    }
+    status = psa_cipher_update(&operation, input, input_length, output,
                                output_size - offset, &out_len);
     if (status != PSA_SUCCESS) {
         psa_cipher_abort(&operation);
         return status;
     }
 
-    status = psa_cipher_finish(&operation, output + offset + out_len,
+    if (output != NULL) {
+        output += out_len;
+    }
+    status = psa_cipher_finish(&operation, output,
                                output_size - offset - out_len, &finish_len);
     if (status != PSA_SUCCESS) {
         psa_cipher_abort(&operation);
@@ -1531,6 +1626,36 @@ psa_status_t psa_cipher_decrypt(psa_key_id_t key,
     size_t offset = 0;
     wolfpsa_cipher_ctx_t *ctx;
 
+    if (output_length == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    if (output == NULL && output_size > 0) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+    /* Unlike psa_cipher_encrypt(), the decrypt path consumes the IV
+     * prefix with XMEMCPY() before it hands the remainder to
+     * psa_cipher_update(), so it cannot rely on that function's own
+     * NULL-input guard and has to reject a NULL input here. */
+    if (input == NULL && input_length > 0) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    /* Mirror the one-shot encrypt contract: any overlap between the
+     * declared input and output ranges is rejected. In the block modes
+     * the partial-block assembly reads only the first bytes of the
+     * input before the rest is consumed; in the stream modes an output
+     * that starts inside the ciphertext range writes over unread
+     * ciphertext. The IV prefix is consumed into a local buffer before
+     * any output is written, so it does not widen the hazard; the
+     * declared-range test stays conservative. The test runs on
+     * uintptr_t for the same reasons as in psa_cipher_encrypt(). */
+    if (input != NULL && output != NULL && input_length > 0 &&
+        output_size > 0 &&
+        (uintptr_t)input < (uintptr_t)output + output_size &&
+        (uintptr_t)output < (uintptr_t)input + input_length) {
+        return PSA_ERROR_NOT_SUPPORTED;
+    }
+
     status = psa_cipher_decrypt_setup(&operation, key, alg);
     if (status != PSA_SUCCESS) {
         return status;
@@ -1557,14 +1682,22 @@ psa_status_t psa_cipher_decrypt(psa_key_id_t key,
         offset = iv_len;
     }
 
-    status = psa_cipher_update(&operation, input + offset, input_length - offset,
+    /* NULL + 0 is undefined even though the length is zero, and a (NULL, 0)
+     * input reaches here for ECB, where offset stays 0. */
+    if (input != NULL) {
+        input += offset;
+    }
+    status = psa_cipher_update(&operation, input, input_length - offset,
                                output, output_size, &out_len);
     if (status != PSA_SUCCESS) {
         psa_cipher_abort(&operation);
         return status;
     }
 
-    status = psa_cipher_finish(&operation, output + out_len,
+    if (output != NULL) {
+        output += out_len;
+    }
+    status = psa_cipher_finish(&operation, output,
                                output_size - out_len, &finish_len);
     if (status != PSA_SUCCESS) {
         psa_cipher_abort(&operation);

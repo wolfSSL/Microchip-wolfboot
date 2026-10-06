@@ -1,8 +1,8 @@
 /* read.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -177,7 +177,7 @@ int TPM2_NVRAM_Read_Example(void* userCtx, int argc, char *argv[])
 
     printf("NV Read: Attributes 0x%08x\n", nv.attributes);
 
-    if (((nv.attributes & TPMA_NV_TPM_NT) >> 4) & TPM_NT_EXTEND) {
+    if (((nv.attributes & TPMA_NV_TPM_NT) >> 4) == TPM_NT_EXTEND) {
         byte digest[TPM_SHA256_DIGEST_SIZE];
         word32 digestLen = (word32)sizeof(digest);
         printf("NV Read Extend\n");

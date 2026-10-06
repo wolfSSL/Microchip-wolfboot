@@ -15,6 +15,9 @@
 #include "image.h" /* for RAMFUNCTION */
 #include "nxp_ppc.h"
 #include "nxp_t2080.h"
+/* Register names for the DUART MCR poke in hal_flash_cache_disable_pre_os();
+ * nxp_ppc.c pulls this in too, but only when DEBUG_UART is set. */
+#include "ns16550.h"
 
 #define ENABLE_IFC
 #define ENABLE_BUS_CLK_CALC
@@ -569,11 +572,17 @@ static void hal_cpld_init(void)
 }
 
 #ifdef ENABLE_FMAN
-/* FMAN microcode upload for T2080.
- * Firmware is in NOR flash at FMAN_FW_ADDR (typically 0xFFE60000).
- * Uses same QE firmware format as T1040. */
+/* FMan microcode NOR address (board-gated, same QE firmware format as T1040).
+ * T2080 RDB / NAII 68PPC2 (128MB NOR @ 0xE8000000): 0xEFF00000, the U-Boot-
+ * standard slot (CONFIG_SYS_FMAN_FW_ADDR in T208xRDB.h); the wolfBoot partitions
+ * sit below it. CW VPX3-152 (256MB NOR @ 0xF0000000): 0xFFE60000. A wrong address
+ * machine-checks when read in hal_fman_init(), so it is bounds-checked there. */
 #ifndef FMAN_FW_ADDR
+#ifdef BOARD_CW_VPX3152
 #define FMAN_FW_ADDR    0xFFE60000UL
+#else
+#define FMAN_FW_ADDR    0xEFF00000UL
+#endif
 #endif
 #define FMAN_BASE       (CCSRBAR + 0x400000UL)
 #define FMAN_IRAM       (FMAN_BASE + 0xC4000UL)
@@ -631,12 +640,80 @@ static int hal_fman_init(void)
 {
     const struct qe_firmware *fw = (const struct qe_firmware *)FMAN_FW_ADDR;
     const struct qe_header *hdr = &fw->header;
+    uint64_t fw_off, extent;
     unsigned int i;
+
+    /* Guard: FMAN_FW_ADDR must lie in the NOR window, else the magic read
+     * below machine-checks. Compare via offset-from-base (not base+size) so the
+     * bound does not overflow uintptr_t when a 256MB NOR sits at the top of the
+     * 32-bit space (CW VPX3-152: 0xF0000000 + 256MB wraps to 0); the first
+     * clause ensures addr >= base, so the subtraction is safe. */
+    if ((uintptr_t)FMAN_FW_ADDR < (uintptr_t)FLASH_BASE_ADDR ||
+        ((uintptr_t)FMAN_FW_ADDR - (uintptr_t)FLASH_BASE_ADDR) >=
+            (uintptr_t)FLASH_BANK_SIZE) {
+        wolfBoot_printf("FMAN: fw addr 0x%x outside NOR, skipping\n",
+            (unsigned)FMAN_FW_ADDR);
+        return -1;
+    }
+
+    /* The guard above only proved FMAN_FW_ADDR itself is in the NOR
+     * window; bound the fixed part before dereferencing it. */
+    fw_off = (uint64_t)((uintptr_t)fw - (uintptr_t)FLASH_BASE_ADDR);
+    extent = (uint64_t)FLASH_BANK_SIZE - fw_off;
+    if (extent < (uint64_t)sizeof(struct qe_firmware)) {
+        wolfBoot_printf("FMAN: container truncated by NOR end, skipping\n");
+        return -1;
+    }
 
     /* Check firmware magic */
     if (hdr->magic[0] != 'Q' || hdr->magic[1] != 'E' || hdr->magic[2] != 'F') {
-        wolfBoot_printf("FMAN: no firmware at 0x%x\n", FMAN_FW_ADDR);
+        wolfBoot_printf("FMAN: no firmware at 0x%x\n", (unsigned)FMAN_FW_ADDR);
         return -1;
+    }
+
+    /* Validate before uploading, as the T10xx qe_check_firmware() path
+     * does: version, count, self-consistent length, every code range
+     * inside the image, the image inside the NOR bank. 64-bit so the
+     * sums cannot wrap; FMan stays unconfigured on any mismatch. */
+    if (hdr->version != 1) {
+        wolfBoot_printf("FMAN: version %d unsupported\n", hdr->version);
+        return -1;
+    }
+    if (fw->count < 1 || fw->count > QE_MAX_RISC) {
+        wolfBoot_printf("FMAN: count %d invalid\n", fw->count);
+        return -1;
+    }
+    {
+        uint64_t length = hdr->length;
+        uint64_t table = (uint64_t)sizeof(struct qe_firmware) +
+            (uint64_t)(fw->count - 1) * sizeof(struct qe_microcode);
+        uint64_t calc;
+        unsigned int k;
+
+        /* Bound the table and the declared image before walking
+         * them: the table sits past the fixed part checked above. */
+        if (table > extent || length > extent) {
+            wolfBoot_printf("FMAN: image %lu exceeds NOR extent %lu\n",
+                (unsigned long)length, (unsigned long)extent);
+            return -1;
+        }
+
+        calc = table;
+        for (k = 0; k < fw->count; k++)
+            calc += (uint64_t)4 * fw->microcode[k].count;
+
+        if (length != calc + sizeof(uint32_t)) {
+            wolfBoot_printf("FMAN: length %lu invalid\n",
+                (unsigned long)length);
+            return -1;
+        }
+        for (k = 0; k < fw->count; k++) {
+            if ((uint64_t)fw->microcode[k].code_offset +
+                    (uint64_t)4 * fw->microcode[k].count > length) {
+                wolfBoot_printf("FMAN: microcode %u out of bounds\n", k);
+                return -1;
+            }
+        }
     }
 
     for (i = 0; i < fw->count; i++) {
@@ -1617,17 +1694,20 @@ void hal_prepare_boot(void)
  *
  * Also aligns small but observable pre-jump state items to CW U-Boot's
  * profile when chasing VxWorks 7 64-bit silent boot:
- *   - DUART1 MCR = 3   (DTR+RTS asserted; U-Boot sets this, our driver
- *                       leaves it at the post-reset 0)
- *   - TCR = 0x04000000 (matches U-Boot's leftover; wolfBoot was clearing
- *                       it; VxWorks 7 BSP early code may inherit) */
+ *   - DUART1 MCR = 3   (DTR+RTS asserted, as U-Boot leaves it). The shared
+ *                       NS16550 driver already does this in ns16550_init(),
+ *                       but only when DEBUG_UART builds the console in, so
+ *                       the poke below still covers a console-less build.
+ *   - TCR = 0 (matches CW U-Boot's pre-bootm value; a nonzero WRC would let
+ *                       the watchdog fire silently after VxWorks starts) */
 void RAMFUNCTION hal_flash_cache_disable_pre_os(void)
 {
     hal_flash_cache_disable();
 #ifdef ENABLE_OS64BIT
     /* DUART1 modem control: DTR+RTS asserted, matching CW U-Boot's
-     * pre-bootm value. */
-    set8(UART_MCR(0), 0x03);
+     * pre-bootm value, which VxWorks 7 inherits. */
+    set8((volatile unsigned char*)(UART_BASE(0) + NS16550_MCR),
+        NS16550_MCR_DTR | NS16550_MCR_RTS);
     /* TCR=0 matches CW U-Boot's pre-bootm value. WRC != 0 would let
      * the watchdog fire silently after VxWorks starts. */
     mtspr(SPRN_TCR, 0);
@@ -1641,31 +1721,33 @@ void* hal_get_dts_address(void)
     return (void*)WOLFBOOT_DTS_BOOT_ADDRESS;
 }
 
-int hal_dts_fixup(void* dts_addr)
+int hal_dts_fixup(void* dts_addr, uint32_t capacity)
 {
 #ifndef BUILD_LOADER_STAGE1
-    struct fdt_header *fdt = (struct fdt_header *)dts_addr;
+    fdt_ctx ctx;
+    fdt_ctx* fdt = &ctx;
     int off;
     uint32_t *reg;
 
-    /* verify the FDT is valid */
-    off = fdt_check_header(dts_addr);
+    /* Validate the blob against the window it actually occupies. */
+    off = fdt_open(&ctx, dts_addr, capacity);
     if (off != 0) {
         wolfBoot_printf("FDT: Invalid header! %d\n", off);
         return off;
     }
 
     /* display FDT information */
-    wolfBoot_printf("FDT: Version %d, Size %d\n",
-        fdt_version(fdt), fdt_totalsize(fdt));
+    wolfBoot_printf("FDT: Size %d\n", (int)fdt_size(fdt));
 
-    /* expand total size */
-    {
-        uint32_t new_size = (uint32_t)fdt_totalsize(fdt) + 2048U;
-        fdt_set_totalsize(fdt, new_size);
-        wolfBoot_printf("FDT: Expanded (2KB) to %d bytes\n",
-            fdt_totalsize(fdt));
+    /* Reserve headroom for the fixups below. The /memreserve/ inserts in
+     * particular shift the whole tree down, so this must succeed before
+     * any of them run. */
+    off = fdt_grow(fdt, 2048U);
+    if (off != 0) {
+        wolfBoot_printf("FDT: No headroom for fixups (%d)\n", off);
+        return off;
     }
+    wolfBoot_printf("FDT: Expanded (2KB) to %d bytes\n", (int)fdt_size(fdt));
 
 #ifdef ENABLE_OS64BIT
     /* /memreserve/ entries: keep VxWorks/Linux away from the spin-table
@@ -1847,7 +1929,7 @@ memory_fixup_done:
      * the DTB value untouched during bootm; we override here so users
      * can change boot parameters without reflashing the DTB. */
 #ifdef WOLFBOOT_BOOTARGS
-    off = fdt_find_node_offset(fdt, -1, "chosen");
+    off = fdt_subnode_offset(fdt, 0, "chosen");
     if (off < 0) {
         off = fdt_add_subnode(fdt, 0, "chosen");
     }
@@ -1858,6 +1940,7 @@ memory_fixup_done:
 
 #endif /* !BUILD_LOADER_STAGE1 */
     (void)dts_addr;
+    (void)capacity;
     return 0;
 }
 #endif /* MMU */

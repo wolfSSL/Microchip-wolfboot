@@ -1,8 +1,8 @@
 /* tpm2_packet.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -88,6 +88,7 @@ typedef struct TPM2_Packet {
     byte* buf;
     int pos;
     int size;
+    unsigned int overflow:1;
 } TPM2_Packet;
 
 
@@ -226,7 +227,8 @@ WOLFTPM_TEST_API void TPM2_Packet_AppendPublic(TPM2_Packet* packet, TPM2B_PUBLIC
 WOLFTPM_TEST_API void TPM2_Packet_ParsePublic(TPM2_Packet* packet, TPM2B_PUBLIC* pub);
 WOLFTPM_TEST_API void TPM2_Packet_AppendSignature(TPM2_Packet* packet, TPMT_SIGNATURE* sig);
 WOLFTPM_TEST_API void TPM2_Packet_ParseSignature(TPM2_Packet* packet, TPMT_SIGNATURE* sig);
-WOLFTPM_LOCAL void TPM2_Packet_ParseAttest(TPM2_Packet* packet, TPMS_ATTEST* out);
+WOLFTPM_LOCAL int TPM2_Packet_ParseAttest(TPM2_Packet* packet,
+    TPMS_ATTEST* out);
 
 
 WOLFTPM_LOCAL TPM_RC TPM2_Packet_Parse(TPM_RC rc, TPM2_Packet* packet);

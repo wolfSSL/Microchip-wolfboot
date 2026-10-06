@@ -25,7 +25,7 @@ Design based on [RFC 9019](https://datatracker.ietf.org/doc/rfc9019/) - A Firmwa
 
 This repository contains the following components:
    - the wolfBoot bootloader
-   - key generator and image signing tools (requires python 3.x and wolfcrypt-py https://github.com/wolfSSL/wolfcrypt-py)
+   - key generator and image signing tools
    - Baremetal test applications
 
 ### wolfBoot bootloader
@@ -63,17 +63,17 @@ Additional examples available on our GitHub wolfBoot-examples repository [here](
 The following steps are automated in the default `Makefile` target, using the baremetal test
 application as an example to create the factory image. By running `make`, the build system will:
 
-   - Create a Ed25519 Key-pair using the `ed25519_keygen` tool
+   - Create a Ed25519 Key-pair using the `keygen` tool
    - Compile the bootloader. The public key generated in the step above is included in the build
    - Compile the firmware image from the test application in [test\_app](test-app/)
    - Re-link the firmware to change the entry-point to the start address of the primary partition
-   - Sign the firmware image using the `ed25519_sign` tool
+   - Sign the firmware image using the `sign` tool
    - Create a factory image by concatenating the bootloader and the firmware image
 
 The factory image can be flashed to the target device. It contains the bootloader and the signed initial
 firmware at the specified address on the flash.
 
-The `sign.py` tool transforms a bootable firmware image to comply with the firmware image format required by the bootloader.
+The `sign` tool transforms a bootable firmware image to comply with the firmware image format required by the bootloader.
 
 For detailed information about the firmware image format, see [Firmware image](docs/firmware_image.md)
 
@@ -82,7 +82,7 @@ For detailed information about the configuration options for the target system, 
 ### Upgrading the firmware
 
    - Compile the new firmware image, and link it so that its entry point is at the start address of the primary partition
-   - Sign the firmware using the `sign.py` tool and the private key generated for the factory image
+   - Sign the firmware using the `sign` tool and the private key generated for the factory image
    - Transfer the image using a secure connection, and store it to the secondary firmware slot
    - Trigger the image swap using libwolfboot `wolfBoot_update_trigger()` function. See [wolfBoot library API](docs/API.md) for a description of the operation
    - Reboot to let the bootloader begin the image swap
@@ -142,58 +142,42 @@ make sbom TARGET=<target> SIGN=<alg> HASH=<alg>
 
 `TARGET`, `SIGN`, and `HASH` must match your wolfBoot build configuration (same
 as a normal `make` invocation), because the SBOM's source set and artifact hash
-are configuration-specific. `gen-sbom` lives in the `lib/wolfssl` submodule and
-is used automatically; override with `GEN_SBOM=/path/to/wolfssl/scripts/gen-sbom`
-if you keep wolfssl elsewhere.
+are configuration-specific. `gen-sbom` is part of wolfSSL. The build uses the
+copy in the `lib/wolfssl` submodule. If the pinned revision does not include it,
+give the path with `GEN_SBOM=/path/to/wolfssl/scripts/gen-sbom`.
+
+The same SBOM engine is available from every wolfBoot build system, so you get
+an identical CycloneDX 1.6 / SPDX 2.3 document however you build:
+
+| Build system / artifact | How to generate the SBOM |
+| --- | --- |
+| Make / arch.mk / vendor SDKs | `make sbom TARGET=<target> SIGN=<alg>` |
+| CMake (and Pico SDK) | `cmake --build <dir> --target sbom` |
+| IAR Embedded Workbench | `tools/scripts/ide-sbom/iar_sbom.py IDE/IAR/wolfboot.ewp` |
+| TI CCS / MPLAB X / Renesas / Xilinx | `tools/scripts/ide-sbom/route_through_sbom.sh --config <cfg> ...` |
+| Any IDE with a compilation database | `tools/scripts/ide-sbom/compdb_sbom.py compile_commands.json` |
+| Per-HAL component | `make sbom-hal TARGET=<target>` |
+| Zephyr TEE/PSA module | `tools/scripts/ide-sbom/zephyr_sbom.py` |
 
 Output files are written to the build directory as
-`wolfboot-<version>.cdx.json` (CycloneDX 1.6) and `wolfboot-<version>.spdx.json`
-(SPDX 2.3 JSON), where `<version>` is read from `include/wolfboot/version.h`.
+`wolfboot-<target>-<sign>-<hash>-<version>.cdx.json` (CycloneDX 1.6) and
+`wolfboot-<target>-<sign>-<hash>-<version>.spdx.json` (SPDX 2.3 JSON), where
+`<version>` is read from `include/wolfboot/version.h`. Each configuration is a
+different image, so each one gets its own document.
 
-For CRA guidance and worked SBOM examples, see the
+See [docs/SBOM.md](./docs/SBOM.md) for the full per-build-system guide. For CRA
+guidance and worked SBOM examples, see the
 [wolfSSL CRA Kit](https://github.com/wolfSSL/wolfssl-examples/tree/master/cra-kit).
 
 ## Troubleshooting
 
-1. Python errors when signing a key:
-
-```
-Traceback (most recent call last):
-  File "tools/keytools/keygen.py", line 135, in <module>
-    rsa = ciphers.RsaPrivate.make_key(2048)
-AttributeError: type object 'RsaPrivate' has no attribute 'make_key'
-```
-
-```
-Traceback (most recent call last):
-  File "tools/keytools/sign.py", line 189, in <module>
-    r, s = ecc.sign_raw(digest)
-AttributeError: 'EccPrivate' object has no attribute 'sign_raw'
-```
-
-You need to install the latest wolfcrypt-py here: https://github.com/wolfSSL/wolfcrypt-py
-
-Use `pip3 install wolfcrypt`.
-
-Or to install based on a local wolfSSL installation use:
-
-```sh
-cd wolfssl
-./configure --enable-keygen --enable-rsa --enable-ecc --enable-ed25519 --enable-des3 CFLAGS="-DFP_MAX_BITS=8192 -DWOLFSSL_PUBLIC_MP"
-make
-sudo make install
-
-cd wolfcrypt-py
-USE_LOCAL_WOLFSSL=/usr/local pip3 install .
-```
-
-2. Key algorithm mismatch:
+1. Key algorithm mismatch:
 
 The error `Key algorithm mismatch. Remove old keys via 'make keysclean'` indicates the current `.config` `SIGN` algorithm does not match what is in the generated `src/keystore.c` file.
 Use `make keysclean` to delete keys and regenerate.
 
 
-3.  Cannot open compiler generated file ... Permission denied
+2.  Cannot open compiler generated file ... Permission denied
 
 This may occur due to multiple environments being opened concurrently, or anti-virus software.
 Try manually deleting the respective build directories and/or restarting your IDE.
@@ -755,14 +739,16 @@ For Visual Studio, the developer command prompt will need to be activated.
     * Added boot-benchmarking support
     * Added an `sbom` Makefile target for EU CRA compliance
     * wolfHSM: multi-root-CA verification, keystore-less operation, and related fixes
-    * IDevID: allow using pre-computed authentication values
+    * IDevID: allow using pre-computed authentication values (Reported-by: Asif Nadaf <postasif@protonmail.com>)
     * Added an option to persist boot/update failure diagnostics to a dedicated flash partition, with an API to retrieve logged events
     * Renamed ML-DSA (Dilithium) references throughout for consistency
   * Bug fixes and hardening
     * Continued Fenrir fuzzing-driven hardening across image parsing and update flows
-    * Bounded unauthenticated image size before RAM load, and enforced bounds over memcpy in the disk update path
-    * Added an integrity check in `wolfBoot_verify_authenticity()` and hardened the armored image integrity check against fault injection
-    * Fixed LMS/XMSS header includes, otp_keystore string initialization, and FDT compatible-string loop termination
+    * Bounded unauthenticated image size before RAM load, and enforced bounds over memcpy in the disk update path (Reported-by: Asif Nadaf <postasif@protonmail.com>)
+    * Added an integrity check in `wolfBoot_verify_authenticity()` (Reported-by: Asif Nadaf <postasif@protonmail.com>)
+    * Hardened the armored image integrity check against fault injection
+    * Fixed FDT compatible-string loop termination (Reported-by: Asif Nadaf <postasif@protonmail.com>)
+    * Fixed LMS/XMSS header includes and otp_keystore string initialization
     * Fixed multiple unit-test and self-update regressions; migrated Renode tests to a new container
     * Zeroized the DICE claim-collection buffer
   * Updated modules
@@ -772,3 +758,65 @@ For Visual Studio, the developer command prompt will need to be activated.
     * wolfHSM v1.4.0-245-g7c6359e
     * wolfHAL (4744f20)
     * wolfPSA v5.9.1-58-ga4d1187
+
+### V 2.10.0 - (2026-10-01)
+  * New hardware targets
+    * NXP i.MX RT700 (MIMXRT798S): XSPI0 NOR boot, TrustZone secure application, ML-DSA-87 signed-boot config, m33mu emulator tests in CI
+    * Raspberry Pi Compute Module 4 (BCM2711 Cortex-A72): authenticated boot, hardware-validated eMMC A/B disk boot, wolfCrypt FIPS 140-3
+    * NXP i.MX 8QuadMax MEK port including BL33 support
+    * NXP i.MX95 Cortex-M7 target
+    * NVIDIA Tegra234 bare-metal BL33 with verified EL2->EL1 handoff and device-tree boot
+    * AURIX TC4xx support (host and CSRM cores)
+    * TI C28x (TMS320F28P550SJ) secure-boot XIP port
+    * wolfBoot as an AArch64 UEFI application
+    * Nuvoton NuMaker M2354 Cortex-M23 with TrustZone and emulator tests
+    * MAX32666 (Maxim): SHA256 acceleration, FTHR2 board, legacy LPSDK support
+    * RealTek RTL8735B (AmebaPro2) HAL port
+  * Improvements to supported targets
+    * x86 FSP: Linux bzImage + initrd payload with the 64-bit boot protocol, OS image PCR measurement, FSP UPD decoder tool, debug UART selection, and Tiger Lake NotifyPhase reset handling
+    * ZynqMP: FSBL with signed FIT Linux boot and EL3 security (eFuse/PUF/AES-CSU), non-cacheable DMA window, optional PHY init over GEM MDIO
+    * Disk boot: read-only FAT32 and ext4 filesystem support, signed image load from a file, optional boot confirmation and rollback, big-endian MBR/GPT parsing; first big-endian disk-boot target is the T1040 eSDHC SD card
+    * LS1028A: eSDHC SD card disk boot and ENETC wolfIP support
+    * PolarFire SoC: LPDDR4 DDR init and a minimal SBI runtime booting 4-CPU SMP Yocto Linux
+    * wolfIP support for NXP T2080 (+ NAII 68PPC2), T10xx (T1024/T1040), and LS1028A, plus a wolfIP + wolfCrypt test harness in the test app
+    * STM32H5: generic secure application handoff with a measured boot record, fwTPM secure RAM budget and stack sizing
+    * Renesas RX: generic watchdog feed hook and RX driver, GCC 8.3/14.2 build fixes, CI coverage
+    * pic32cz: wolfHSM client target with verified-boot console
+    * STM32U5: ARM Compiler for Embedded support and UART driver
+    * AURIX TC3: DFLASH mode exposed as an option
+    * Replaced the duplicated NS16550 console code with a shared UART driver
+  * New features and improvements
+    * DICE attestation via wolfCOSE (new submodule); tokens are now signed with the RFC 9864 ESP256 algorithm identifier
+    * AArch64 UEFI: kernel command line authentication via a signed HDR_CMDLINE manifest TLV, kernel measurement into the firmware TPM via EFI_TCG2
+    * Pre-boot hook, DTB accessor, and FDT alias/reg helpers
+    * Asymmetric partition sizing for monolithic self-update
+    * Rewrote the FDT parser with capacity bound and full validation
+    * Multiboot2: u32 request-list entries per spec v2.0, zero entries as padding, end-tag termination
+    * Signing tools: file-backed custom TLV, custom TLV size limit raised to UINT16_MAX, --custom-tlv-pubkey-der, auxiliary algorithms and cert chain/TPM usage, removed the 14-argument limit
+    * wolfHSM: exposed max verify roots in options.mk, target-independent client build
+    * SBOM: vendored wolfGlass tooling, SBOMs from every build system and per-target config, CI drift check, registered wolfBoot CPE, identification of the embedded wolfSSL
+    * Removed the obsolete python keytools; all users converted to C
+    * Added CONTRIBUTING.md covering the contributor agreement and PR process
+  * Bug fixes and hardening
+    * Continued Fenrir-driven hardening across image parsing, disk, and HAL paths (241 findings)
+    * Expanded zeroization: TRNG staging buffers, TPM auth slots, DICE private scalars, ECDSA r/s scalars, PKCS11 login PIN, NSC bounce buffers, NVM_CACHE, RMW scratch and passphrase buffers; key tools now read/write secrets unbuffered to avoid stdio copies
+    * Bounded and validated ELF scatter segments, FIT subimages, GPT/MBR structures, TLV budgets, delta base hashes, PCI pools (including the 4 GiB boundary), and SDHCI/SD card init polling
+    * Propagated flash write/erase errors across HALs (STM32, nRF, HiFive1, Kinetis, TI Hercules, cc26x2, mcxw, MAX32666, samr21, pic32cz), plus SDHCI clock, NAND status/ECC, and OctoSPI status results
+    * Fixed encrypted read-modify-write: decrypt the stored block before patching, bound staged ciphertext, added a positive E2E encrypted-update test
+    * Fixed swap resume from BACKUP, abort the swap on sector copy failure, and the DISABLE_BACKUP update-consumption path (trailer erase)
+    * Added a ram_decrypt overlap guard so a decrypted image cannot clobber wolfBoot
+    * Fixed SDHCI silent read failures and the unbootable warm reset with UHS-I cards
+    * Fixed the 32-bit and partial-word fast paths in hal_flash_write on nRF52/nRF5340/STM32L0/L4/WB and RP2350
+    * P1021 NAND: bad-block markers per erase block, ECC result checks, FBCR byte count fix
+    * Hardened the ARMORED digest comparison against instruction-skip fault injection
+    * Kept wolfBoot API declarations visible to app builds; marked wolfBoot_invalidate_hdr_cache RAMFUNCTION
+    * wolfHSM: freed keys on setup error paths, fixed DER sig length and full-width ECC raw sig conversion
+    * Signing tools: scrubbed key material on load failure, freed the RNG on all exit paths, propagated make_header() failures to the exit status
+  * Updated modules
+    * wolfSSL v5.9.4-stable
+    * wolfTPM v4.2.0
+    * wolfPKCS11 v2.1.0-stable
+    * wolfHSM v1.5.0-8-g86dd6df
+    * wolfHAL 63cedc8
+    * wolfPSA v5.9.4
+    * wolfCOSE v2.0.0

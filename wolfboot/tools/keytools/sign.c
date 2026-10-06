@@ -68,6 +68,12 @@ static inline int fp_truncate(FILE *f, size_t len)
 #define MAX_CUSTOM_TLVS (16)
 #endif
 
+/* wolfBoot and this tool stop parsing at any header field larger than
+ * (uint16_t)(header size - IMAGE_HEADER_OFFSET), at most 65528 including the
+ * 4-byte tag and length, so the largest usable value is 65524. A longer
+ * field would hide every field after it, including the signature. */
+#define MAX_TLV_LEN (65524)
+
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/aes.h>
@@ -147,6 +153,8 @@ static inline int fp_truncate(FILE *f, size_t len)
 #define HDR_POLICY_SIGNATURE    0x21
 #define HDR_SECONDARY_SIGNATURE 0x22
 #define HDR_CERT_CHAIN          0x23
+/* HDR_DEVICE_TREE_DIGEST comes from wolfboot/wolfboot.h (included above),
+ * matching how HDR_CMDLINE is consumed. */
 
 
 #define HDR_SHA256_LEN    32
@@ -291,7 +299,7 @@ static void header_append_tag_u64(uint8_t *header, uint32_t *idx, uint16_t tag,
 /* Globals */
 static const char wolfboot_delta_file[] = "/tmp/wolfboot-delta.bin";
 
-static struct {
+struct signing_key {
     ed25519_key ed;
     ed448_key ed4;
     ecc_key ecc;
@@ -299,7 +307,56 @@ static struct {
     LmsKey lms;
     XmssKey xmss;
     wc_MlDsaKey ml_dsa;
-} key;
+};
+
+/* Hybrid signing keeps the primary and the secondary private key decoded at
+ * the same time, so the two signers must not share the same storage. */
+static struct signing_key key;
+static struct signing_key key2;
+
+static struct signing_key *key_obj(int secondary)
+{
+    return secondary ? &key2 : &key;
+}
+
+/* Run the algorithm specific (zeroizing) free on a decoded signing key. */
+/* Safe to call on an object that was never initialized, or twice: "key" and
+ * "key2" are zero-initialized file-scope statics and every wolfCrypt free
+ * below is NULL-checked and idempotent. load_key() has paths that never
+ * initialize the object (--manual-sign, --sha-only, raw-public-key inputs) and
+ * paths that already free it, so both cases do occur. */
+static void free_key(int sign, int secondary)
+{
+    struct signing_key *k = key_obj(secondary);
+    if (sign == SIGN_ED25519) {
+        wc_ed25519_free(&k->ed);
+    }
+    else if (sign == SIGN_ED448) {
+        wc_ed448_free(&k->ed4);
+    }
+    else if (sign == SIGN_ECC256 ||
+             sign == SIGN_ECC384 ||
+             sign == SIGN_ECC521) {
+        wc_ecc_free(&k->ecc);
+    }
+    else if (sign == SIGN_RSA2048 ||
+             sign == SIGN_RSA3072 ||
+             sign == SIGN_RSA4096 ||
+             sign == SIGN_RSAPSS2048 ||
+             sign == SIGN_RSAPSS3072 ||
+             sign == SIGN_RSAPSS4096) {
+        wc_FreeRsaKey(&k->rsa);
+    }
+    else if (sign == SIGN_LMS) {
+        wc_LmsKey_Free(&k->lms);
+    }
+    else if (sign == SIGN_XMSS) {
+        wc_XmssKey_Free(&k->xmss);
+    }
+    else if (sign == SIGN_ML_DSA) {
+        wc_MlDsaKey_Free(&k->ml_dsa);
+    }
+}
 
 struct cmd_options {
     int manual_sign;
@@ -324,6 +381,7 @@ struct cmd_options {
     const char *encrypt_key_file;
     const char *delta_base_file;
     const char *cert_chain_file;
+    const char *dts_file;
     int no_base_sha;
     char output_image_file[PATH_MAX];
     char output_diff_file[PATH_MAX];
@@ -390,8 +448,11 @@ static uint16_t sign_tool_find_header(uint8_t *haystack, uint16_t type, uint8_t 
         }
 
         len = p[2] | (p[3] << 8);
-        /* check len */
-        if ((4 + len) > (uint16_t)(CMD.header_sz - IMAGE_HEADER_OFFSET)) {
+        /* check len (compare in a 32-bit domain: a uint16_t cast of the
+         * header budget wraps for headers >= 64 KiB and rejects every
+         * field) */
+        if ((uint32_t)(4 + len) >
+            (uint32_t)(CMD.header_sz - IMAGE_HEADER_OFFSET)) {
             fprintf(stderr, "This field too large to fit into header "
                 "(%d > %d)\n",
                 (int)(4 + len), (int)(CMD.header_sz - IMAGE_HEADER_OFFSET));
@@ -427,6 +488,7 @@ static int load_key_ecc(int sign_type, uint32_t curve_sz, int curve_id,
     uint32_t idx;
     uint32_t qxSz = curve_sz;
     uint32_t qySz = curve_sz;
+    struct signing_key *k = key_obj(secondary);
 
     *pubkey_sz = curve_sz * 2;
     *pubkey = malloc(*pubkey_sz); /* assume malloc works */
@@ -434,7 +496,7 @@ static int load_key_ecc(int sign_type, uint32_t curve_sz, int curve_id,
         printf("Pubkey malloc error!\n");
         return -1;
     }
-    initRet = ret = wc_ecc_init(&key.ecc);
+    initRet = ret = wc_ecc_init(&k->ecc);
     if (CMD.manual_sign || CMD.sha_only) {
         /* raw (public x + public y) */
         if (*key_buffer_sz == (curve_sz * 2)) {
@@ -444,16 +506,16 @@ static int load_key_ecc(int sign_type, uint32_t curve_sz, int curve_id,
         else {
             if (ret == 0) {
                 idx = 0;
-                ret = wc_EccPublicKeyDecode(*key_buffer, &idx, &key.ecc,
+                ret = wc_EccPublicKeyDecode(*key_buffer, &idx, &k->ecc,
                     *key_buffer_sz);
             }
 
             /* we could decode another type of key in auto so check */
-            if (ret == 0 && key.ecc.dp->id != curve_id) {
+            if (ret == 0 && k->ecc.dp->id != curve_id) {
                 ret = -1;
             }
             if (ret == 0) {
-                ret = wc_ecc_export_public_raw(&key.ecc,
+                ret = wc_ecc_export_public_raw(&k->ecc,
                     *pubkey, &qxSz,           /* public x */
                     *pubkey + curve_sz, &qySz /* public y */
                 );
@@ -465,7 +527,7 @@ static int load_key_ecc(int sign_type, uint32_t curve_sz, int curve_id,
         memcpy(*pubkey, *key_buffer, *pubkey_sz);
 
         if (ret == 0) {
-            ret = wc_ecc_import_unsigned(&key.ecc,
+            ret = wc_ecc_import_unsigned(&k->ecc,
                 *key_buffer,                    /* public x */
                 (*key_buffer) + curve_sz,       /* public y */
                 (*key_buffer) + (curve_sz * 2), /* private d */
@@ -481,15 +543,15 @@ static int load_key_ecc(int sign_type, uint32_t curve_sz, int curve_id,
     else {
         if (ret == 0) {
             idx = 0;
-            ret = wc_EccPrivateKeyDecode(*key_buffer, &idx, &key.ecc,
+            ret = wc_EccPrivateKeyDecode(*key_buffer, &idx, &k->ecc,
                 *key_buffer_sz);
         }
         /* we could decode another type of key in auto so check */
-        if (ret == 0 && key.ecc.dp->id != curve_id) {
+        if (ret == 0 && k->ecc.dp->id != curve_id) {
             ret = -1;
         }
         if (ret == 0) {
-            ret = wc_ecc_export_public_raw(&key.ecc,
+            ret = wc_ecc_export_public_raw(&k->ecc,
                 *pubkey, &qxSz,           /* public x */
                 *pubkey + curve_sz, &qySz /* public y */
             );
@@ -501,7 +563,7 @@ static int load_key_ecc(int sign_type, uint32_t curve_sz, int curve_id,
     }
 
     if (ret != 0 && initRet == 0) {
-        wc_ecc_free(&key.ecc);
+        wc_ecc_free(&k->ecc);
     }
     if (ret != 0) {
         free(*pubkey);
@@ -533,6 +595,7 @@ static int load_key_rsa(int sign_type, uint32_t rsa_keysz, uint32_t rsa_pubkeysz
     int initRet = -1;
     uint32_t idx;
     uint32_t keySzOut = 0;
+    struct signing_key *k = key_obj(secondary);
 
     if (CMD.manual_sign || CMD.sha_only) {
         /* Allocate and copy pubkey instead of using key_buffer directly */
@@ -557,15 +620,15 @@ static int load_key_rsa(int sign_type, uint32_t rsa_keysz, uint32_t rsa_pubkeysz
         ret = 0;
     }
     else {
-        initRet = ret = wc_InitRsaKey(&key.rsa, NULL);
+        initRet = ret = wc_InitRsaKey(&k->rsa, NULL);
         if (ret == 0) {
             idx = 0;
-            ret = wc_RsaPrivateKeyDecode(*key_buffer, &idx, &key.rsa,
+            ret = wc_RsaPrivateKeyDecode(*key_buffer, &idx, &k->rsa,
                 *key_buffer_sz);
         }
 
         if (ret == 0) {
-            ret = wc_RsaKeyToPublicDer(&key.rsa, *key_buffer, *key_buffer_sz);
+            ret = wc_RsaKeyToPublicDer(&k->rsa, *key_buffer, *key_buffer_sz);
         }
 
         if (ret > 0) {
@@ -576,7 +639,7 @@ static int load_key_rsa(int sign_type, uint32_t rsa_keysz, uint32_t rsa_pubkeysz
                 printf("Pubkey malloc error!\n");
                 ret = -1;
                 if (initRet == 0) {
-                    wc_FreeRsaKey(&key.rsa);
+                    wc_FreeRsaKey(&k->rsa);
                 }
                 return -1;
             }
@@ -585,11 +648,11 @@ static int load_key_rsa(int sign_type, uint32_t rsa_keysz, uint32_t rsa_pubkeysz
         }
 
         if (ret == 0) {
-            keySzOut = wc_RsaEncryptSize(&key.rsa);
+            keySzOut = wc_RsaEncryptSize(&k->rsa);
         }
 
         if (ret != 0 && initRet == 0) {
-            wc_FreeRsaKey(&key.rsa);
+            wc_FreeRsaKey(&k->rsa);
         }
 
         if (ret == 0 || CMD.sign != SIGN_AUTO) {
@@ -620,9 +683,12 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
     word32 pub_sz = 0;
     int sign = CMD.sign;
     const char *key_file = CMD.key_file;
+    struct signing_key *k = key_obj(secondary);
 
     /* open and load key buffer */
     *key_buffer = NULL;
+    *pubkey = NULL;
+    *pubkey_sz = 0;
     if (secondary) {
         key_file = CMD.secondary_key_file;
         sign = CMD.secondary_sign;
@@ -633,6 +699,8 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
         printf("Open key file %s failed\n", key_file);
         goto failure;
     }
+    /* Unbuffered: keep no libc-owned copy of the private key bytes. */
+    setvbuf(f, NULL, _IONBF, 0);
     fseek(f, 0, SEEK_END);
     *key_buffer_sz = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -641,6 +709,8 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
         io_sz = (int)fread(*key_buffer, 1, *key_buffer_sz, f);
         if (io_sz != (int)*key_buffer_sz) {
             printf("Key file read error!\n");
+            fclose(f);
+            f = NULL;
             goto failure;
         }
     }
@@ -674,20 +744,20 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
                     ret = 0;
                 }
                 else {
-                    initRet = ret = wc_ed25519_init(&key.ed);
+                    initRet = ret = wc_ed25519_init(&k->ed);
                     if (ret == 0) {
                         idx = 0;
                         ret = wc_Ed25519PublicKeyDecode(*key_buffer, &idx,
-                            &key.ed, *key_buffer_sz);
+                            &k->ed, *key_buffer_sz);
                     }
                     if (ret == 0) {
-                        ret = wc_ed25519_export_public(&key.ed, *pubkey,
+                        ret = wc_ed25519_export_public(&k->ed, *pubkey,
                             pubkey_sz);
                     }
 
                     /* free key no matter what */
                     if (initRet == 0)
-                        wc_ed25519_free(&key.ed);
+                        wc_ed25519_free(&k->ed);
                 }
             }
             /* raw only */
@@ -695,19 +765,21 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
                 memcpy(*pubkey, *key_buffer + ED25519_KEY_SIZE,
                     KEYSTORE_PUBKEY_SIZE_ED25519);
 
-                initRet = ret = wc_ed25519_init(&key.ed);
+                initRet = ret = wc_ed25519_init(&k->ed);
                 if (ret == 0) {
                     ret = wc_ed25519_import_private_key(*key_buffer,
-                            ED25519_KEY_SIZE, *pubkey, *pubkey_sz, &key.ed);
+                            ED25519_KEY_SIZE, *pubkey, *pubkey_sz, &k->ed);
                 }
 
                 /* only free the key if we failed after allocating */
                 if (ret != 0 && initRet == 0)
-                    wc_ed25519_free(&key.ed);
+                    wc_ed25519_free(&k->ed);
             }
 
-            if (ret != 0)
+            if (ret != 0) {
                 free(*pubkey);
+                *pubkey = NULL;
+            }
 
             /* break if we succeed or are not using auto */
             if (ret == 0 || sign != SIGN_AUTO) {
@@ -740,20 +812,20 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
                     ret = 0;
                 }
                 else {
-                    initRet = ret = wc_ed448_init(&key.ed4);
+                    initRet = ret = wc_ed448_init(&k->ed4);
                     if (ret == 0) {
                         idx = 0;
                         ret = wc_Ed448PublicKeyDecode(*key_buffer, &idx,
-                            &key.ed4, *key_buffer_sz);
+                            &k->ed4, *key_buffer_sz);
                     }
                     if (ret == 0) {
-                        ret = wc_ed448_export_public(&key.ed4, *pubkey,
+                        ret = wc_ed448_export_public(&k->ed4, *pubkey,
                             pubkey_sz);
                     }
 
                     /* free key no matter what */
                     if (initRet == 0)
-                        wc_ed448_free(&key.ed4);
+                        wc_ed448_free(&k->ed4);
 
                 }
             }
@@ -762,19 +834,21 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
                 memcpy(*pubkey, *key_buffer + ED448_KEY_SIZE,
                     ED448_PUB_KEY_SIZE);
 
-                initRet = ret = wc_ed448_init(&key.ed4);
+                initRet = ret = wc_ed448_init(&k->ed4);
                 if (ret == 0) {
                     ret = wc_ed448_import_private_key(*key_buffer,
-                        ED448_KEY_SIZE, *pubkey, *pubkey_sz, &key.ed4);
+                        ED448_KEY_SIZE, *pubkey, *pubkey_sz, &k->ed4);
                 }
 
                 /* only free the key if we failed after allocating */
                 if (ret != 0 && initRet == 0)
-                    wc_ed448_free(&key.ed4);
+                    wc_ed448_free(&k->ed4);
             }
 
-            if (ret != 0)
+            if (ret != 0) {
                 free(*pubkey);
+                *pubkey = NULL;
+            }
 
             /* break if we succeed or are not using auto */
             if (ret == 0 || sign != SIGN_AUTO) {
@@ -913,7 +987,7 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
              * If both priv/pub are present:
              *  - The first ?? bytes is the private key.
              *  - The next 68 bytes is the public key. */
-            ret = wc_XmssKey_GetPrivLen(&key.xmss, &priv_sz);
+            ret = wc_XmssKey_GetPrivLen(&k->xmss, &priv_sz);
             if (ret != 0 || priv_sz <= 0) {
                 printf("error: wc_XmssKey_GetPrivLen returned %d\n", ret);
                 break;
@@ -955,7 +1029,7 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
             }
             FALL_THROUGH; /* we didn't solve the key, keep trying */
         case SIGN_ML_DSA:
-            ret = wc_MlDsaKey_GetPubLen(&key.ml_dsa, (int *)&pub_sz);
+            ret = wc_MlDsaKey_GetPubLen(&k->ml_dsa, (int *)&pub_sz);
 
             if (ret != 0 || pub_sz <= 0) {
                 printf("error: wc_MlDsaKey_GetPubLen returned %d\n", ret);
@@ -964,7 +1038,7 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
 
             /* Get the ML-DSA private key length. This API returns
              * the public + private length. */
-            ret = wc_MlDsaKey_GetPrivLen(&key.ml_dsa, (int*)&priv_sz);
+            ret = wc_MlDsaKey_GetPrivLen(&k->ml_dsa, (int*)&priv_sz);
 
             if (ret != 0 || priv_sz <= 0) {
                 printf("error: wc_MlDsaKey_GetPrivLen returned %d\n", ret);
@@ -985,7 +1059,7 @@ static uint8_t *load_key(uint8_t **key_buffer, uint32_t *key_buffer_sz,
 
             if (*key_buffer_sz == (priv_sz + pub_sz)) {
                 /* priv + pub */
-                ret = wc_MlDsaKey_ImportPrivRaw(&key.ml_dsa, *key_buffer,
+                ret = wc_MlDsaKey_ImportPrivRaw(&k->ml_dsa, *key_buffer,
                                                 priv_sz);
                 *pubkey_sz = pub_sz;
                 *pubkey = malloc(*pubkey_sz);
@@ -1035,6 +1109,11 @@ failure:
         zero_and_free(*key_buffer, *key_buffer_sz);
         *key_buffer = NULL;
     }
+    if (*pubkey != NULL) {
+        free(*pubkey);
+        *pubkey = NULL;
+    }
+    *pubkey_sz = 0;
     return NULL;
 }
 
@@ -1045,8 +1124,8 @@ static int sign_digest(int sign, int hash_algo,
 {
     int ret;
     WC_RNG rng;
+    struct signing_key *k = key_obj(secondary);
     printf("Sign: %02x\n", sign >> 8);
-    (void)secondary;
 
     if ((ret = wc_InitRng(&rng)) != 0) {
         return ret;
@@ -1054,12 +1133,12 @@ static int sign_digest(int sign, int hash_algo,
 
     if (sign == SIGN_ED25519) {
         ret = wc_ed25519_sign_msg(digest, digest_sz, signature,
-                signature_sz, &key.ed);
+                signature_sz, &k->ed);
     }
     else
     if (sign == SIGN_ED448) {
         ret = wc_ed448_sign_msg(digest, digest_sz, signature,
-                signature_sz, &key.ed4, NULL, 0);
+                signature_sz, &k->ed4, NULL, 0);
     }
     else
     if (sign == SIGN_ECC256 ||
@@ -1076,7 +1155,7 @@ static int sign_digest(int sign, int hash_algo,
         memset(signature, 0, *signature_sz);
 
         mp_init(&r); mp_init(&s);
-        ret = wc_ecc_sign_hash_ex(digest, digest_sz, &rng, &key.ecc,
+        ret = wc_ecc_sign_hash_ex(digest, digest_sz, &rng, &k->ecc,
                 &r, &s);
         if (ret == 0) {
             word32 rSz, sSz;
@@ -1112,7 +1191,7 @@ static int sign_digest(int sign, int hash_algo,
             enchash = buf;
         }
         ret = wc_RsaSSL_Sign(enchash, enchash_sz, signature, *signature_sz,
-                &key.rsa, &rng);
+                &k->rsa, &rng);
         if (ret > 0) {
             *signature_sz = ret;
             ret = 0;
@@ -1133,13 +1212,15 @@ static int sign_digest(int sign, int hash_algo,
             mgf = WC_MGF1SHA384;
         } else {
             fprintf(stderr, "RSA-PSS requires SHA-256 or SHA-384\n");
-            return -1;
+            ret = -1;
         }
-        ret = wc_RsaPSS_Sign(digest, digest_sz, signature, *signature_sz,
-                hash_type, mgf, &key.rsa, &rng);
-        if (ret > 0) {
-            *signature_sz = ret;
-            ret = 0;
+        if (ret == 0) {
+            ret = wc_RsaPSS_Sign(digest, digest_sz, signature, *signature_sz,
+                    hash_type, mgf, &k->rsa, &rng);
+            if (ret > 0) {
+                *signature_sz = ret;
+                ret = 0;
+            }
         }
     }
     else
@@ -1149,18 +1230,18 @@ static int sign_digest(int sign, int hash_algo,
             key_file = CMD.secondary_key_file;
         }
         /* Set the callbacks, so LMS can update the private key while signing */
-        ret = wc_LmsKey_SetWriteCb(&key.lms, lms_write_key);
+        ret = wc_LmsKey_SetWriteCb(&k->lms, lms_write_key);
         if (ret == 0) {
-            ret = wc_LmsKey_SetReadCb(&key.lms, lms_read_key);
+            ret = wc_LmsKey_SetReadCb(&k->lms, lms_read_key);
         }
         if (ret == 0) {
-            ret = wc_LmsKey_SetContext(&key.lms, (void*)key_file);
+            ret = wc_LmsKey_SetContext(&k->lms, (void*)key_file);
         }
         if (ret == 0) {
-            ret = wc_LmsKey_Reload(&key.lms);
+            ret = wc_LmsKey_Reload(&k->lms);
         }
         if (ret == 0) {
-            ret = wc_LmsKey_Sign(&key.lms, signature, signature_sz, digest,
+            ret = wc_LmsKey_Sign(&k->lms, signature, signature_sz, digest,
                                  digest_sz);
         }
         if (ret != 0) {
@@ -1173,25 +1254,25 @@ static int sign_digest(int sign, int hash_algo,
         if (secondary) {
             key_file = CMD.secondary_key_file;
         }
-        ret = wc_XmssKey_Init(&key.xmss, NULL, INVALID_DEVID);
+        ret = wc_XmssKey_Init(&k->xmss, NULL, INVALID_DEVID);
         /* Set the callbacks, so XMSS can update the private key while signing */
         if (ret == 0) {
-            ret = wc_XmssKey_SetWriteCb(&key.xmss, xmss_write_key);
+            ret = wc_XmssKey_SetWriteCb(&k->xmss, xmss_write_key);
         }
         if (ret == 0) {
-            ret = wc_XmssKey_SetReadCb(&key.xmss, xmss_read_key);
+            ret = wc_XmssKey_SetReadCb(&k->xmss, xmss_read_key);
         }
         if (ret == 0) {
-            ret = wc_XmssKey_SetContext(&key.xmss, (void*)key_file);
+            ret = wc_XmssKey_SetContext(&k->xmss, (void*)key_file);
         }
         if (ret == 0) {
-            ret = wc_XmssKey_SetParamStr(&key.xmss, WOLFBOOT_XMSS_PARAMS);
+            ret = wc_XmssKey_SetParamStr(&k->xmss, WOLFBOOT_XMSS_PARAMS);
         }
         if (ret == 0) {
-            ret = wc_XmssKey_Reload(&key.xmss);
+            ret = wc_XmssKey_Reload(&k->xmss);
         }
         if (ret == 0) {
-            ret = wc_XmssKey_Sign(&key.xmss, signature, signature_sz, digest,
+            ret = wc_XmssKey_Sign(&k->xmss, signature, signature_sz, digest,
                                  digest_sz);
         }
         if (ret != 0) {
@@ -1202,7 +1283,7 @@ static int sign_digest(int sign, int hash_algo,
     if (sign == SIGN_ML_DSA) {
         /* Nothing else to do, ready to sign. */
         if (ret == 0) {
-            ret = wc_MlDsaKey_SignCtx(&key.ml_dsa, NULL, 0,
+            ret = wc_MlDsaKey_SignCtx(&k->ml_dsa, NULL, 0,
                                       signature, signature_sz,
                                       digest, digest_sz, &rng);
         }
@@ -1254,6 +1335,156 @@ static uint32_t header_digest_size(int hash_algo)
     }
 }
 
+/* Hash the first `totalsize` header-field bytes of a DTB with the image hash
+ * algorithm (the same span the bootloader hashes). Applies at least fdt_open()'s
+ * checks (magic, version range); intentionally stricter. Writes digest to out,
+ * length to out_sz. Returns 0 on success, -1 on error. */
+static int dts_hash_file(const char *file, int hash_algo, uint8_t *out,
+    uint32_t *out_sz)
+{
+    /* FDT header (big-endian, 40B): magic@0, totalsize@4, version@0x14,
+     * last_comp_version@0x18. */
+    const uint32_t FDT_MAGIC = 0xd00dfeedU;
+    const uint32_t FDT_HDR_SIZE = 40U;
+    /* Must track include/fdt.h's FDT_SUPPORTED_VERSION: the bootloader
+     * parser accepts v17 and later only, so signing a v16 blob here would
+     * produce an image that fails to boot. */
+    const uint32_t FDT_FIRST_VER = 0x11U;
+    const uint32_t FDT_LAST_COMP_VER = 0x11U;
+    FILE *f;
+    uint8_t hdr[40];
+    uint8_t rbuf[4096];
+    uint32_t magic, total, version, last_comp, remain;
+    long fsz;
+    size_t rd, want;
+    int ret = -1;
+
+    f = fopen(file, "rb");
+    if (f == NULL) {
+        fprintf(stderr, "Cannot open device tree file %s: %s\n",
+            file, strerror(errno));
+        return -1;
+    }
+
+    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) {
+        fprintf(stderr, "Device tree file %s too small for an FDT header\n",
+            file);
+        fclose(f);
+        return -1;
+    }
+    magic = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) |
+            ((uint32_t)hdr[2] << 8)  | (uint32_t)hdr[3];
+    total = ((uint32_t)hdr[4] << 24) | ((uint32_t)hdr[5] << 16) |
+            ((uint32_t)hdr[6] << 8)  | (uint32_t)hdr[7];
+    version = ((uint32_t)hdr[0x14] << 24) | ((uint32_t)hdr[0x15] << 16) |
+              ((uint32_t)hdr[0x16] << 8)  | (uint32_t)hdr[0x17];
+    last_comp = ((uint32_t)hdr[0x18] << 24) | ((uint32_t)hdr[0x19] << 16) |
+                ((uint32_t)hdr[0x1A] << 8) | (uint32_t)hdr[0x1B];
+    if (magic != FDT_MAGIC) {
+        fprintf(stderr, "Not a valid device tree (bad FDT magic): %s\n", file);
+        fclose(f);
+        return -1;
+    }
+    if (total < FDT_HDR_SIZE || version < FDT_FIRST_VER ||
+            last_comp > FDT_LAST_COMP_VER) {
+        fprintf(stderr, "Unsupported device tree (version %u, comp %u, "
+            "totalsize %u): %s -- the bootloader would reject it\n",
+            version, last_comp, total, file);
+        fclose(f);
+        return -1;
+    }
+    /* A file shorter than the declared totalsize can't be hashed as
+     * declared (reject);
+     * a longer one (trailing padding) is hashed over the declared span (warn). */
+    fseek(f, 0, SEEK_END);
+    fsz = ftell(f);
+    if (fsz >= 0 && (uint32_t)fsz < total) {
+        fprintf(stderr, "Device tree file %s is %ld bytes but its FDT totalsize "
+            "is %u (truncated)\n", file, fsz, total);
+        fclose(f);
+        return -1;
+    }
+    if (fsz >= 0 && (uint32_t)fsz != total) {
+        fprintf(stderr, "Warning: device tree file %s is %ld bytes but its FDT "
+            "totalsize is %u; hashing the first %u bytes\n",
+            file, fsz, total, total);
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return -1;
+    }
+    remain = total;
+
+    if (hash_algo == HASH_SHA256) {
+    #ifndef NO_SHA256
+        wc_Sha256 sha;
+        ret = wc_InitSha256_ex(&sha, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            while (remain > 0) {
+                want = (remain < sizeof(rbuf)) ? remain : sizeof(rbuf);
+                rd = fread(rbuf, 1, want, f);
+                if (rd == 0) { ret = -1; break; }
+                ret = wc_Sha256Update(&sha, rbuf, (word32)rd);
+                if (ret != 0) break;
+                remain -= (uint32_t)rd;
+            }
+            if (ret == 0)
+                ret = wc_Sha256Final(&sha, out);
+            wc_Sha256Free(&sha);
+        }
+        *out_sz = HDR_SHA256_LEN;
+    #endif
+    }
+    else if (hash_algo == HASH_SHA384) {
+    #ifndef NO_SHA384
+        wc_Sha384 sha;
+        ret = wc_InitSha384_ex(&sha, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            while (remain > 0) {
+                want = (remain < sizeof(rbuf)) ? remain : sizeof(rbuf);
+                rd = fread(rbuf, 1, want, f);
+                if (rd == 0) { ret = -1; break; }
+                ret = wc_Sha384Update(&sha, rbuf, (word32)rd);
+                if (ret != 0) break;
+                remain -= (uint32_t)rd;
+            }
+            if (ret == 0)
+                ret = wc_Sha384Final(&sha, out);
+            wc_Sha384Free(&sha);
+        }
+        *out_sz = HDR_SHA384_LEN;
+    #endif
+    }
+    else if (hash_algo == HASH_SHA3) {
+    #ifdef WOLFSSL_SHA3
+        wc_Sha3 sha;
+        ret = wc_InitSha3_384(&sha, NULL, INVALID_DEVID);
+        if (ret == 0) {
+            while (remain > 0) {
+                want = (remain < sizeof(rbuf)) ? remain : sizeof(rbuf);
+                rd = fread(rbuf, 1, want, f);
+                if (rd == 0) { ret = -1; break; }
+                ret = wc_Sha3_384_Update(&sha, rbuf, (word32)rd);
+                if (ret != 0) break;
+                remain -= (uint32_t)rd;
+            }
+            if (ret == 0)
+                ret = wc_Sha3_384_Final(&sha, out);
+            wc_Sha3_384_Free(&sha);
+        }
+        *out_sz = HDR_SHA3_384_LEN;
+    #endif
+    }
+
+    fclose(f);
+    return ret;
+}
+
+/* Test hook: the content header_idx from the last successful make_header_ex()
+ * (recorded before the 0xFF padding), so unit tests can compare the writer
+ * against header_required_size() without the auto-grow exit(1) path. */
+static uint32_t test_last_header_idx;
+
 static uint32_t header_required_size(int is_diff, uint32_t cert_chain_sz,
     uint32_t secondary_key_sz)
 {
@@ -1288,6 +1519,11 @@ static uint32_t header_required_size(int is_diff, uint32_t cert_chain_sz,
     for (i = 0; i < CMD.custom_tlvs; i++) {
         header_size_align_8(&idx);
         header_size_append_tag(&idx, CMD.custom_tlv[i].len);
+    }
+
+    if (CMD.dts_file != NULL && digest_sz > 0U) {
+        header_size_align_8(&idx);
+        header_size_append_tag(&idx, digest_sz);
     }
 
     if (cert_chain_sz > 0U) {
@@ -1341,7 +1577,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
         uint8_t *base_hash, uint32_t base_hash_sz)
 {
     uint32_t header_idx;
-    uint8_t *header;
+    uint8_t *header = NULL;
     FILE *f = NULL, *f2 = NULL, *fek = NULL, *fef = NULL;
     uint32_t fw_version32;
     struct stat attrib;
@@ -1367,42 +1603,57 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
 
     /* Check certificate chain file size before allocating header, and adjust
      * header size if needed */
-    if (CMD.cert_chain_file != NULL) {
-        struct stat file_stat;
+    if ((CMD.cert_chain_file != NULL) || (CMD.custom_tlvs > 0) ||
+            (CMD.dts_file != NULL)) {
+        uint32_t hdr_cert_chain_sz = 0;
+        uint32_t required_space;
 
-        /* Get the file size */
-        if (stat(CMD.cert_chain_file, &file_stat) == 0) {
-            off_t chain_file_sz = file_stat.st_size;
-            uint32_t required_space;
-
-            if ((chain_file_sz < 0) ||
-                ((uintmax_t)chain_file_sz > (uintmax_t)UINT32_MAX)) {
-                printf("Warning: certificate chain file size is invalid (%jd)\n",
-                    (intmax_t)chain_file_sz);
-            }
-            else {
-                required_space = header_required_size(is_diff,
-                    (uint32_t)chain_file_sz, secondary_key_sz);
-
-                /* If the current header size is too small, increase it */
-                if (CMD.header_sz < required_space) {
-                    /* Round up to nearest power of 2 that can hold the chain */
-                    const uint32_t min_header_size = 256;
-                    uint32_t       new_size        = min_header_size;
-                    while (new_size < required_space) {
-                        new_size *= 2;
-                    }
-
-                    printf("Increasing header size from %u to %u bytes to fit "
-                        "certificate chain\n",
-                        CMD.header_sz, new_size);
-                    CMD.header_sz = new_size;
+        if (CMD.cert_chain_file != NULL) {
+            struct stat file_stat;
+            if (stat(CMD.cert_chain_file, &file_stat) == 0) {
+                off_t chain_file_sz = file_stat.st_size;
+                if (chain_file_sz < 0) {
+                    printf("Warning: certificate chain file size is invalid "
+                        "(%" PRIdMAX ")\n", (intmax_t)chain_file_sz);
+                }
+                else if ((uintmax_t)chain_file_sz > (uintmax_t)MAX_TLV_LEN) {
+                    printf("Error: Certificate chain too large for TLV encoding "
+                        "(%" PRIuMAX " > %u)\n", (uintmax_t)chain_file_sz, MAX_TLV_LEN);
+                    goto failure;
+                }
+                else {
+                    hdr_cert_chain_sz = (uint32_t)chain_file_sz;
                 }
             }
+            else {
+                printf("Warning: Could not stat certificate chain file %s: %s\n",
+                       CMD.cert_chain_file, strerror(errno));
+            }
         }
-        else {
-            printf("Warning: Could not stat certificate chain file %s: %s\n",
-                   CMD.cert_chain_file, strerror(errno));
+
+        required_space =
+            header_required_size(is_diff, hdr_cert_chain_sz, secondary_key_sz);
+
+        /* If the current header size is too small, increase it */
+        if (CMD.header_sz < required_space) {
+            /* Round up to nearest power of 2 that can hold all fields */
+            const uint32_t min_header_size = 256;
+            uint32_t       new_size        = min_header_size;
+            while (new_size < required_space) {
+                if (new_size > (UINT32_MAX / 2U)) {
+                    printf("Error: Header size overflow while sizing "
+                        "manifest header\n");
+                    goto failure;
+                }
+                new_size *= 2;
+            }
+
+            fprintf(stderr, "Warning: increasing header size from %u to %u "
+                "bytes to fit manifest header fields.\n"
+                "Warning: wolfBoot must be built with IMAGE_HEADER_SIZE=%u "
+                "or it will not find the firmware image.\n",
+                CMD.header_sz, new_size, new_size);
+            CMD.header_sz = new_size;
         }
     }
 
@@ -1424,6 +1675,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
     image_sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     fclose(f);
+    f = NULL; /* avoid a double fclose() if a later step jumps to 'failure' */
 
     /* Append Magic header (spells 'WOLF') */
     header_append_u32(header, &header_idx, WOLFBOOT_MAGIC);
@@ -1483,26 +1735,26 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
             ALIGN_8(header_idx);
             if (!base_hash) {
                 fprintf(stderr, "Base hash for delta image not found.\n");
-                exit(1);
+                goto failure;
             }
             if (CMD.hash_algo == HASH_SHA256) {
                 if (base_hash_sz != HDR_SHA256_LEN) {
                     fprintf(stderr, "Invalid base hash size for SHA256.\n");
-                    exit(1);
+                    goto failure;
                 }
                 header_append_tag(header, &header_idx, HDR_IMG_DELTA_BASE_HASH,
                         HDR_SHA256_LEN, base_hash);
             } else if (CMD.hash_algo == HASH_SHA384) {
                 if  (base_hash_sz != HDR_SHA384_LEN) {
                     fprintf(stderr, "Invalid base hash size for SHA384.\n");
-                    exit(1);
+                    goto failure;
                 }
                 header_append_tag(header, &header_idx, HDR_IMG_DELTA_BASE_HASH,
                         HDR_SHA384_LEN, base_hash);
             } else if (CMD.hash_algo == HASH_SHA3) {
                 if (base_hash_sz != HDR_SHA3_384_LEN) {
                     fprintf(stderr, "Invalid base hash size for SHA3-384.\n");
-                    exit(1);
+                    goto failure;
                 }
                 header_append_tag(header, &header_idx, HDR_IMG_DELTA_BASE_HASH,
                         HDR_SHA3_384_LEN, base_hash);
@@ -1513,6 +1765,21 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
     /* Add custom TLVs */
     if (CMD.custom_tlvs > 0) {
         uint32_t i;
+        /* A custom TLV reusing a built-in tag is serialized before the
+         * generated TLV and shadows it: wolfBoot_find_header() walks from the
+         * start and returns the first match. The device-tree digest (0x35) is
+         * the reserved tag reachable from --custom-tlv (tags >= 0x30); a
+         * custom 0x35 ahead of the --dts digest would make DTB verification
+         * use the operator-supplied value. Reject the collision. */
+        for (i = 0; i < CMD.custom_tlvs; i++) {
+            if (CMD.dts_file != NULL &&
+                CMD.custom_tlv[i].tag == HDR_DEVICE_TREE_DIGEST) {
+                fprintf(stderr,
+                    "Error: custom TLV tag 0x%04x is reserved for --dts\n",
+                    (unsigned)HDR_DEVICE_TREE_DIGEST);
+                goto failure;
+            }
+        }
         for (i = 0; i < CMD.custom_tlvs; i++) {
             /* require 8-byte alignment */
             /* The offset '4' takes into account 2B Tag + 2B Len, so that the
@@ -1530,6 +1797,21 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                     CMD.custom_tlv[i].len, CMD.custom_tlv[i].buffer);
             }
         }
+    }
+
+    /* Signature-covered digest of a raw (non-FIT) device tree. */
+    if (CMD.dts_file != NULL) {
+        uint8_t  dts_digest[48]; /* max digest */
+        uint32_t dts_digest_sz = 0;
+        if (dts_hash_file(CMD.dts_file, CMD.hash_algo, dts_digest,
+                &dts_digest_sz) != 0 || dts_digest_sz == 0) {
+            printf("Error hashing device tree file %s\n", CMD.dts_file);
+            goto failure;
+        }
+        ALIGN_8(header_idx);
+        header_append_tag(header, &header_idx, HDR_DEVICE_TREE_DIGEST,
+            (uint16_t)dts_digest_sz, dts_digest);
+        printf("Device tree digest (%u bytes) bound to image\n", dts_digest_sz);
     }
 
     /* Read certificate chain if provided */
@@ -1554,7 +1836,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
 
         if ((file_stat.st_size < 0) ||
             ((uintmax_t)file_stat.st_size > (uintmax_t)UINT32_MAX)) {
-            printf("Error: Invalid certificate chain file size (%jd)\n",
+            printf("Error: Invalid certificate chain file size (%" PRIdMAX ")\n",
                    (intmax_t)file_stat.st_size);
             fclose(f);
             f = NULL;
@@ -1562,10 +1844,10 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
         }
         cert_chain_sz = (uint32_t)file_stat.st_size;
 
-        if (cert_chain_sz > (uint32_t)UINT16_MAX) {
+        if (cert_chain_sz > (uint32_t)MAX_TLV_LEN) {
             printf("Error: Certificate chain too large for TLV encoding "
                    "(%u > %u)\n",
-                   cert_chain_sz, (unsigned int)UINT16_MAX);
+                   cert_chain_sz, (unsigned int)MAX_TLV_LEN);
             fclose(f);
             f = NULL;
             goto failure;
@@ -1680,7 +1962,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                 if (read_sz > 32)
                     read_sz = 32;
                 io_sz = (int)fread(buf, 1, read_sz, f);
-                if ((io_sz < 0) && !feof(f)) {
+                if (io_sz != (int)read_sz) {
                     ret = -1;
                     break;
                 }
@@ -1688,6 +1970,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                 pos += read_sz;
             }
             fclose(f);
+            f = NULL;
             if (ret == 0) {
                 wc_Sha256Final(&sha, digest);
                 digest_sz = HDR_SHA256_LEN;
@@ -1756,7 +2039,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                 if (read_sz > 32)
                     read_sz = 32;
                 io_sz = (int)fread(buf, 1, read_sz, f);
-                if ((io_sz < 0) && !feof(f)) {
+                if (io_sz != (int)read_sz) {
                     ret = -1;
                     break;
                 }
@@ -1764,6 +2047,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                 pos += read_sz;
             }
             fclose(f);
+            f = NULL;
             if (ret == 0) {
                 wc_Sha384Final(&sha, digest);
                 digest_sz = HDR_SHA384_LEN;
@@ -1830,7 +2114,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                 if (read_sz > 128)
                     read_sz = 128;
                 io_sz = (int)fread(buf, 1, read_sz, f);
-                if ((io_sz < 0) && !feof(f)) {
+                if (io_sz != (int)read_sz) {
                     ret = -1;
                     break;
                 }
@@ -1838,6 +2122,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                 pos += read_sz;
             }
             fclose(f);
+            f = NULL;
             if (ret == 0) {
                 ret = wc_Sha3_384_Final(&sha, digest);
                 digest_sz = HDR_SHA3_384_LEN;
@@ -2045,6 +2330,8 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
         }
     } /* end if(sign != NO_SIGN) */
 
+    test_last_header_idx = header_idx;
+
     /* Add padded header at end */
     while (header_idx < CMD.header_sz) {
         header[header_idx++] = 0xFF;
@@ -2052,8 +2339,18 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
 
     /* Check if signed image fits in partition */
     {
+        const char *psize_name = "WOLFBOOT_PARTITION_SIZE";
         const char *env_psize = getenv("WOLFBOOT_PARTITION_SIZE");
         const char *env_ssize = getenv("WOLFBOOT_SECTOR_SIZE");
+        if (CMD.self_update) {
+            /* self-update images are staged in the UPDATE partition, which
+             * may be larger than BOOT (monolithic self-update) */
+            const char *env_usize = getenv("WOLFBOOT_PARTITION_UPDATE_SIZE");
+            if (env_usize && *env_usize) {
+                env_psize = env_usize;
+                psize_name = "WOLFBOOT_PARTITION_UPDATE_SIZE";
+            }
+        }
         if (env_psize && *env_psize) {
             char *endptr;
             unsigned long tmp;
@@ -2066,8 +2363,8 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
             tmp = strtoul(env_psize, &endptr, 0);
             if (endptr == env_psize || *endptr != '\0' ||
                     errno == ERANGE || tmp == 0 || tmp > UINT32_MAX) {
-                printf("Error: Invalid WOLFBOOT_PARTITION_SIZE '%s'\n",
-                    env_psize);
+                printf("Error: Invalid %s '%s'\n", psize_name, env_psize);
+                ret = -1;
                 goto failure;
             }
             partition_sz = (uint32_t)tmp;
@@ -2079,6 +2376,7 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                         errno == ERANGE || tmp == 0 || tmp > UINT32_MAX) {
                     printf("Error: Invalid WOLFBOOT_SECTOR_SIZE '%s'\n",
                         env_ssize);
+                    ret = -1;
                     goto failure;
                 }
                 sector_sz = (uint32_t)tmp;
@@ -2100,17 +2398,18 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                 if (total_img_sz > max_img_sz) {
                     if (sector_sz < partition_sz) {
                         printf("Error: Image size %u (header %u + firmware %u) "
-                            "exceeds max %u (partition %u - %d x sector %u)\n",
+                            "exceeds max %u (%s %u - %d x sector %u)\n",
                             total_img_sz, CMD.header_sz, image_sz,
-                            max_img_sz, partition_sz,
+                            max_img_sz, psize_name, partition_sz,
                             nvm_writeonce ? 2 : 1,
                             sector_sz);
                     } else {
                         printf("Error: Image size %u (header %u + firmware %u) "
-                            "exceeds max %u (partition %u)\n",
+                            "exceeds max %u (%s %u)\n",
                             total_img_sz, CMD.header_sz, image_sz,
-                            max_img_sz, partition_sz);
+                            max_img_sz, psize_name, partition_sz);
                     }
+                    ret = -1;
                     goto failure;
                 }
             }
@@ -2175,6 +2474,8 @@ static int make_header_ex(int is_diff, uint8_t *pubkey, uint32_t pubkey_sz,
                     CMD.encrypt_key_file, strerror(errno));
             goto failure;
         }
+        /* Unbuffered: keep no libc-owned copy of the key/IV bytes. */
+        setvbuf(fek, NULL, _IONBF, 0);
         ret = (int)fread(key, 1, keySz, fek);
         if (ret != keySz) {
             fprintf(stderr, "Error reading key from %s\n", CMD.encrypt_key_file);
@@ -2520,35 +2821,42 @@ static int base_diff(const char *f_base, uint8_t *pubkey, uint32_t pubkey_sz, in
         len3++;
     }
     /* make_header_delta() below calls make_header_ex(is_diff=1), which may grow
-     * CMD.header_sz to fit the delta TLVs plus certificate chain. Resolve that
-     * expansion here, using the same logic, so patch_inv_off reflects the header
-     * size actually written; otherwise HDR_IMG_DELTA_INVERSE would encode a
-     * stale, too-small offset and break inverse-patch rollback. */
-    if (CMD.cert_chain_file != NULL) {
-        struct stat cc_stat;
-        if ((stat(CMD.cert_chain_file, &cc_stat) == 0) &&
-            (cc_stat.st_size >= 0)) {
-            if ((uintmax_t)cc_stat.st_size > (uintmax_t)UINT16_MAX) {
-                printf("Error: Certificate chain too large for TLV encoding "
-                    "(%ju > %u)\n", (uintmax_t)cc_stat.st_size, UINT16_MAX);
-                goto cleanup;
-            }
-            else {
-                uint32_t required_space = header_required_size(1,
-                    (uint32_t)cc_stat.st_size, 0);
-                if (CMD.header_sz < required_space) {
-                    uint32_t new_size = 256;
-                    while (new_size < required_space) {
-                        if (new_size > (UINT32_MAX / 2U)) {
-                            printf("Error: Header size overflow while sizing "
-                                "certificate chain\n");
-                            goto cleanup;
-                        }
-                        new_size *= 2;
-                    }
-                    CMD.header_sz = new_size;
+     * CMD.header_sz to fit the delta TLVs, custom TLVs and certificate chain.
+     * Resolve that expansion here, using the same logic, so patch_inv_off
+     * reflects the header size actually written; otherwise HDR_IMG_DELTA_INVERSE
+     * would encode a stale, too-small offset and break inverse-patch rollback. */
+    if ((CMD.cert_chain_file != NULL) || (CMD.custom_tlvs > 0)) {
+        uint32_t cert_chain_sz = 0;
+        uint32_t required_space;
+        if (CMD.cert_chain_file != NULL) {
+            struct stat cc_stat;
+            if ((stat(CMD.cert_chain_file, &cc_stat) == 0) &&
+                (cc_stat.st_size >= 0)) {
+                if ((uintmax_t)cc_stat.st_size > (uintmax_t)MAX_TLV_LEN) {
+                    printf("Error: Certificate chain too large for TLV encoding "
+                        "(%" PRIuMAX " > %u)\n", (uintmax_t)cc_stat.st_size, MAX_TLV_LEN);
+                    goto cleanup;
                 }
+                cert_chain_sz = (uint32_t)cc_stat.st_size;
             }
+        }
+        required_space = header_required_size(1, cert_chain_sz, 0);
+        if (CMD.header_sz < required_space) {
+            uint32_t new_size = 256;
+            while (new_size < required_space) {
+                if (new_size > (UINT32_MAX / 2U)) {
+                    printf("Error: Header size overflow while sizing "
+                        "manifest header\n");
+                    goto cleanup;
+                }
+                new_size *= 2;
+            }
+            fprintf(stderr, "Warning: increasing header size from %u to %u "
+                "bytes to fit manifest header fields.\n"
+                "Warning: wolfBoot must be built with IMAGE_HEADER_SIZE=%u "
+                "or it will not find the firmware image.\n",
+                CMD.header_sz, new_size, new_size);
+            CMD.header_sz = new_size;
         }
     }
     patch_inv_off = (uint32_t)len3 + CMD.header_sz;
@@ -2661,6 +2969,7 @@ uint64_t arg2num(const char *arg, size_t len)
             break;
         case 4:
             ret &= 0xFFFFFFFF;
+            break;
         case 8:
             break;
         default:
@@ -2669,12 +2978,169 @@ uint64_t arg2num(const char *arg, size_t len)
     return ret;
 }
 
+/* Load a DER-encoded public key (SubjectPublicKeyInfo), detect the algorithm
+ * and extract the public key in the same format used by the keystore:
+ * X||Y for ECC, raw bytes for Ed25519/Ed448, public key DER for RSA.
+ * On success stores a malloc'd buffer in *out and its size in *out_sz.
+ */
+static int extract_pubkey_from_der(const char *fname, uint8_t **out,
+    uint16_t *out_sz)
+{
+    FILE *f;
+    long fsz;
+    size_t rd;
+    uint8_t *der;
+    uint8_t *buf = NULL;
+    int len = -1;
+    const char *ktype = NULL;
+    word32 idx;
+
+    f = fopen(fname, "rb");
+    if (f == NULL) {
+        fprintf(stderr, "Cannot open public key DER file %s: %s\n",
+            fname, strerror(errno));
+        return -1;
+    }
+    fseek(f, 0, SEEK_END);
+    fsz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if ((fsz <= 0) || (fsz > (long)MAX_TLV_LEN)) {
+        fprintf(stderr, "Invalid public key DER file size %ld: %s\n",
+            fsz, fname);
+        fclose(f);
+        return -1;
+    }
+    der = malloc((size_t)fsz);
+    if (der == NULL) {
+        fprintf(stderr, "Error malloc for public key DER %ld\n", fsz);
+        fclose(f);
+        return -1;
+    }
+    rd = fread(der, 1, (size_t)fsz, f);
+    fclose(f);
+    if (rd != (size_t)fsz) {
+        fprintf(stderr, "Error reading public key DER file %s\n", fname);
+        free(der);
+        return -1;
+    }
+#ifdef HAVE_ECC
+    if (len < 0) {
+        ecc_key ecc;
+        if (wc_ecc_init(&ecc) == 0) {
+            idx = 0;
+            if (wc_EccPublicKeyDecode(der, &idx, &ecc, (word32)fsz) == 0) {
+                uint8_t qx[MAX_ECC_BYTES], qy[MAX_ECC_BYTES];
+                word32 qxsz = sizeof(qx), qysz = sizeof(qy);
+                if (wc_ecc_export_public_raw(&ecc, qx, &qxsz, qy, &qysz)
+                        == 0) {
+                    buf = malloc(qxsz + qysz);
+                    if (buf != NULL) {
+                        memcpy(buf, qx, qxsz);
+                        memcpy(buf + qxsz, qy, qysz);
+                        len = (int)(qxsz + qysz);
+                        ktype = "ECC";
+                    }
+                }
+            }
+            wc_ecc_free(&ecc);
+        }
+    }
+#endif
+#ifdef HAVE_ED25519
+    if (len < 0) {
+        ed25519_key ed;
+        if (wc_ed25519_init(&ed) == 0) {
+            idx = 0;
+            if (wc_Ed25519PublicKeyDecode(der, &idx, &ed, (word32)fsz) == 0) {
+                word32 osz = ED25519_PUB_KEY_SIZE;
+                buf = malloc(osz);
+                if (buf != NULL) {
+                    if (wc_ed25519_export_public(&ed, buf, &osz) == 0) {
+                        len = (int)osz;
+                        ktype = "Ed25519";
+                    } else {
+                        free(buf);
+                        buf = NULL;
+                    }
+                }
+            }
+            wc_ed25519_free(&ed);
+        }
+    }
+#endif
+#ifdef HAVE_ED448
+    if (len < 0) {
+        ed448_key ed4;
+        if (wc_ed448_init(&ed4) == 0) {
+            idx = 0;
+            if (wc_Ed448PublicKeyDecode(der, &idx, &ed4, (word32)fsz) == 0) {
+                word32 osz = ED448_PUB_KEY_SIZE;
+                buf = malloc(osz);
+                if (buf != NULL) {
+                    if (wc_ed448_export_public(&ed4, buf, &osz) == 0) {
+                        len = (int)osz;
+                        ktype = "Ed448";
+                    } else {
+                        free(buf);
+                        buf = NULL;
+                    }
+                }
+            }
+            wc_ed448_free(&ed4);
+        }
+    }
+#endif
+#ifndef NO_RSA
+    if (len < 0) {
+        RsaKey rsa;
+        if (wc_InitRsaKey(&rsa, NULL) == 0) {
+            idx = 0;
+            if (wc_RsaPublicKeyDecode(der, &idx, &rsa, (word32)fsz) == 0) {
+                int dsz = wc_RsaPublicKeyDerSize(&rsa, 1);
+                if (dsz > 0) {
+                    buf = malloc((size_t)dsz);
+                    if (buf != NULL) {
+                        len = wc_RsaKeyToPublicDer(&rsa, buf, (word32)dsz);
+                        if (len > 0) {
+                            ktype = "RSA";
+                        } else {
+                            free(buf);
+                            buf = NULL;
+                            len = -1;
+                        }
+                    }
+                }
+            }
+            wc_FreeRsaKey(&rsa);
+        }
+    }
+#endif
+    free(der);
+    if ((len <= 0) || (buf == NULL)) {
+        fprintf(stderr, "Unable to parse public key DER file %s "
+            "(tried ECC, Ed25519, Ed448, RSA)\n", fname);
+        return -1;
+    }
+    if (len > (int)MAX_TLV_LEN) {
+        fprintf(stderr, "extracted public key too big: %d bytes (max %u): "
+            "%s\n", len, MAX_TLV_LEN, fname);
+        free(buf);
+        return -1;
+    }
+    printf("Custom TLV: imported %s public key from %s (%d bytes)\n",
+        ktype, fname, len);
+    *out = buf;
+    *out_sz = (uint16_t)len;
+    return 0;
+}
+
 static void set_signature_sizes(int secondary)
 {
     uint32_t *sz = &CMD.signature_sz;
     int *sign = &CMD.sign;
     uint32_t suggested_sz = 0;
     char *env_image_header_size;
+    struct signing_key *k = key_obj(secondary);
     if (secondary) {
         sz = &CMD.secondary_signature_sz;
         sign = &CMD.secondary_sign;
@@ -2761,12 +3227,12 @@ static void set_signature_sizes(int secondary)
         else
             lms_winternitz = atoi(lms_winternitz_str);
 
-        lms_ret = wc_LmsKey_Init(&key.lms, NULL, INVALID_DEVID);
+        lms_ret = wc_LmsKey_Init(&k->lms, NULL, INVALID_DEVID);
         if (lms_ret != 0) {
             fprintf(stderr, "error: wc_LmsKey_Init returned %d\n", lms_ret);
             exit(1);
         }
-        lms_ret = wc_LmsKey_SetParameters(&key.lms, lms_levels, lms_height,
+        lms_ret = wc_LmsKey_SetParameters(&k->lms, lms_levels, lms_height,
                                           lms_winternitz);
         if (lms_ret != 0) {
             fprintf(stderr, "error: wc_LmsKey_SetParameters(%d, %d, %d)" \
@@ -2778,7 +3244,7 @@ static void set_signature_sizes(int secondary)
         printf("info: using LMS parameters: L%d-H%d-W%d\n", lms_levels,
                lms_height, lms_winternitz);
 
-        lms_ret = wc_LmsKey_GetSigLen(&key.lms, &sig_sz);
+        lms_ret = wc_LmsKey_GetSigLen(&k->lms, &sig_sz);
         if (lms_ret != 0) {
             fprintf(stderr, "error: wc_LmsKey_GetSigLen returned %d\n",
                     lms_ret);
@@ -2802,13 +3268,13 @@ static void set_signature_sizes(int secondary)
 
         printf("info: using XMSS parameters: %s\n", xmss_params);
 
-        xmss_ret = wc_XmssKey_Init(&key.xmss, NULL, INVALID_DEVID);
+        xmss_ret = wc_XmssKey_Init(&k->xmss, NULL, INVALID_DEVID);
         if (xmss_ret != 0) {
             fprintf(stderr, "error: wc_XmssKey_Init returned %d\n", xmss_ret);
             exit(1);
         }
 
-        xmss_ret = wc_XmssKey_SetParamStr(&key.xmss, xmss_params);
+        xmss_ret = wc_XmssKey_SetParamStr(&k->xmss, xmss_params);
         if (xmss_ret != 0) {
             fprintf(stderr, "error: wc_XmssKey_SetParamStr(%s)" \
                     " returned %d\n", xmss_params, xmss_ret);
@@ -2816,7 +3282,7 @@ static void set_signature_sizes(int secondary)
         }
 
 
-        xmss_ret = wc_XmssKey_GetSigLen(&key.xmss, &sig_sz);
+        xmss_ret = wc_XmssKey_GetSigLen(&k->xmss, &sig_sz);
         if (xmss_ret != 0) {
             fprintf(stderr, "error: wc_XmssKey_GetSigLen returned %d\n",
                     xmss_ret);
@@ -2838,13 +3304,13 @@ static void set_signature_sizes(int secondary)
         if (env_ml_dsa_level)
             ml_dsa_level = atoi(env_ml_dsa_level);
 
-        ml_dsa_ret = wc_MlDsaKey_Init(&key.ml_dsa, NULL, INVALID_DEVID);
+        ml_dsa_ret = wc_MlDsaKey_Init(&k->ml_dsa, NULL, INVALID_DEVID);
         if (ml_dsa_ret != 0) {
             fprintf(stderr, "error: wc_MlDsaKey_Init returned %d\n", ml_dsa_ret);
             exit(1);
         }
 
-        ml_dsa_ret = wc_MlDsaKey_SetParams(&key.ml_dsa, ml_dsa_level);
+        ml_dsa_ret = wc_MlDsaKey_SetParams(&k->ml_dsa, ml_dsa_level);
         if (ml_dsa_ret != 0) {
             fprintf(stderr, "error: wc_MlDsaKey_SetParamStr(%d)" \
                     " returned %d\n", ml_dsa_level, ml_dsa_ret);
@@ -2853,7 +3319,7 @@ static void set_signature_sizes(int secondary)
 
         printf("info: using ML-DSA parameters: %d\n", ml_dsa_level);
 
-        ml_dsa_ret = wc_MlDsaKey_GetSigLen(&key.ml_dsa, (int *)&sig_sz);
+        ml_dsa_ret = wc_MlDsaKey_GetSigLen(&k->ml_dsa, (int *)&sig_sz);
         if (ml_dsa_ret != 0) {
             fprintf(stderr, "error: wc_MlDsaKey_GetSigLen returned %d\n",
                     ml_dsa_ret);
@@ -2888,6 +3354,8 @@ int main(int argc, char** argv)
 {
     int ret = 0;
     int i;
+    int pos_args;
+    int need;
     char* tmpstr;
     const char* sign_str = "AUTO";
     const char* hash_str = "SHA256";
@@ -2906,7 +3374,7 @@ int main(int argc, char** argv)
     printf("wolfBoot version %X\n", WOLFBOOT_VERSION);
 
     /* Check arguments and print usage */
-    if (argc < 4 || argc > 14) {
+    if (argc < 4) {
         printf("Usage: %s [options] image key version\n", argv[0]);
         printf("For full usage manual, see 'docs/Signing.md'\n");
         exit(1);
@@ -3112,6 +3580,10 @@ int main(int argc, char** argv)
             CMD.header_only = 1;
         }
         else if (strcmp(argv[i], "--id") == 0) {
+            if (argc <= (i + 1)) {
+                fprintf(stderr, "Missing --id argument\n");
+                exit(16);
+            }
             long id = strtol(argv[++i], NULL, 10);
             if ((id < 0 || id > 15) || ((id == 0) && (argv[i][0] != '0'))) {
                 fprintf(stderr, "Invalid partition id: %s\n", argv[i]);
@@ -3128,6 +3600,10 @@ int main(int argc, char** argv)
             CMD.manual_sign = 1;
         }
         else if (strcmp(argv[i], "--encrypt") == 0) {
+            if (argc <= (i + 1)) {
+                fprintf(stderr, "Missing --encrypt key file argument\n");
+                exit(16);
+            }
             if (CMD.encrypt == ENC_OFF)
                 CMD.encrypt = ENC_CHACHA;
             CMD.encrypt_key_file = argv[++i];
@@ -3142,6 +3618,10 @@ int main(int argc, char** argv)
             CMD.encrypt = ENC_CHACHA;
         }
         else if (strcmp(argv[i], "--delta") == 0) {
+            if (argc <= (i + 1)) {
+                fprintf(stderr, "Missing --delta base file argument\n");
+                exit(16);
+            }
             CMD.delta = 1;
             CMD.delta_base_file = argv[++i];
         } else if (strcmp(argv[i], "--no-base-sha") == 0) {
@@ -3151,6 +3631,10 @@ int main(int argc, char** argv)
             CMD.no_ts = 1;
         }
         else if (strcmp(argv[i], "--policy") == 0) {
+            if (argc <= (i + 1)) {
+                fprintf(stderr, "Missing --policy file argument\n");
+                exit(16);
+            }
             CMD.policy_sign = 1;
             CMD.policy_file = argv[++i];
         }
@@ -3161,7 +3645,7 @@ int main(int argc, char** argv)
                 fprintf(stderr, "Too many custom TLVs.\n");
                 exit(16);
             }
-            if (argc < (i + 3)) {
+            if (argc < (i + 4)) {
                 fprintf(stderr, "Invalid custom TLV fields. \n");
                 exit(16);
             }
@@ -3189,20 +3673,29 @@ int main(int argc, char** argv)
             CMD.custom_tlv[p].buffer = NULL;
             CMD.custom_tlvs++;
             i += 3;
+        } else if (strcmp(argv[i], "--dts") == 0) {
+            if (argc < (i + 2)) {
+                fprintf(stderr, "Missing device tree file for --dts.\n");
+                exit(16);
+            }
+            /* Hashed in make_header_ex() once the hash algo is known. */
+            CMD.dts_file = argv[i + 1];
+            i += 1;
         } else if (strcmp(argv[i], "--custom-tlv-buffer") == 0) {
             int p = CMD.custom_tlvs;
             uint16_t tag, len;
+            size_t slen;
             uint32_t j;
             if (p >= MAX_CUSTOM_TLVS) {
                 fprintf(stderr, "Too many custom TLVs.\n");
                 exit(16);
             }
-            if (argc < (i + 2)) {
+            if (argc < (i + 3)) {
                 fprintf(stderr, "Invalid custom TLV fields. \n");
                 exit(16);
             }
             tag = (uint16_t)arg2num(argv[i + 1], 2);
-            len = (uint16_t)strlen(argv[i + 2]) / 2;
+            slen = strlen(argv[i + 2]);
             if (tag < 0x0030) {
                 fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
                 exit(16);
@@ -3211,10 +3704,18 @@ int main(int argc, char** argv)
                 fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
                 exit(16);
             }
-            if (len > 255) {
-                fprintf(stderr, "custom tlv buffer size too big: %s\n", argv[i + 2]);
+            if ((slen / 2) > MAX_TLV_LEN) {
+                fprintf(stderr, "custom tlv buffer size too big: "
+                    "%lu bytes (max %u)\n", (unsigned long)(slen / 2),
+                    MAX_TLV_LEN);
                 exit(16);
             }
+            if ((slen % 2) != 0) {
+                fprintf(stderr, "custom tlv buffer hex string must have an "
+                    "even number of digits: %s\n", argv[i + 2]);
+                exit(16);
+            }
+            len = (uint16_t)(slen / 2);
             CMD.custom_tlv[p].tag = tag;
             CMD.custom_tlv[p].len = len;
             CMD.custom_tlv[p].buffer = malloc(len);
@@ -3231,17 +3732,18 @@ int main(int argc, char** argv)
         } else if (strcmp(argv[i], "--custom-tlv-string") == 0) {
             int p = CMD.custom_tlvs;
             uint16_t tag, len;
+            size_t slen;
             uint32_t j;
             if (p >= MAX_CUSTOM_TLVS) {
                 fprintf(stderr, "Too many custom TLVs.\n");
                 exit(16);
             }
-            if (argc < (i + 2)) {
+            if (argc < (i + 3)) {
                 fprintf(stderr, "Invalid custom TLV fields. \n");
                 exit(16);
             }
             tag = (uint16_t)arg2num(argv[i + 1], 2);
-            len = (uint16_t)strlen(argv[i + 2]);
+            slen = strlen(argv[i + 2]);
             if (tag < 0x0030) {
                 fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
                 exit(16);
@@ -3250,10 +3752,12 @@ int main(int argc, char** argv)
                 fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
                 exit(16);
             }
-            if (len > 255) {
-                fprintf(stderr, "custom tlv buffer size too big: %s\n", argv[i + 2]);
+            if (slen > MAX_TLV_LEN) {
+                fprintf(stderr, "custom tlv string size too big: "
+                    "%lu bytes (max %u)\n", (unsigned long)slen, MAX_TLV_LEN);
                 exit(16);
             }
+            len = (uint16_t)slen;
             CMD.custom_tlv[p].tag = tag;
             CMD.custom_tlv[p].len = len;
             CMD.custom_tlv[p].buffer = malloc(len);
@@ -3266,6 +3770,127 @@ int main(int argc, char** argv)
             }
             CMD.custom_tlvs++;
             i += 2;
+        } else if (strcmp(argv[i], "--custom-tlv-file") == 0) {
+            int p = CMD.custom_tlvs;
+            uint16_t tag;
+            FILE *f;
+            long fsz;
+            size_t rd;
+            if (p >= MAX_CUSTOM_TLVS) {
+                fprintf(stderr, "Too many custom TLVs.\n");
+                exit(16);
+            }
+            if (argc < (i + 3)) {
+                fprintf(stderr, "Invalid custom TLV fields. \n");
+                exit(16);
+            }
+            tag = (uint16_t)arg2num(argv[i + 1], 2);
+            if (tag < 0x0030) {
+                fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
+                exit(16);
+            }
+            if ( ((tag & 0xFF00) == 0xFF00) || ((tag & 0xFF) == 0xFF) ) {
+                fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
+                exit(16);
+            }
+            f = fopen(argv[i + 2], "rb");
+            if (f == NULL) {
+                fprintf(stderr, "Cannot open custom tlv file %s: %s\n",
+                    argv[i + 2], strerror(errno));
+                exit(16);
+            }
+            fseek(f, 0, SEEK_END);
+            fsz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (fsz <= 0) {
+                fprintf(stderr, "custom tlv file is empty or unreadable: %s\n",
+                    argv[i + 2]);
+                fclose(f);
+                exit(16);
+            }
+            if (fsz > (long)MAX_TLV_LEN) {
+                fprintf(stderr, "custom tlv file too big: %ld bytes "
+                    "(max %u): %s\n", fsz, MAX_TLV_LEN, argv[i + 2]);
+                fclose(f);
+                exit(16);
+            }
+            CMD.custom_tlv[p].tag = tag;
+            CMD.custom_tlv[p].len = (uint16_t)fsz;
+            CMD.custom_tlv[p].buffer = malloc((size_t)fsz);
+            if (CMD.custom_tlv[p].buffer == NULL) {
+                fprintf(stderr, "Error malloc for custom tlv buffer %ld\n",
+                    fsz);
+                fclose(f);
+                exit(16);
+            }
+            rd = fread(CMD.custom_tlv[p].buffer, 1, (size_t)fsz, f);
+            fclose(f);
+            if (rd != (size_t)fsz) {
+                fprintf(stderr, "Error reading custom tlv file %s\n",
+                    argv[i + 2]);
+                exit(16);
+            }
+            CMD.custom_tlvs++;
+            i += 2;
+        } else if (strcmp(argv[i], "--custom-tlv-pubkey-der") == 0) {
+            int p = CMD.custom_tlvs;
+            uint16_t tag;
+            if (p >= MAX_CUSTOM_TLVS) {
+                fprintf(stderr, "Too many custom TLVs.\n");
+                exit(16);
+            }
+            if (argc < (i + 3)) {
+                fprintf(stderr, "Invalid custom TLV fields. \n");
+                exit(16);
+            }
+            tag = (uint16_t)arg2num(argv[i + 1], 2);
+            if (tag < 0x0030) {
+                fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
+                exit(16);
+            }
+            if ( ((tag & 0xFF00) == 0xFF00) || ((tag & 0xFF) == 0xFF) ) {
+                fprintf(stderr, "Invalid custom tag: %s\n", argv[i + 1]);
+                exit(16);
+            }
+            if (extract_pubkey_from_der(argv[i + 2],
+                    &CMD.custom_tlv[p].buffer, &CMD.custom_tlv[p].len) != 0) {
+                exit(16);
+            }
+            CMD.custom_tlv[p].tag = tag;
+            CMD.custom_tlvs++;
+            i += 2;
+        }
+        else if (strcmp(argv[i], "--cmdline") == 0) {
+            /* Shorthand for --custom-tlv-string HDR_CMDLINE "<args>": stores the
+             * OS command line as a signature-covered TLV in the manifest. */
+            int p = CMD.custom_tlvs;
+            uint16_t len;
+            uint32_t j;
+            if (p >= MAX_CUSTOM_TLVS) {
+                fprintf(stderr, "Too many custom TLVs.\n");
+                exit(16);
+            }
+            if (argc < (i + 2)) {
+                fprintf(stderr, "Missing --cmdline argument.\n");
+                exit(16);
+            }
+            len = (uint16_t)strlen(argv[i + 1]);
+            if (len == 0 || len > 255) {
+                fprintf(stderr, "cmdline must be 1..255 bytes: %s\n", argv[i + 1]);
+                exit(16);
+            }
+            CMD.custom_tlv[p].tag = HDR_CMDLINE;
+            CMD.custom_tlv[p].len = len;
+            CMD.custom_tlv[p].buffer = malloc(len);
+            if (CMD.custom_tlv[p].buffer == NULL) {
+                fprintf(stderr, "Error malloc for cmdline tlv buffer %d\n", len);
+                exit(16);
+            }
+            for (j = 0; j < len; j++) {
+                CMD.custom_tlv[p].buffer[j] = (uint8_t)argv[i + 1][j];
+            }
+            CMD.custom_tlvs++;
+            i += 1;
         }
         else if (strcmp(argv[i], "--cert-chain") == 0) {
             if (argc <= (i + 1)) {
@@ -3284,6 +3909,24 @@ int main(int argc, char** argv)
         CMD.hybrid = 0;
         CMD.secondary_key_file = NULL;
         CMD.secondary_signature_sz = 0;
+    }
+
+    /* Validate the positional argument count for the selected mode: image +
+     * version, plus key (and secondary key when hybrid) when signing, plus
+     * the precomputed signature file with --manual-sign. */
+    pos_args = argc - (i + 1);
+    need = 2; /* image file + version */
+    if (CMD.sign != NO_SIGN) {
+        need += 1; /* key file */
+        if (CMD.hybrid)
+            need += 1; /* secondary key file */
+        if (CMD.manual_sign)
+            need += 1; /* precomputed signature file */
+    }
+    if (pos_args < need) {
+        fprintf(stderr, "Missing positional arguments: need %d, got %d "
+            "(image key version)\n", need, pos_args);
+        exit(1);
     }
 
 
@@ -3312,6 +3955,13 @@ int main(int argc, char** argv)
         CMD.image_file = argv[i+1];
         CMD.key_file = NULL;
         CMD.fw_version = argv[i+2];
+    }
+
+    /* --dts can grow the header after patch_inv_off is computed, so the delta
+     * inverse offset would be stale. Reject the combination. */
+    if (CMD.dts_file != NULL && CMD.delta) {
+        fprintf(stderr, "Error: --dts cannot be combined with --delta\n");
+        exit(16);
     }
 
     memset(buf, 0, sizeof(buf));
@@ -3359,7 +4009,7 @@ int main(int argc, char** argv)
     }
     if (CMD.delta) {
         printf("Delta Base file:      %s\n", CMD.delta_base_file);
-        snprintf(CMD.output_diff_file, sizeof(CMD.output_image_file),
+        snprintf(CMD.output_diff_file, sizeof(CMD.output_diff_file),
                 "%s_v%s_signed_diff.bin",
                 (char*)buf, CMD.fw_version);
         snprintf(CMD.output_encrypted_image_file,
@@ -3385,10 +4035,18 @@ int main(int argc, char** argv)
             printf("TLV %u\n", i);
             printf("----\n");
             if (CMD.custom_tlv[i].buffer) {
+                uint16_t print_len = CMD.custom_tlv[i].len;
+                if (print_len > 256) {
+                    print_len = 256;
+                }
                 printf("Tag: %04X Len: %hu Val: ", CMD.custom_tlv[i].tag,
                         CMD.custom_tlv[i].len);
-                for (j = 0; j < CMD.custom_tlv[i].len; j++) {
+                for (j = 0; j < print_len; j++) {
                     printf("%02X", CMD.custom_tlv[i].buffer[j]);
+                }
+                if (print_len < CMD.custom_tlv[i].len) {
+                    printf("... (truncated, %hu bytes total)",
+                        CMD.custom_tlv[i].len);
                 }
                 printf("\n");
 
@@ -3419,19 +4077,27 @@ int main(int argc, char** argv)
     } else {
         kbuf = load_key(&key_buffer, &key_buffer_sz, &pubkey, &pubkey_sz, 0);
         if (!kbuf) {
-            exit(1);
+            ret = 1;
+            goto cleanup;
         }
     } /* CMD.sign != NO_SIGN */
 
     if (CMD.hybrid) {
         uint8_t *kbuf2 = NULL;
         uint8_t *pubkey2 = NULL;
-        uint32_t pubkey_sz2;
+        uint32_t pubkey_sz2 = 0;
         DEBUG_PRINT("Loading secondary key\n");
         kbuf2 = load_key(&key_buffer2, &key_buffer_sz2, &pubkey2, &pubkey_sz2, 1);
+        if (!kbuf2) {
+            /* Fall through to the tail cleanup: the primary raw key buffer is
+             * still live and the primary key object is initialized, and
+             * exiting here would scrub neither. */
+            ret = 1;
+            goto cleanup;
+        }
         printf("Creating hybrid signature\n");
-        make_hybrid_header(pubkey, pubkey_sz, CMD.image_file, CMD.output_image_file,
-                pubkey2, pubkey_sz2);
+        ret = make_hybrid_header(pubkey, pubkey_sz, CMD.image_file,
+                CMD.output_image_file, pubkey2, pubkey_sz2);
         DEBUG_PRINT("Signature size: %u\n", CMD.signature_sz);
         DEBUG_PRINT("Secondary signature size: %u\n", CMD.secondary_signature_sz);
         DEBUG_PRINT("Header size: %u\n", CMD.header_sz);
@@ -3440,50 +4106,35 @@ int main(int argc, char** argv)
         if (pubkey2)
             free(pubkey2);
     } else {
-        make_header(pubkey, pubkey_sz, CMD.image_file, CMD.output_image_file);
+        ret = make_header(pubkey, pubkey_sz, CMD.image_file,
+                CMD.output_image_file);
     }
 
-
-    if (CMD.delta) {
+    /* Skip the delta step and propagate the failure to the caller if the
+     * signed image could not be created. */
+    if ((ret == 0) && CMD.delta) {
         if (CMD.encrypt)
             ret = base_diff(CMD.delta_base_file, pubkey, pubkey_sz, 64);
         else
             ret = base_diff(CMD.delta_base_file, pubkey, pubkey_sz, 16);
     }
 
+cleanup:
     /* Add pubkey cleanup */
     if (pubkey)
         free(pubkey);
 
     if (kbuf)
         zero_and_free(kbuf, key_buffer_sz);
-    if (CMD.sign == SIGN_ED25519) {
-        wc_ed25519_free(&key.ed);
+    free_key(CMD.sign, 0);
+    if (CMD.hybrid) {
+        free_key(CMD.secondary_sign, 1);
     }
-    else if (CMD.sign == SIGN_ED448) {
-        wc_ed448_free(&key.ed4);
-    }
-    else if (CMD.sign == SIGN_ECC256 ||
-             CMD.sign == SIGN_ECC384 ||
-             CMD.sign == SIGN_ECC521) {
-        wc_ecc_free(&key.ecc);
-    }
-    else if (CMD.sign == SIGN_RSA2048 ||
-             CMD.sign == SIGN_RSA3072 ||
-             CMD.sign == SIGN_RSA4096 ||
-             CMD.sign == SIGN_RSAPSS2048 ||
-             CMD.sign == SIGN_RSAPSS3072 ||
-             CMD.sign == SIGN_RSAPSS4096) {
-        wc_FreeRsaKey(&key.rsa);
-    }
-    else if (CMD.sign == SIGN_LMS) {
-        wc_LmsKey_Free(&key.lms);
-    }
-    else if (CMD.sign == SIGN_XMSS) {
-        wc_XmssKey_Free(&key.xmss);
-    }
-    else if (CMD.sign == SIGN_ML_DSA) {
-        wc_MlDsaKey_Free(&key.ml_dsa);
+    /* Defence in depth: scrub the decoded key objects regardless of the
+     * algorithm dispatch above, so no key residue survives. */
+    wc_ForceZero(&key, sizeof(key));
+    if (CMD.hybrid) {
+        wc_ForceZero(&key2, sizeof(key2));
     }
     return ret;
 }

@@ -172,6 +172,20 @@ static const uint8_t fit_gzip_no_load[] = {
 /* Test cases                                                                */
 /* ------------------------------------------------------------------------- */
 
+
+/* Open a validated view of a hand-built fixture. Returns NULL if the
+ * fixture does not pass fdt_open(), which the callers below treat the
+ * same as a load failure. */
+static fdt_ctx* fit_open(void* blob, uint32_t len)
+{
+    static fdt_ctx ctx;
+
+    if (fdt_open(&ctx, blob, len) != 0) {
+        return NULL;
+    }
+    return &ctx;
+}
+
 #ifdef WOLFBOOT_GZIP
 
 START_TEST(test_fit_to_gzip_success)
@@ -184,10 +198,10 @@ START_TEST(test_fit_to_gzip_success)
     /* fit_with_gzip_kernel is read-only; copy into a writable scratch
      * since fit_load_image_to() does not modify the FIT, but we still
      * want a clean buffer per test. */
-    static uint8_t fit_scratch[sizeof(fit_with_gzip_kernel)];
+    static uint8_t fit_scratch[sizeof(fit_with_gzip_kernel)] __attribute__((aligned(4)));
     memcpy(fit_scratch, fit_with_gzip_kernel, sizeof(fit_scratch));
 
-    ret = fit_load_image_to(fit_scratch, "kernel-1",
+    ret = fit_load_image_to(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1",
                             buf, (uint32_t)sizeof(buf), &len);
     ck_assert_ptr_eq(ret, buf);
     ck_assert_int_eq(len, FIT_PLAIN_LEN);
@@ -200,10 +214,10 @@ START_TEST(test_fit_to_gzip_corrupt_returns_null)
     uint8_t buf[64];
     int len = -1;
     void *ret;
-    static uint8_t fit_scratch[sizeof(fit_with_corrupt_gzip)];
+    static uint8_t fit_scratch[sizeof(fit_with_corrupt_gzip)] __attribute__((aligned(4)));
     memcpy(fit_scratch, fit_with_corrupt_gzip, sizeof(fit_scratch));
 
-    ret = fit_load_image_to(fit_scratch, "kernel-1",
+    ret = fit_load_image_to(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1",
                             buf, (uint32_t)sizeof(buf), &len);
     ck_assert_ptr_null(ret);
 }
@@ -214,10 +228,10 @@ START_TEST(test_fit_to_none_compression_copies_plain)
     uint8_t buf[64];
     int len = -1;
     void *ret;
-    static uint8_t fit_scratch[sizeof(fit_with_none_comp)];
+    static uint8_t fit_scratch[sizeof(fit_with_none_comp)] __attribute__((aligned(4)));
     memcpy(fit_scratch, fit_with_none_comp, sizeof(fit_scratch));
 
-    ret = fit_load_image_to(fit_scratch, "kernel-1",
+    ret = fit_load_image_to(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1",
                             buf, (uint32_t)sizeof(buf), &len);
     ck_assert_ptr_eq(ret, buf);
     ck_assert_int_eq(len, FIT_PLAIN_LEN);
@@ -231,10 +245,10 @@ START_TEST(test_fit_ex_gzip_no_load_returns_null)
      * must refuse rather than pass compressed bytes through as raw. */
     int len = -1;
     void *ret;
-    static uint8_t fit_scratch[sizeof(fit_gzip_no_load)];
+    static uint8_t fit_scratch[sizeof(fit_gzip_no_load)] __attribute__((aligned(4)));
     memcpy(fit_scratch, fit_gzip_no_load, sizeof(fit_scratch));
 
-    ret = fit_load_image_ex(fit_scratch, "kernel-1", &len, 64 * 1024);
+    ret = fit_load_image_ex(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1", &len, 64 * 1024);
     ck_assert_ptr_null(ret);
 }
 END_TEST
@@ -248,16 +262,54 @@ START_TEST(test_fit_to_gzip_disabled_returns_null)
     uint8_t buf[64];
     int len = -1;
     void *ret;
-    static uint8_t fit_scratch[sizeof(fit_with_gzip_kernel)];
+    static uint8_t fit_scratch[sizeof(fit_with_gzip_kernel)] __attribute__((aligned(4)));
     memcpy(fit_scratch, fit_with_gzip_kernel, sizeof(fit_scratch));
 
-    ret = fit_load_image_to(fit_scratch, "kernel-1",
+    ret = fit_load_image_to(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1",
                             buf, (uint32_t)sizeof(buf), &len);
     ck_assert_ptr_null(ret);
 }
 END_TEST
 
 #endif /* WOLFBOOT_GZIP */
+
+START_TEST(test_fit_to_none_unterminated_fails_closed)
+{
+    /* The `compression` property is truncated to 4 bytes ("none" with
+     * no NUL): the declared length no longer covers the terminator.
+     * Before the fix the value was strcmp()'d and the following byte
+     * (the dropped NUL) terminated it, so the subimage was passed
+     * through as raw; a malformed value must fail closed. */
+    uint8_t buf[64];
+    int len = -1;
+    void *ret;
+    static uint8_t fit_scratch[sizeof(fit_with_none_comp)] __attribute__((aligned(4)));
+    uint8_t *p;
+    unsigned i;
+
+    memcpy(fit_scratch, fit_with_none_comp, sizeof(fit_scratch));
+
+    /* the "none" value appears once in the blob (not as a C string -
+     * scan raw bytes); the property length word sits 8 bytes before
+     * the data */
+    p = NULL;
+    for (i = 0; i + 4 <= sizeof(fit_scratch); i++) {
+        if (memcmp(fit_scratch + i, "none", 4) == 0) {
+            p = fit_scratch + i;
+            break;
+        }
+    }
+    ck_assert_ptr_nonnull(p);
+    p[-8] = 0;
+    p[-7] = 0;
+    p[-6] = 0;
+    p[-5] = 4;
+
+    ret = fit_load_image_to(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1",
+                            buf, (uint32_t)sizeof(buf), &len);
+    ck_assert_ptr_null(ret);
+}
+END_TEST
 
 START_TEST(test_fit_to_lzma_unknown_returns_null)
 {
@@ -266,12 +318,31 @@ START_TEST(test_fit_to_lzma_unknown_returns_null)
     uint8_t buf[64];
     int len = -1;
     void *ret;
-    static uint8_t fit_scratch[sizeof(fit_with_lzma)];
+    static uint8_t fit_scratch[sizeof(fit_with_lzma)] __attribute__((aligned(4)));
     memcpy(fit_scratch, fit_with_lzma, sizeof(fit_scratch));
 
-    ret = fit_load_image_to(fit_scratch, "kernel-1",
+    ret = fit_load_image_to(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1",
                             buf, (uint32_t)sizeof(buf), &len);
     ck_assert_ptr_null(ret);
+}
+END_TEST
+
+/* An uncompressed ("none") subimage larger than the staging bound must be
+ * rejected instead of overflowing the destination. */
+START_TEST(test_fit_to_none_oversized_rejected)
+{
+    uint8_t buf[64];
+    int len = -1;
+    void *ret;
+    static uint8_t fit_scratch[sizeof(fit_with_none_comp)] __attribute__((aligned(4)));
+    memcpy(fit_scratch, fit_with_none_comp, sizeof(fit_scratch));
+
+    memset(buf, 0xA5, sizeof(buf));
+    /* payload is FIT_PLAIN_LEN (23) bytes; bound the destination below it */
+    ret = fit_load_image_to(fit_open(fit_scratch, (uint32_t)sizeof(fit_scratch)), "kernel-1", buf, 8, &len);
+    ck_assert_ptr_null(ret);
+    /* nothing may be written at or past the out_max bound */
+    ck_assert_uint_eq(buf[8], 0xA5);
 }
 END_TEST
 
@@ -291,6 +362,8 @@ static Suite *fit_gzip_suite(void)
     tcase_add_test(tc, test_fit_to_gzip_disabled_returns_null);
 #endif
     tcase_add_test(tc, test_fit_to_lzma_unknown_returns_null);
+    tcase_add_test(tc, test_fit_to_none_unterminated_fails_closed);
+    tcase_add_test(tc, test_fit_to_none_oversized_rejected);
 
     suite_add_tcase(s, tc);
     return s;

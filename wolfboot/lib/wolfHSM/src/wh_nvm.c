@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -49,6 +49,12 @@ static int wh_Nvm_CheckPolicy(whNvmContext* context, whNvmOp op, whNvmId id,
 
     if (existing_meta != NULL) {
         *existing_meta = meta;
+    }
+
+    /* A server-only key (e.g. a trusted KEK, WH_NVM_FLAGS_TRUSTED) must be
+     * immutable through the client NVM API regardless of its other flags. */
+    if (meta.flags & WH_NVM_FLAGS_TRUSTED) {
+        return WH_ERROR_ACCESS;
     }
 
     switch (op) {
@@ -254,17 +260,28 @@ int wh_Nvm_AddObject(whNvmContext* context, whNvmMetadata *meta,
     return context->cb->AddObject(context->context, meta, data_len, data);
 }
 
-int wh_Nvm_AddObjectChecked(whNvmContext* context, whNvmMetadata* meta,
+int wh_Nvm_AddObjectChecked(whNvmContext* context, const whNvmMetadata* meta,
                             whNvmSize data_len, const uint8_t* data)
 {
-    int ret;
+    int           ret;
+    whNvmMetadata sanitized;
+
+    if (meta == NULL) {
+        return WH_ERROR_BADARGS;
+    }
 
     ret = wh_Nvm_CheckPolicy(context, WH_NVM_OP_ADD, meta->id, NULL);
     if (ret != WH_ERROR_OK && ret != WH_ERROR_NOTFOUND) {
         return ret;
     }
 
-    return wh_Nvm_AddObject(context, meta, data_len, data);
+    /* Copy before sanitizing: meta may point at a read-only client DMA mapping,
+     * so we must not write through it. Strip server-only flags a client may
+     * never set. */
+    sanitized = *meta;
+    sanitized.flags &= ~WH_NVM_FLAGS_SERVER_ONLY;
+
+    return wh_Nvm_AddObject(context, &sanitized, data_len, data);
 }
 
 int wh_Nvm_List(whNvmContext* context,
@@ -327,7 +344,8 @@ int wh_Nvm_DestroyObjectsChecked(whNvmContext* context, whNvmId list_count,
 
     for (i = 0; i < list_count; i++) {
         ret = wh_Nvm_CheckPolicy(context, WH_NVM_OP_DESTROY, id_list[i], NULL);
-        if (ret != WH_ERROR_OK) {
+        /* An absent id has no policy to enforce and is not an error */
+        if ((ret != WH_ERROR_OK) && (ret != WH_ERROR_NOTFOUND)) {
             return ret;
         }
     }

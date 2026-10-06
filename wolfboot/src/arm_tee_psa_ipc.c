@@ -385,7 +385,8 @@ static psa_status_t wolfboot_crypto_dispatch(const psa_invec *in_vec,
         return psa_generate_random((uint8_t *)out_vec[0].base, out_vec[0].len);
 
     case ARM_TEE_CRYPTO_OPEN_KEY_SID:
-        if (out_vec == NULL || out_len < 1) {
+        if (out_vec == NULL || out_len < 1 || out_vec[0].base == NULL ||
+            out_vec[0].len < sizeof(psa_key_id_t)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
         return wolfboot_psa_open_key(iov->key_id,
@@ -395,7 +396,9 @@ static psa_status_t wolfboot_crypto_dispatch(const psa_invec *in_vec,
         return wolfboot_psa_close_key(iov->key_id);
 
     case ARM_TEE_CRYPTO_IMPORT_KEY_SID:
-        if (in_len < 3 || out_vec == NULL || out_len < 1) {
+        if (in_len < 3 || out_vec == NULL || out_len < 1 ||
+            out_vec[0].base == NULL ||
+            out_vec[0].len < sizeof(psa_key_id_t)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
         if (in_vec[1].base == NULL ||
@@ -415,7 +418,9 @@ static psa_status_t wolfboot_crypto_dispatch(const psa_invec *in_vec,
         }
 
     case ARM_TEE_CRYPTO_GENERATE_KEY_SID:
-        if (in_len < 2 || out_vec == NULL || out_len < 1) {
+        if (in_len < 2 || out_vec == NULL || out_len < 1 ||
+            out_vec[0].base == NULL ||
+            out_vec[0].len < sizeof(psa_key_id_t)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
         if (in_vec[1].base == NULL ||
@@ -468,7 +473,8 @@ static psa_status_t wolfboot_crypto_dispatch(const psa_invec *in_vec,
     }
 
     case ARM_TEE_CRYPTO_GET_KEY_ATTRIBUTES_SID:
-        if (out_vec == NULL || out_len < 1) {
+        if (out_vec == NULL || out_len < 1 || out_vec[0].base == NULL ||
+            out_vec[0].len < sizeof(psa_key_attributes_t)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
         return psa_get_key_attributes(iov->key_id,
@@ -878,6 +884,7 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
         const psa_storage_create_flags_t *flags;
         struct wolfboot_ps_entry *entry;
         size_t data_len;
+        psa_storage_uid_t uid_s;
         if (in_vec == NULL || in_len < 3) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
@@ -894,12 +901,13 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
             flags == NULL || in_vec[2].len < sizeof(*flags)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
+        uid_s = *(volatile const psa_storage_uid_t *)uid;
         if (data_len > WOLFBOOT_PS_MAX_DATA) {
             return PSA_ERROR_INSUFFICIENT_STORAGE;
         }
-        entry = wolfboot_ps_find(*uid);
+        entry = wolfboot_ps_find(uid_s);
         if (entry == NULL) {
-            entry = wolfboot_ps_alloc(*uid);
+            entry = wolfboot_ps_alloc(uid_s);
             if (entry == NULL) {
                 return PSA_ERROR_INSUFFICIENT_STORAGE;
             }
@@ -909,6 +917,10 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
         if (data_len > 0 && data == NULL) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
+        /* Scrub the previous value before overwriting: a SET that stores
+         * less data (or zero) must not leave the tail of the old object
+         * readable via GET. Runs only after every validation check. */
+        wc_ForceZero(entry->data, sizeof(entry->data));
         if (data_len > 0) {
             XMEMCPY(entry->data, data, data_len);
         }
@@ -921,6 +933,8 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
         const rot_size_t *offset;
         struct wolfboot_ps_entry *entry;
         size_t read_len;
+        psa_storage_uid_t uid_s;
+        rot_size_t off;
         if (in_vec == NULL || in_len < 2 || out_vec == NULL || out_len < 1) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
@@ -930,19 +944,25 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
             offset == NULL || in_vec[1].len < sizeof(*offset)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        entry = wolfboot_ps_find(*uid);
+        /* Snapshot the NS-supplied uid and offset once into Secure-stack
+         * locals, same class as the PS_SET data_len latch above: re-reading
+         * after the bounds check would allow a TOCTOU double-fetch to
+         * index entry->data out of bounds. */
+        uid_s = *(volatile const psa_storage_uid_t *)uid;
+        off = *(volatile const rot_size_t *)offset;
+        entry = wolfboot_ps_find(uid_s);
         if (entry == NULL) {
             return PSA_ERROR_DOES_NOT_EXIST;
         }
-        if (*offset > entry->size) {
+        if (off > entry->size) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        read_len = entry->size - *offset;
+        read_len = entry->size - off;
         if (read_len > out_vec[0].len) {
             read_len = out_vec[0].len;
         }
         if (read_len > 0 && out_vec[0].base != NULL) {
-            XMEMCPY(out_vec[0].base, entry->data + *offset, read_len);
+            XMEMCPY(out_vec[0].base, entry->data + off, read_len);
         }
         out_vec[0].len = read_len;
         return PSA_SUCCESS;
@@ -950,6 +970,7 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
     if (type == ARM_TEE_PS_GET_INFO) {
         const psa_storage_uid_t *uid;
         struct wolfboot_ps_entry *entry;
+        psa_storage_uid_t uid_s;
         if (in_vec == NULL || in_len < 1 || out_vec == NULL || out_len < 1) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
@@ -957,7 +978,8 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
         if (uid == NULL || in_vec[0].len < sizeof(*uid)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        entry = wolfboot_ps_find(*uid);
+        uid_s = *(volatile const psa_storage_uid_t *)uid;
+        entry = wolfboot_ps_find(uid_s);
         if (entry == NULL) {
             return PSA_ERROR_DOES_NOT_EXIST;
         }
@@ -977,6 +999,7 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
     if (type == ARM_TEE_PS_REMOVE) {
         const psa_storage_uid_t *uid;
         struct wolfboot_ps_entry *entry;
+        psa_storage_uid_t uid_s;
         if (in_vec == NULL || in_len < 1) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
@@ -984,7 +1007,8 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
         if (uid == NULL || in_vec[0].len < sizeof(*uid)) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        entry = wolfboot_ps_find(*uid);
+        uid_s = *(volatile const psa_storage_uid_t *)uid;
+        entry = wolfboot_ps_find(uid_s);
         if (entry == NULL) {
             return PSA_ERROR_DOES_NOT_EXIST;
         }
@@ -996,11 +1020,13 @@ static int32_t arm_tee_psa_ps_dispatch(int32_t type, const psa_invec *in_vec,
         return PSA_SUCCESS;
     }
     if (type == ARM_TEE_PS_GET_SUPPORT) {
-        if (out_vec != NULL && out_len >= 1 && out_vec[0].base != NULL) {
-            uint32_t support = 0;
-            XMEMCPY(out_vec[0].base, &support, sizeof(support));
-            out_vec[0].len = sizeof(support);
+        uint32_t support = 0;
+        if (out_vec == NULL || out_len < 1 || out_vec[0].base == NULL ||
+            out_vec[0].len < sizeof(support)) {
+            return PSA_ERROR_INVALID_ARGUMENT;
         }
+        XMEMCPY(out_vec[0].base, &support, sizeof(support));
+        out_vec[0].len = sizeof(support);
         return PSA_SUCCESS;
     }
     return PSA_ERROR_NOT_SUPPORTED;
@@ -1057,13 +1083,19 @@ int32_t arm_tee_psa_call(psa_handle_t handle, int32_t type,
         out_vec_s[i] = out_vec[i];
     }
 
+    /* Every non-NULL .base must pass the non-secure attribution check, even
+     * when the declared .len is zero: a descriptor is not guaranteed to be
+     * accessed only within .len, so a zero-length descriptor would otherwise
+     * smuggle a Secure pointer past validation. At least one byte is always
+     * checked. */
     for (i = 0; i < in_len; i++) {
         if (in_vec_s[i].len > 0 && in_vec_s[i].base == NULL) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        if (in_vec_s[i].len > 0 &&
+        if (in_vec_s[i].base != NULL &&
             cmse_check_address_range((void *)in_vec_s[i].base,
-                                     in_vec_s[i].len,
+                                     in_vec_s[i].len > 0 ?
+                                         in_vec_s[i].len : 1,
                                      CMSE_NONSECURE) == NULL) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
@@ -1072,9 +1104,10 @@ int32_t arm_tee_psa_call(psa_handle_t handle, int32_t type,
         if (out_vec_s[i].len > 0 && out_vec_s[i].base == NULL) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }
-        if (out_vec_s[i].len > 0 &&
+        if (out_vec_s[i].base != NULL &&
             cmse_check_address_range(out_vec_s[i].base,
-                                     out_vec_s[i].len,
+                                     out_vec_s[i].len > 0 ?
+                                         out_vec_s[i].len : 1,
                                      CMSE_NONSECURE) == NULL) {
             return PSA_ERROR_INVALID_ARGUMENT;
         }

@@ -1,0 +1,228 @@
+name: wolfSSL Version Matrix
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Resolve the latest -stable wolfSSL tag at run time so we don't have to
+  # bump this workflow every release. The base floor (v5.8.0), AES Key Wrap
+  # floor (v5.9.0), and master are fixed:
+  # v5.8.0 is the first release with the public wc_ForceZero symbol. AES Key
+  # Wrap is disabled on that row because its constant-time integrity check
+  # requires wolfSSL 5.9.0 or later. Master surfaces upstream drift on the
+  # nightly run. Master is tested both classic and with ML-DSA/PQC;
+  # latest-stable gains an explicit PQC row automatically once it is newer
+  # than v5.9.1-stable (i.e. when 5.9.2 ships).
+  discover-versions:
+    name: Resolve wolfSSL version matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      latest-stable: ${{ steps.set-matrix.outputs.latest-stable }}
+    steps:
+      - name: Resolve latest -stable wolfSSL tag
+        id: set-matrix
+        run: |
+          set -euo pipefail
+          # List remote v*-stable tags, version-sort, take the highest.
+          # Equivalent to `git tag -l 'v*-stable' | sort -V | tail -1` in a
+          # local clone, but avoids cloning just to read tag names.
+          LATEST=$(git ls-remote --tags --refs https://github.com/wolfSSL/wolfssl.git 'v*-stable' \
+                     | awk -F/ '{print $NF}' | sort -V | tail -n 1)
+          if [ -z "${LATEST:-}" ]; then
+            echo "::error::Could not resolve latest wolfSSL -stable tag from remote"
+            exit 1
+          fi
+          echo "Latest stable wolfSSL: $LATEST"
+          echo "latest-stable=$LATEST" >> "$GITHUB_OUTPUT"
+          # Enable PQC only when $LATEST is strictly newer than v5.9.1-stable.
+          # The wc_MlDsaKey API lands post-v5.9.1-stable; older stables only
+          # ship the legacy ML-DSA API wolfCOSE no longer calls.
+          PQC_FLOOR="v5.9.1-stable"
+          if [ "$(printf '%s\n%s\n' "$PQC_FLOOR" "$LATEST" | sort -V | tail -n 1)" != "$PQC_FLOOR" ]; then
+            LATEST_PQC=true
+          else
+            LATEST_PQC=false
+          fi
+          echo "latest-stable PQC eligible: $LATEST_PQC"
+          # PQC-able versions (master always; latest-stable once >v5.9.1-stable)
+          # get an explicit, separately-named ML-DSA row in addition to a
+          # classic (no-PQC) row, so PQC build+test is always visible and the
+          # non-PQC build is still exercised on the same wolfSSL.
+          MATRIX=$(jq -nc --arg latest "$LATEST" --argjson latest_pqc "$LATEST_PQC" '{
+            include: ([
+              {"wolfssl-version":"v5.8.0-stable","wolfssl-ref":"v5.8.0-stable","cache-key":"wolfssl-nopqc-v5.8.0-v2","pqc":false},
+              {"wolfssl-version":"v5.9.0-stable","wolfssl-ref":"v5.9.0-stable","cache-key":"wolfssl-nopqc-v5.9.0-v1","pqc":false},
+              {"wolfssl-version":$latest,"wolfssl-ref":$latest,"cache-key":("wolfssl-nopqc-" + $latest + "-v1"),"pqc":false},
+              {"wolfssl-version":"master","wolfssl-ref":"master","cache-key":"","pqc":false},
+              {"wolfssl-version":"master","wolfssl-ref":"master","cache-key":"","pqc":true}
+            ] + (if $latest_pqc then [
+              {"wolfssl-version":$latest,"wolfssl-ref":$latest,"cache-key":("wolfssl-pqc-" + $latest + "-v1"),"pqc":true}
+            ] else [] end))
+          }')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  wolfssl-version-test:
+    name: wolfSSL ${{ matrix.wolfssl-version }} ${{ matrix.pqc && '(+ML-DSA/PQC)' || '(classic)' }}
+    needs: discover-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover-versions.outputs.matrix) }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool
+
+    # Cache stable versions only — master must always rebuild to catch regressions
+    - name: Cache wolfSSL (${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version != 'master'
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        key: ${{ matrix.cache-key }}
+
+    - name: Build wolfSSL (${{ matrix.wolfssl-version }})
+      if: matrix.wolfssl-version == 'master' || steps.cache-wolfssl.outputs.cache-hit != 'true'
+      env:
+        PQC: ${{ matrix.pqc }}
+      run: |
+        cd ~
+        git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} \
+            https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        if [ "$PQC" = "true" ]; then
+          PQC_FLAGS="--enable-mldsa"
+        else
+          PQC_FLAGS=""
+        fi
+        if [ "${{ matrix.wolfssl-version }}" = "v5.8.0-stable" ]; then
+          AESWRAP_FLAGS=""
+        else
+          AESWRAP_FLAGS="--enable-aeskeywrap"
+        fi
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-curve448 \
+                    --enable-aesgcm --enable-aesccm --enable-aescbc \
+                    --enable-sha384 --enable-sha512 \
+                    --enable-keygen --enable-hkdf $AESWRAP_FLAGS \
+                    --enable-chacha --enable-poly1305 \
+                    $PQC_FLAGS --enable-rsapss \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    - name: Select wolfCOSE compatibility flags
+      run: |
+        VERSION_HEX=$(awk '/^#define LIBWOLFSSL_VERSION_HEX/{print $3}' \
+                          ~/wolfssl-install/include/wolfssl/version.h)
+        if (( VERSION_HEX < 0x05009002 )); then
+          echo "WOLFCOSE_COMPAT_FLAGS=-DWOLFCOSE_RSA_PUBLIC_ONLY -DWOLFCOSE_NO_MLDSA -DWOLFCOSE_NO_LMS" >> "$GITHUB_ENV"
+        else
+          echo "WOLFCOSE_COMPAT_FLAGS=" >> "$GITHUB_ENV"
+        fi
+
+    - name: Build wolfCOSE
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        make CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion $WOLFCOSE_COMPAT_FLAGS -I./include -isystem $WOLFSSL_DIR/include" \
+             LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Verify legacy AES Key Wrap rejection
+      if: matrix.wolfssl-version == 'v5.8.0-stable'
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        POLICY_LOG=/tmp/wolfcose-aeswrap-policy.log
+        POLICY_BASE_FLAGS="-std=c99 -x c -fsyntax-only -Wno-error -DWOLFSSL_NO_OPTIONS_H -DHAVE_AES_KEYWRAP -DWOLFSSL_AES_DIRECT -I./include -isystem $WOLFSSL_DIR/include"
+        if cc $POLICY_BASE_FLAGS -DWOLFCOSE_ENABLE_AESWRAP \
+              include/wolfcose/settings.h >"$POLICY_LOG" 2>&1; then
+          echo "::error::wolfSSL 5.8.0 unexpectedly enabled AES Key Wrap"
+          exit 1
+        fi
+        if ! grep -q "AES Key Wrap requires wolfSSL 5.9.0 or later" "$POLICY_LOG"; then
+          cat "$POLICY_LOG"
+          echo "::error::legacy AES Key Wrap failed for an unexpected reason"
+          exit 1
+        fi
+        if ! cc $POLICY_BASE_FLAGS -DWOLFCOSE_NO_AESWRAP \
+              include/wolfcose/settings.h >/dev/null 2>&1; then
+          echo "::error::WOLFCOSE_NO_AESWRAP did not disable legacy Key Wrap"
+          exit 1
+        fi
+        if ! cc $POLICY_BASE_FLAGS -DWOLFCOSE_ENABLE_AESWRAP \
+              -DWOLFCOSE_NO_RECIPIENTS \
+              include/wolfcose/settings.h >/dev/null 2>&1; then
+          echo "::error::disabled recipients unexpectedly require new AES Key Wrap"
+          exit 1
+        fi
+
+    - name: Run unit tests
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion $WOLFCOSE_COMPAT_FLAGS -I./include -isystem $WOLFSSL_DIR/include" \
+                  LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Run enabled PSA/EAT tests at the wolfSSL compatibility floor
+      if: matrix.wolfssl-version == 'v5.8.0-stable' && !matrix.pqc
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        CF="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion $WOLFCOSE_COMPAT_FLAGS -I./include -isystem $WOLFSSL_DIR/include"
+        LF="-L$WOLFSSL_DIR/lib -lwolfssl"
+        make eat-psa-test CFLAGS="$CF" LDFLAGS="$LF"
+        make eat-psa-config-check CFLAGS="$CF" LDFLAGS="$LF"
+
+    - name: Run tool round-trip test
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make tool-test CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion $WOLFCOSE_COMPAT_FLAGS -I./include -isystem $WOLFSSL_DIR/include" \
+                       LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    # ML-DSA / PQC-specific coverage: CLI keygen->sign->verify for all three
+    # ML-DSA levels and the ML-DSA sign+verify demo. Runs on the explicit pqc
+    # rows only, so the row is a clean PQC signal (no classic-alg coupling).
+    - name: Run ML-DSA PQC tests (CLI round-trip + demo)
+      if: matrix.pqc
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        CF="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include"
+        LF="-L$WOLFSSL_DIR/lib -lwolfssl"
+        make tool CFLAGS="$CF" LDFLAGS="$LF"
+        echo "wolfCOSE ML-DSA CLI round-trip" > /tmp/pqc-msg.txt
+        for alg in ML-DSA-44 ML-DSA-65 ML-DSA-87; do
+          echo "=== $alg CLI keygen -> sign -> verify ==="
+          ./tools/wolfcose_tool keygen -a "$alg" -o /tmp/pqc.key
+          ./tools/wolfcose_tool sign -k /tmp/pqc.key -a "$alg" -i /tmp/pqc-msg.txt -o /tmp/pqc.cose
+          ./tools/wolfcose_tool verify -k /tmp/pqc.key -i /tmp/pqc.cose
+        done
+        make mldsa-demo CFLAGS="$CF" LDFLAGS="$LF"
+
+    - name: wolfSSL version info
+      if: always()
+      run: |
+        echo "=== wolfSSL Version ==="
+        echo "Ref: ${{ matrix.wolfssl-ref }}"
+        if [ -f ~/wolfssl-install/include/wolfssl/version.h ]; then
+          grep LIBWOLFSSL_VERSION_STRING ~/wolfssl-install/include/wolfssl/version.h || true
+        fi

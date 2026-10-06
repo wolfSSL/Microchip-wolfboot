@@ -9,7 +9,7 @@
  * https://www.wolfssl.com
  */
 
-#include "board.h"  /* provides WHAL_CFG_PIC32CZ_GPIO_DEV initializer */
+#include "wolfHAL_board.h"  /* provides WHAL_CFG_PIC32CZ_GPIO_DEV initializer */
 #include <wolfHAL/gpio/pic32cz_gpio.h>
 #include <wolfHAL/reg.h>
 #include <wolfHAL/bitops.h>

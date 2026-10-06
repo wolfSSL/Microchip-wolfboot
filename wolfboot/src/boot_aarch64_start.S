@@ -28,6 +28,18 @@
 #include "hal/raspi3.h"
 #endif
 
+#ifdef TARGET_tegra234
+#include "hal/tegra234.h"
+#endif
+
+#ifdef TARGET_cm4
+#include "hal/cm4.h"
+#endif
+
+#ifdef TARGET_imx8qm
+#include "hal/imx8qm.h"
+#endif
+
 /* GICv2 Register Offsets */
 #ifndef GICD_BASE
 #define GICD_BASE       0xF9010000
@@ -203,9 +215,23 @@ InitEL3:
 #endif
     msr    S3_1_C15_C2_0, x0      /* CPUACTLR_EL1 */
 
-    /* Program the counter frequency */
+    /* Program the counter frequency.
+     * For the FSBL-replacement build, do NOT overwrite CNTFRQ_EL0: the BootROM
+     * sets it to the actual system-counter rate, which our usleep() needs for
+     * accurate psu_init DDR-training delays. Hardcoding 100MHz here is wrong
+     * when the counter runs at the BootROM (undivided) rate. */
+#ifndef WOLFBOOT_ZYNQMP_FSBL
+#ifdef TARGET_nxp_ls1028a
+    /* Read the true base frequency from the system counter (CNTFID0 @ SYSCNT
+     * base+0x20 = SYS_REF_CLK/4); the counterfreq constant is the undivided
+     * clock and would make CNTPCT time run ~4x fast. */
+    ldr    x1, =0x023E0020
+    ldr    w0, [x1]
+#else
     ldr    x0,=counterfreq
+#endif
     msr    CNTFRQ_EL0, x0
+#endif
 
     /* Enable hardware coherency between cores */
     mrs    x0, S3_1_c15_c2_1      /* Read EL1 CPU Extended Control Register */
@@ -547,12 +573,24 @@ invalidatecaches_end:
 */
 
 .set reserved,  0x0                             /* Fault */
-#if defined(EL1_NONSECURE) && EL1_NONSECURE == 1
+#if defined(ZYNQMP_DDR_NC) && ZYNQMP_DDR_NC == 1
+.set Memory,    0x401 | (0 << 8) | (0x0)        /* DDR as Normal NON-cacheable (MAIR idx0=0x44) - diag */
+#elif defined(ZYNQMP_DDR_DEVICE) && ZYNQMP_DDR_DEVICE == 1
+.set Memory,    0x409 | (1 << 53) | (1 << 54)   /* DDR as Device-nGnRnE (no speculation) - diag */
+#elif defined(ZYNQMP_DDR_NONSHARED) && ZYNQMP_DDR_NONSHARED == 1
+.set Memory,    0x405 | (0 << 8) | (0x0)        /* normal writeback write allocate NON-shareable read write */
+#elif defined(EL1_NONSECURE) && EL1_NONSECURE == 1
 .set Memory,    0x405 | (2 << 8) | (0x0)        /* normal writeback write allocate outer shared read write */
 #else
 .set Memory,    0x405 | (3 << 8) | (0x0)        /* normal writeback write allocate inner shared read write */
 #endif
 .set Device,    0x409 | (1 << 53) | (1 << 54) | (0x0) /* strongly ordered read write non executable*/
+/* Outer-shareable Normal WB. A coherent DMA master behind the CCI (LS1028A
+ * ENETC) needs Outer-Shareable to snoop the A72 caches; Inner-Shareable only
+ * covers the CPU cluster. */
+.set MemoryOSH, 0x405 | (2 << 8) | (0x0)
+
+#ifndef TARGET_nxp_ls1028a
 .section .mmu_tbl0,"a"
 
 MMUTableL0:
@@ -561,6 +599,35 @@ MMUTableL0:
 .8byte SECT + 0x3
 .set   SECT, MMUTableL1+0x1000 /* 0x80_0000_0000 - 0xFF_FFFF_FFFF */
 .8byte SECT + 0x3
+
+#if defined(TARGET_versal) && defined(VERSAL_DDR_HIGH_BASE)
+/* Optional high DDR window (designs whose DDR aperture sits above 1 TB).
+ * One L0 descriptor per 512 GB, pointing at MMUTableL1_HI pages below.
+ * Base and size must be 512 GB aligned and end within the 44-bit space. */
+.if (VERSAL_DDR_HIGH_BASE % 0x8000000000) != 0
+.error "VERSAL_DDR_HIGH_BASE must be 512GB aligned"
+.endif
+.if VERSAL_DDR_HIGH_SIZE < 0x8000000000
+.error "VERSAL_DDR_HIGH_SIZE must be at least 512GB (one L0 granule)"
+.endif
+.if (VERSAL_DDR_HIGH_SIZE % 0x8000000000) != 0
+.error "VERSAL_DDR_HIGH_SIZE must be a multiple of 512GB"
+.endif
+.if (VERSAL_DDR_HIGH_BASE + VERSAL_DDR_HIGH_SIZE) > 0x100000000000
+.error "VERSAL_DDR_HIGH window exceeds the 44-bit address space"
+.endif
+.if VERSAL_DDR_HIGH_BASE < 0x10000000000
+.error "VERSAL_DDR_HIGH_BASE must be at least 1TB (the first two L0 entries are fixed)"
+.endif
+.rept ((VERSAL_DDR_HIGH_BASE / 0x8000000000) - 2)
+.8byte 0                       /* invalid up to the high window */
+.endr
+.set   SECT, MMUTableL1_HI
+.rept (VERSAL_DDR_HIGH_SIZE / 0x8000000000)
+.8byte SECT + 0x3
+.set   SECT, SECT + 0x1000
+.endr
+#endif /* TARGET_versal && VERSAL_DDR_HIGH_BASE */
 
 .section .mmu_tbl1,"a"
 
@@ -629,6 +696,17 @@ MMUTableL1:
 .set    SECT, SECT + 0x40000000
 .endr
 
+
+#if defined(TARGET_versal) && defined(VERSAL_DDR_HIGH_BASE)
+/* 1 GB Normal-memory blocks covering the high DDR window. */
+.balign 4096
+MMUTableL1_HI:
+.set    SECT, VERSAL_DDR_HIGH_BASE
+.rept   (VERSAL_DDR_HIGH_SIZE / 0x40000000)
+.8byte  SECT + Memory
+.set    SECT, SECT + 0x40000000
+.endr
+#endif /* TARGET_versal && VERSAL_DDR_HIGH_BASE */
 
 .section .mmu_tbl2,"a"
 
@@ -725,6 +803,64 @@ converted to 62MB */
 
 .set    SECT, SECT+0x200000    /* 0xFFE0_0000 - 0xFFFF_FFFF*/
 .8byte  SECT + Memory          /* 2MB OCM/TCM */
+
+#else /* TARGET_nxp_ls1028a */
+/* ============================================================================
+ * LS1028A translation tables (4KB granule, 40-bit VA/PA, T0SZ=24).
+ * Memory map:
+ *   0x00000000-0x17FFFFFF  Device  (CCSR: DCFG 0x1E00000, RST 0x1E60000,
+ *                                   SP805 0xC000000, FlexSPI ctrl 0x20C0000, ...)
+ *   0x18000000-0x181FFFFF  Normal  (OCRAM: wolfBoot .data/.bss/stack)
+ *   0x18200000-0x1FFFFFFF  Device
+ *   0x20000000-0x3FFFFFFF  Normal  (FlexSPI NOR: wolfBoot XIP code, executable)
+ *   0x40000000-0x7FFFFFFF  Device
+ *   0x80000000-0xFFFFFFFF  Normal  (DDR, 2GB) Outer-Shareable Cacheable
+ *   0x100000000-0x7FFFFFFFF Device (incl. ENETC ECAM 0x1F0000000 + BAR
+ *                                   0x1F8000000 at the 7-8GB block)
+ * DDR is Normal Outer-Shareable Cacheable (MemoryOSH) for coherency with the
+ * ENETC coherent bus-master DMA (SICAR=0x27276767), which snoops from outside
+ * the CPU cluster. NOR/OCRAM are Normal for XIP execution and cacheable data.
+ * ========================================================================== */
+.section .mmu_tbl0,"a"
+MMUTableL0:
+.set   SECT, MMUTableL1
+.8byte SECT + 0x3              /* 0x00_0000_0000 - 0x7F_FFFF_FFFF -> L1 */
+.8byte 0x0                     /* 0x80_0000_0000 - 0xFF_FFFF_FFFF -> invalid */
+
+.section .mmu_tbl1,"a"
+MMUTableL1:
+.set   SECT, MMUTableL2
+.8byte SECT + 0x3             /* 0x0000_0000 - 0x3FFF_FFFF -> L2 (mixed) */
+.set   SECT, 0x40000000
+.8byte SECT + Device         /* 0x4000_0000 - 0x7FFF_FFFF  1GB Device */
+.set   SECT, 0x80000000
+.8byte SECT + MemoryOSH      /* 0x8000_0000 - 0xBFFF_FFFF  1GB DDR (OSH for DMA) */
+.set   SECT, 0xC0000000
+.8byte SECT + MemoryOSH      /* 0xC000_0000 - 0xFFFF_FFFF  1GB DDR (OSH for DMA) */
+.set   SECT, 0x100000000
+.rept  0x1FC                  /* 0x1_0000_0000 - 0x7F_FFFF_FFFF Device (508GB) */
+.8byte SECT + Device         /*  incl. ENETC ECAM/BAR at the 7-8GB block */
+.set   SECT, SECT + 0x40000000
+.endr
+
+.section .mmu_tbl2,"a"
+MMUTableL2:
+.set   SECT, 0x0
+.rept  0xC0                   /* 0x0000_0000 - 0x17FF_FFFF  Device (384MB CCSR) */
+.8byte SECT + Device
+.set   SECT, SECT + 0x200000
+.endr
+.8byte SECT + Memory         /* 0x1800_0000 - 0x181F_FFFF  OCRAM */
+.set   SECT, SECT + 0x200000
+.rept  0x3F                   /* 0x1820_0000 - 0x1FFF_FFFF  Device */
+.8byte SECT + Device
+.set   SECT, SECT + 0x200000
+.endr
+.rept  0x100                  /* 0x2000_0000 - 0x3FFF_FFFF  NOR (512MB, exec) */
+.8byte SECT + Memory
+.set   SECT, SECT + 0x200000
+.endr
+#endif /* TARGET_nxp_ls1028a */
 
 
 /*
@@ -1125,9 +1261,59 @@ FPUStatus:
 .align 8
 #elif defined(USE_SIMPLE_STARTUP)
 .section ".boot"
+
 .global _vector_table
 _vector_table:
+#if defined(TARGET_cm4)
+   /* ARM64 Linux kernel image header (Documentation/arm64/booting.rst). The RPi
+    * VideoCore firmware (start4.elf) only enters a 64-bit kernel that carries
+    * this header (branch at off 0, "ARM\x64" magic at off 56); it then runs the
+    * image in place at its 2MB-aligned load address (0x200000) rather than
+    * relocating to 0x80000. code0 branches to the real entry. */
+   b      _cm4_entry
+   .long  0                  /* code1 */
+   .quad  0                  /* text_offset */
+   .quad  _end - _vector_table  /* image_size */
+   .quad  0x2                /* flags: LE, 4KB pages, 2MB-aligned (NOT
+                              * position-independent: the image checks its
+                              * runtime vs link-time _vector_table and wfi-spins
+                              * on mismatch, so bit 3 "load anywhere" is wrong) */
+   .quad  0                  /* res2 */
+   .quad  0                  /* res3 */
+   .quad  0                  /* res4 */
+   .ascii "ARM\x64"          /* magic 0x644d5241 at offset 56 */
+   .long  0                  /* res5 */
+_cm4_entry:
+#endif
    mov x21, x0        // read ATAG/FDT address
+
+#if defined(TARGET_cm4)
+   /* Load-address self-check: wolfBoot is linked absolutely at 0x200000 and is
+    * NOT position independent (the ldr =_vector_table below loads the absolute
+    * stack top). Compare the runtime address (PC-relative adr) with the linked
+    * address (from the literal pool); a mismatch means the firmware placed the
+    * image at a different 2MB base, so halt (silently, as this runs before any
+    * UART init) instead of executing from the wrong VMA. The generated
+    * config.txt pins kernel_address=0x200000. */
+   adr x2, _vector_table
+   ldr x3, =_vector_table
+   cmp x2, x3
+   b.eq 5f
+6: wfi
+   b   6b
+5:
+   /* Persist the firmware-provided DTB pointer (captured in x21 at entry) so the
+    * FIT boot path can hand the RPi firmware's fully-patched DTB (RAM size,
+    * mini-UART clock, serial no.) to Linux when the FIT is kernel-only. Only
+    * CPU0 stores it: a secondary core released with x0=0 (ARM64 boot protocol)
+    * would otherwise clobber CPU0's captured pointer. */
+   mrs x3, mpidr_el1
+   and x3, x3, #3
+   cbnz x3, 9f
+   ldr x2, =cm4_fw_dtb
+   str x21, [x2]
+9:
+#endif
 
 4: ldr x1, =_vector_table // get start of .text in x1
     // Read current EL
@@ -1150,6 +1336,17 @@ _vector_table:
     // EL == 2?
     mov x2, #3 << 20
     msr cptr_el2, x2           /* Enable FP/SIMD */
+#if defined(TARGET_cm4) || defined(TARGET_imx8qm)
+    /* Always install a valid EL2 vector base: the reset VBAR_EL2 is UNKNOWN, so
+     * without this a fault in the parsing-heavy boot code branches to an
+     * undefined address. The table halts cleanly (and, under DEBUG+DEBUG_UART,
+     * dumps ESR/ELR/FAR first). el2_to_el1_boot copies VBAR_EL2 into VBAR_EL1,
+     * so this also covers the window between the drop to EL1 and the payload
+     * installing its own vectors. */
+    ldr x2, =simple_el2_vectors
+    msr VBAR_EL2, x2
+    isb                        /* ensure new vector base is in effect */
+#endif
     b 0f
 
 1:  mov x0, #3 << 20
@@ -1163,9 +1360,94 @@ _vector_table:
 7: wfi                // infinite sleep
    b    7b
 
-8:  mov sp, x1         // set stack pointer
+8:
+#if defined(TARGET_tegra234) || defined(TARGET_imx8qm)
+    /* Reserved in-DRAM stack from the linker script: the generic path sets sp
+     * to the image base, which here is the BL33 load address. */
+    ldr x1, =END_STACK
+#endif
+    mov sp, x1         // set stack pointer
+#if defined(TARGET_tegra234) || defined(TARGET_imx8qm)
+    /* Stash the handoff x0 (DTB pointer, saved in x21 at reset) in a .data
+     * global so C can read it after boot_entry_C clears BSS. */
+    adrp x2, boot_handoff_x0
+    add  x2, x2, :lo12:boot_handoff_x0
+    str  x21, [x2]
+#endif
     bl boot_entry_C   // boot_entry_C never returns
     b   7b            // go to sleep anyhow in case.
+
+#if defined(TARGET_cm4) || defined(TARGET_imx8qm)
+/* Minimal always-on EL2 exception vectors. On any exception (data/instruction
+ * abort, etc.) halt cleanly rather than branch to the UNKNOWN reset VBAR_EL2.
+ * Under DEBUG+DEBUG_UART the handler additionally dumps ESR/ELR/FAR over UART.
+ *
+ * Each entry passes its slot number, which distinguishes a fault inside
+ * wolfBoot (slots 0-7) from one in the payload after the drop to EL1 (8-15). */
+.macro EL2_VEC label, idx
+    .align 7
+\label:
+    mov x3, #\idx
+    b   simple_el2_fault_common
+.endm
+
+.align 11
+.global simple_el2_vectors
+simple_el2_vectors:
+    EL2_VEC el2_v0,  0    /* Current EL, SP0:  Sync */
+    EL2_VEC el2_v1,  1    /*                   IRQ  */
+    EL2_VEC el2_v2,  2    /*                   FIQ  */
+    EL2_VEC el2_v3,  3    /*                   SError */
+    EL2_VEC el2_v4,  4    /* Current EL, SPx:  Sync */
+    EL2_VEC el2_v5,  5    /*                   IRQ  */
+    EL2_VEC el2_v6,  6    /*                   FIQ  */
+    EL2_VEC el2_v7,  7    /*                   SError */
+    EL2_VEC el2_v8,  8    /* Lower EL, AArch64: Sync */
+    EL2_VEC el2_v9,  9    /*                   IRQ  */
+    EL2_VEC el2_v10, 10   /*                   FIQ  */
+    EL2_VEC el2_v11, 11   /*                   SError */
+    EL2_VEC el2_v12, 12   /* Lower EL, AArch32: Sync */
+    EL2_VEC el2_v13, 13   /*                   IRQ  */
+    EL2_VEC el2_v14, 14   /*                   FIQ  */
+    EL2_VEC el2_v15, 15   /*                   SError */
+
+simple_el2_fault_common:
+#if defined(DEBUG) && defined(DEBUG_UART)
+    /* Switch to a dedicated fault stack before calling the C handler: the
+     * exception may have been taken with SP unset (the window before 'mov sp,x1'
+     * or on a secondary core that never sets SP) or with SP overflowed, and
+     * the handler needs a valid stack. x3 already carries the vector slot, so
+     * read the system registers into x0-x2 without disturbing it. */
+    ldr x4, =simple_el2_fault_stack_top
+    mov sp, x4
+    mrs x0, esr_el2
+    mrs x1, elr_el2
+    mrs x2, far_el2
+    bl  simple_el2_fault_handler /* void (esr, elr, far, vector) */
+#endif
+9:  wfi
+    b   9b
+
+#if defined(DEBUG) && defined(DEBUG_UART)
+.section ".bss"
+.balign 16
+simple_el2_fault_stack:
+    .skip 1024
+simple_el2_fault_stack_top:
+.section ".boot"
+#endif
+#endif /* TARGET_cm4 || TARGET_imx8qm */
+#if defined(TARGET_cm4)
+/* Firmware-provided DTB pointer, stored at _cm4_entry. Read by hal_get_boot_dts()
+ * (hal/cm4.c) for the kernel-only FIT boot path. In .data so it is not subject to
+ * BSS clearing; the runtime store at entry sets the value regardless of load. */
+.section ".data"
+.balign 8
+.global cm4_fw_dtb
+cm4_fw_dtb:
+    .quad 0
+.section ".boot"
+#endif /* TARGET_cm4 */
 #if 0
 .section ".boot"
 .global _vector_table
@@ -1199,6 +1481,74 @@ flush_dcache_range:
     cmp    x0, x1
     b.lo   1b
     dsb    sy
+    ret
+
+
+/*
+ * void zynqmp_dcache_disable(void)
+ *
+ * Clean+invalidate the entire data cache to PoC by set/way, then disable the
+ * D-cache (SCTLR_EL3.C=0) and drop the core out of the coherency domain
+ * (CPUECTLR_EL1.SMPEN=0). Used to TEST whether the QSPI body-load failure is
+ * purely a coherency artifact: with no cache lines to allocate into and the
+ * core out of the snoop domain, the coherent QSPIDMA writes must land in DDR.
+ * Clobbers x0-x11. Modeled on the ARMv8 set/way routine used elsewhere here.
+ */
+.global zynqmp_dcache_disable
+zynqmp_dcache_disable:
+    mrs     x0, clidr_el1
+    and     x3, x0, #0x07000000
+    lsr     x3, x3, #23                 /* x3 = LoC * 2 */
+    cbz     x3, .Lzdd_done
+    mov     x10, #0
+.Lzdd_level:
+    add     x2, x10, x10, lsr #1
+    lsr     x1, x0, x2
+    and     x1, x1, #7
+    cmp     x1, #2
+    b.lt    .Lzdd_skip
+    msr     csselr_el1, x10
+    isb
+    mrs     x1, ccsidr_el1
+    and     x2, x1, #7
+    add     x2, x2, #4                  /* x2 = log2(line len) */
+    mov     x4, #0x3ff
+    and     x4, x4, x1, lsr #3          /* x4 = max way */
+    clz     w5, w4
+    mov     x7, #0x7fff
+    and     x7, x7, x1, lsr #13         /* x7 = max set */
+.Lzdd_set:
+    mov     x9, x4
+.Lzdd_way:
+    lsl     x6, x9, x5
+    orr     x11, x10, x6
+    lsl     x6, x7, x2
+    orr     x11, x11, x6
+    dc      cisw, x11
+    subs    x9, x9, #1
+    b.ge    .Lzdd_way
+    subs    x7, x7, #1
+    b.ge    .Lzdd_set
+.Lzdd_skip:
+    add     x10, x10, #2
+    cmp     x3, x10
+    b.gt    .Lzdd_level
+.Lzdd_done:
+    mov     x10, #0
+    msr     csselr_el1, x10
+    dsb     sy
+    isb
+    /* disable D-cache (SCTLR_EL3.C, bit 2) */
+    mrs     x1, sctlr_el3
+    bic     x1, x1, #(1 << 2)
+    msr     sctlr_el3, x1
+    isb
+    /* leave the SMP/coherency domain (CPUECTLR_EL1.SMPEN, bit 6) */
+    mrs     x1, S3_1_C15_C2_1
+    bic     x1, x1, #(1 << 6)
+    msr     S3_1_C15_C2_1, x1
+    dsb     sy
+    isb
     ret
 
 
@@ -1355,7 +1705,11 @@ el2_to_el1_boot:
  * AAPCS64: clobbers x0-x7, x9-x11; x30 (LR) is preserved because the
  * set/way loop body does not touch it.
  */
-#if defined(EL2_HYPERVISOR) && EL2_HYPERVISOR == 1
+/* Also built where a HAL tears its own identity MMU down before handoff and
+ * needs this routine's stack-free property, which is orthogonal to whether the
+ * build hands off at EL1. Such a HAL sets WOLFBOOT_AARCH64_MMU_TEARDOWN. */
+#if (defined(EL2_HYPERVISOR) && EL2_HYPERVISOR == 1) || \
+    defined(WOLFBOOT_AARCH64_MMU_TEARDOWN)
 .global el2_flush_and_disable_mmu
 el2_flush_and_disable_mmu:
     /* ---- 1. Clean & invalidate entire data cache to PoC by set/way ----
@@ -1436,6 +1790,92 @@ el2_flush_and_disable_mmu:
     isb
 
     ret
-#endif /* EL2_HYPERVISOR */
+#endif /* EL2_HYPERVISOR || WOLFBOOT_AARCH64_MMU_TEARDOWN */
+
+#if defined(WOLFBOOT_ZYNQMP_FSBL)
+/*
+ * void el3_jump_to_entry(uintptr_t entry)
+ *
+ * Generic AArch64 EL3 exit primitive: cleans & invalidates the entire D-cache
+ * to the PoC, invalidates the I-cache, disables the EL3 MMU + I/D-caches, then
+ * branches to the given entry point at EL3 with the MMU off. Not ZynqMP-
+ * specific -- reusable by any AArch64 EL3-FSBL target that hands off to a
+ * next-stage image entered at EL3 (here BL31, mirroring the stock ZynqMP FSBL's
+ * XFsbl_Exit()). Any handoff parameters are the caller's responsibility (the
+ * ZynqMP caller publishes them via PMU_GLOBAL scratch in hal/zynqmp_atf.c
+ * beforehand), so no GP-register arguments are used here.
+ *
+ * x0: entry. The set/way loop below clobbers x0-x11, so the entry point is
+ * preserved in x19 (callee-saved, untouched by the loop). Does not return.
+ */
+.global el3_jump_to_entry
+el3_jump_to_entry:
+    mov     x19, x0                 /* preserve entry point across the loop */
+
+    /* ---- 1. Clean & invalidate entire data cache to PoC by set/way ---- */
+    mrs     x0, clidr_el1
+    and     x3, x0, #0x07000000     /* x3 = LoC (level of coherency) */
+    lsr     x3, x3, #23             /* x3 = LoC * 2 */
+    cbz     x3, .Latf_dcache_done
+    mov     x10, #0                 /* x10 = current cache level << 1 */
+
+.Latf_dcache_level_loop:
+    add     x2, x10, x10, lsr #1    /* x2 = level * 3 */
+    lsr     x1, x0, x2              /* x1 = ctype field for this level */
+    and     x1, x1, #7
+    cmp     x1, #2
+    b.lt    .Latf_dcache_skip_level /* No data cache at this level */
+    msr     csselr_el1, x10         /* Select cache level (instruction = 0) */
+    isb
+    mrs     x1, ccsidr_el1
+    and     x2, x1, #7              /* x2 = log2(line length) - 4 */
+    add     x2, x2, #4              /* x2 = log2(line length) */
+    mov     x4, #0x3ff
+    and     x4, x4, x1, lsr #3      /* x4 = max way number */
+    clz     w5, w4                  /* x5 = bit position of way size */
+    mov     x7, #0x7fff
+    and     x7, x7, x1, lsr #13     /* x7 = max set number */
+
+.Latf_dcache_set_loop:
+    mov     x9, x4                  /* x9 = current way */
+.Latf_dcache_way_loop:
+    lsl     x6, x9, x5
+    orr     x11, x10, x6            /* level | way */
+    lsl     x6, x7, x2
+    orr     x11, x11, x6            /* level | way | set */
+    dc      cisw, x11               /* clean & invalidate by set/way */
+    subs    x9, x9, #1
+    b.ge    .Latf_dcache_way_loop
+    subs    x7, x7, #1
+    b.ge    .Latf_dcache_set_loop
+
+.Latf_dcache_skip_level:
+    add     x10, x10, #2
+    cmp     x3, x10
+    b.gt    .Latf_dcache_level_loop
+
+.Latf_dcache_done:
+    mov     x10, #0
+    msr     csselr_el1, x10
+    dsb     sy
+    isb
+
+    /* ---- 2. Invalidate entire I-cache to PoU ---- */
+    ic      iallu
+    dsb     ish
+    isb
+
+    /* ---- 3. Disable MMU + I-cache + D-cache at EL3 ---- */
+    mrs     x0, SCTLR_EL3
+    bic     x0, x0, #(1 << 0)       /* M  */
+    bic     x0, x0, #(1 << 2)       /* C  */
+    bic     x0, x0, #(1 << 12)      /* I  */
+    msr     SCTLR_EL3, x0
+    dsb     sy
+    isb
+
+    /* ---- 4. Branch to BL31 (does not return) ---- */
+    br      x19
+#endif /* WOLFBOOT_ZYNQMP_FSBL */
 
 .end

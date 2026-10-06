@@ -12,10 +12,6 @@
 --
 -- https://www.wolfssl.com
 --
- with any questions or comments.
---
--- https://www.wolfssl.com
---
 with Ada.Command_Line;
 
 --  SPARK wrapper package around the Ada.Command_Line package

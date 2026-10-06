@@ -19,6 +19,7 @@
 #include <arm_cmse.h>
 #include <stddef.h>                  /* offsetof */
 #include <wolfssl/wolfcrypt/types.h> /* XMALLOC/XFREE/XMEMCPY, DYNAMIC_TYPE_* */
+#include <wolfssl/wolfcrypt/memory.h> /* wc_ForceZero */
 
 /*
  * TrustZone-M PKCS#11 non-secure-callable (NSC) layer with pointer
@@ -120,6 +121,7 @@ static int ns_outlen_begin(const volatile void *pBuf, CK_ULONG_PTR pulLen,
 struct nsc_mech {
     CK_MECHANISM mech;                  /* secure mechanism passed to wolfPKCS11 */
     void        *alloc[NSC_MECH_MAX_ALLOC];
+    CK_ULONG     allocLen[NSC_MECH_MAX_ALLOC];
     int          nAlloc;
     struct {
         void    *dst;                   /* NS destination */
@@ -138,8 +140,10 @@ static void *nsc_alloc(struct nsc_mech *m, CK_ULONG len)
     if (m->nAlloc >= NSC_MECH_MAX_ALLOC)
         return NULL;
     p = XMALLOC((size_t)len, NULL, DYNAMIC_TYPE_TMP_BUFFER);
-    if (p != NULL)
+    if (p != NULL) {
+        m->allocLen[m->nAlloc] = len;
         m->alloc[m->nAlloc++] = p;
+    }
     return p;
 }
 
@@ -195,13 +199,17 @@ static CK_RV nsc_inout(struct nsc_mech *m, CK_VOID_PTR dst, CK_ULONG len,
     return CKR_OK;
 }
 
-/* Free all secure allocations without copying anything back (error path). */
+/* Free all secure allocations without copying anything back (error path).
+ * Parameter blobs can carry secrets (CKM_PKCS5_PBKD2 pPassword, HKDF salt,
+ * ...), so scrub every block before it goes back to the secure heap. */
 static void nsc_mech_free(struct nsc_mech *m)
 {
     int i;
 
-    for (i = 0; i < m->nAlloc; i++)
+    for (i = 0; i < m->nAlloc; i++) {
+        wc_ForceZero(m->alloc[i], (size_t)m->allocLen[i]);
         XFREE(m->alloc[i], NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    }
     m->nAlloc = 0;
     m->nCback = 0;
 }
@@ -468,10 +476,19 @@ static CK_RV nsc_mech_prepare(CK_MECHANISM_PTR ns, struct nsc_mech *m)
                         rv = CKR_ARGUMENTS_BAD;
                     }
                     else {
+                        /* Single snapshot of the NS length: the value read
+                         * here sizes the password copy and is what the
+                         * library sees, so a concurrent non-secure write
+                         * cannot desync the two. */
                         pwLen = *nsLen;
-                        rv = nsc_in(m, nsLen, sizeof(CK_ULONG), &q);
-                        if (rv == CKR_OK)
+                        q = nsc_alloc(m, sizeof(CK_ULONG));
+                        if (q == NULL) {
+                            rv = CKR_HOST_MEMORY;
+                        }
+                        else {
+                            *(CK_ULONG_PTR)q = pwLen;
                             legacy->ulPasswordLen = (CK_ULONG_PTR)q;
+                        }
                     }
                 }
                 else {
@@ -541,8 +558,16 @@ static void nsc_tmpl_free(struct nsc_tmpl *t)
 
     if (t->work != NULL) {
         for (i = 0; i < t->count; i++) {
-            if (t->work[i].pValue != NULL)
+            if (t->work[i].pValue != NULL) {
+                /* Value buffers hold imported key material (CKA_VALUE, the RSA
+                 * private components, ...). Scrub before releasing, using the
+                 * snapshot length: that is what was allocated, and wolfPKCS11
+                 * rewrites work[].ulValueLen on the C_GetAttributeValue path. */
+                if (t->snap != NULL)
+                    wc_ForceZero(t->work[i].pValue,
+                            (size_t)t->snap[i].ulValueLen);
                 XFREE(t->work[i].pValue, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+            }
         }
         XFREE(t->work, NULL, DYNAMIC_TYPE_TMP_BUFFER);
         t->work = NULL;
@@ -576,6 +601,12 @@ static CK_RV nsc_tmpl_prepare(CK_ATTRIBUTE_PTR ns, CK_ULONG count, int isOut,
             NULL, DYNAMIC_TYPE_TMP_BUFFER);
     t->work = (CK_ATTRIBUTE *)XMALLOC((size_t)(count * sizeof(CK_ATTRIBUTE)),
             NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (t->work != NULL) {
+        /* Zero before any path can reach nsc_tmpl_free(): if the snap
+         * allocation failed, the initialisation loop below never runs, and
+         * free() would release indeterminate work[].pValue pointers. */
+        XMEMSET(t->work, 0, (size_t)(count * sizeof(CK_ATTRIBUTE)));
+    }
     if (t->snap == NULL || t->work == NULL) {
         rv = CKR_HOST_MEMORY;
         goto fail;
@@ -1479,6 +1510,30 @@ CK_RV CSME_NSE_API C_CancelFunction_nsc_call(CK_SESSION_HANDLE hSession)
 {
     return C_CancelFunction(hSession);
 }
+
+#ifdef PKCS11_STORE_STATS
+/* Flash-activity counters, implemented in src/pkcs11_store.c (the wolfBoot
+ * store backend); declared here to keep the wolfPKCS11 submodule untouched. */
+void wolfPKCS11_Store_GetStats(uint32_t *commits, uint32_t *erases,
+        uint32_t *programs);
+void wolfPKCS11_Store_ResetStats(void);
+
+CK_RV CSME_NSE_API C_StoreGetStats_nsc_call(uint32_t *pCommits,
+        uint32_t *pErases, uint32_t *pPrograms)
+{
+    NSC_CHK(ns_ok(pCommits, sizeof(uint32_t)));
+    NSC_CHK(ns_ok(pErases, sizeof(uint32_t)));
+    NSC_CHK(ns_ok(pPrograms, sizeof(uint32_t)));
+    wolfPKCS11_Store_GetStats(pCommits, pErases, pPrograms);
+    return CKR_OK;
+}
+
+CK_RV CSME_NSE_API C_StoreResetStats_nsc_call(void)
+{
+    wolfPKCS11_Store_ResetStats();
+    return CKR_OK;
+}
+#endif
 
 CK_RV CSME_NSE_API C_WaitForSlotEvent_nsc_call(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pReserved)
 {

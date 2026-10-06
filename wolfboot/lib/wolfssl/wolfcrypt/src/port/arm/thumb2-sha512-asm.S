@@ -15,6 +15,9 @@
  *       thumb2 ../wolfssl/wolfcrypt/src/port/arm/thumb2-sha512-asm.S
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_THUMB2_SHA512_ASM_S
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -81,6 +84,7 @@ L_SHA512_transform_len_k:
 	.text
 	.align	4
 	.globl	Transform_Sha512_Len_base
+	WC_ASM_ATT_HIDDEN(Transform_Sha512_Len_base)
 	.type	Transform_Sha512_Len_base, %function
 Transform_Sha512_Len_base:
 	PUSH	{r4, r5, r6, r7, r8, r9, r10, r11, lr}
@@ -207,7 +211,7 @@ L_SHA512_transform_len_begin:
 	LDRD	r4, r5, [r0, #16]
 	EOR	r10, r10, r4
 	EOR	r11, r11, r5
-	MOV	r12, #0x4
+	MOV	r12, #4
 	/* Start of 16 rounds */
 L_SHA512_transform_len_start:
 	/* Round 0 */
@@ -2195,7 +2199,7 @@ L_SHA512_transform_len_start:
 	ADC	r5, r5, r7
 	STRD	r4, r5, [sp, #120]
 	ADD	r3, r3, #0x80
-	SUBS	r12, r12, #0x1
+	SUBS	r12, r12, #1
 #if defined(__GNUC__) || defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
 	BNE	L_SHA512_transform_len_start
 #else
@@ -3545,10 +3549,10 @@ L_SHA512_transform_len_start:
 	.size	Transform_Sha512_Len_base,.-Transform_Sha512_Len_base
 #endif /* WOLFSSL_ARMASM_NO_NEON */
 #endif /* WOLFSSL_SHA512 || WOLFSSL_SHA384 */
-#endif /* WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #if defined(__linux__) && defined(__ELF__)
 .section	.note.GNU-stack,"",%progbits
 #endif
 #endif /* !WOLFSSL_ARMASM_INLINE */
+#endif /* WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

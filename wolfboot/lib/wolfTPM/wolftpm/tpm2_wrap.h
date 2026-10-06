@@ -1,8 +1,8 @@
 /* tpm2_wrap.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -139,6 +139,8 @@ typedef enum WOLFTPM2_MFG {
     TPM_MFG_MCHP,
     TPM_MFG_NUVOTON,
     TPM_MFG_NATIONTECH,
+    TPM_MFG_SEALSQ,
+    TPM_MFG_MSFT, /* Microsoft reference firmware TPM (e.g. OP-TEE fTPM TA) */
 } WOLFTPM2_MFG;
 
 typedef struct WOLFTPM2_CAPS {
@@ -204,10 +206,17 @@ WOLFTPM_API int wolfTPM2_Test(TPM2HalIoCb ioCb, void* userCtx, WOLFTPM2_CAPS* ca
 /*!
     \ingroup wolfTPM2_Wrappers
     \brief Complete initialization of a TPM
+    On failure after argument validation, the device is fully torn down,
+    except for TPM_RC_UPGRADE, which leaves an active context for the vendor
+    firmware-recovery flow.
 
     \return TPM_RC_SUCCESS: successful
     \return TPM_RC_FAILURE: generic failure (check TPM IO communication)
+    \return TPM_RC_UPGRADE: TPM firmware recovery is active; call cleanup
+    when the recovery flow is complete
     \return BAD_FUNC_ARG: check the provided arguments
+    \return WOLFSPDM_E_BAD_STATE: TPM is in SPDM-only mode and no trusted
+    identity key or PSK was supplied; use the matching SPDM init API
 
     \param dev pointer to an empty structure of WOLFTPM2_DEV type
     \param ioCb function pointer to a IO callback (see hal/tpm_io.h)
@@ -226,10 +235,122 @@ WOLFTPM_API int wolfTPM2_Test(TPM2HalIoCb ioCb, void* userCtx, WOLFTPM2_CAPS* ca
     \endcode
 
     \sa wolfTPM2_OpenExisting
+    \sa wolfTPM2_InitWithSpdmKey
+    \sa wolfTPM2_InitWithSpdmPsk
     \sa wolfTPM2_Test
     \sa TPM2_Init
 */
 WOLFTPM_API int wolfTPM2_Init(WOLFTPM2_DEV* dev, TPM2HalIoCb ioCb, void* userCtx);
+
+#if defined(WOLFTPM_SPDM) && defined(WOLFTPM_SPDM_TCG)
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Initialize a TPM and pin a trusted SPDM responder public key.
+    A successful call establishes an authenticated SPDM session even when the
+    TPM accepted the initial cleartext startup probe. When the TPM is already
+    in SPDM-only identity mode, startup is retried over that secure session.
+    Identity initialization requires a Nuvoton or Nations vendor adapter;
+    builds without either adapter return WOLFSPDM_E_NOT_AVAILABLE.
+    In dual-vendor builds, automatic selection requires TPM DID/VID; use
+    wolfTPM2_InitWithSpdmKey_ex for transports that do not expose it.
+    On failure after argument validation, the device is fully torn down,
+    except for TPM_RC_UPGRADE, which leaves an active context for the vendor
+    firmware-recovery flow. WOLFSPDM_E_NOT_AVAILABLE is returned before the
+    device is modified.
+
+    \return TPM_RC_SUCCESS: successful
+    \return TPM_RC_UPGRADE: TPM firmware recovery is active; call cleanup
+    when the recovery flow is complete
+    \return BAD_FUNC_ARG: invalid parameters or responder key size
+    \return WOLFSPDM_E_BAD_STATE: SPDM identity mode cannot be initialized
+    \return WOLFSPDM_E_NOT_AVAILABLE: no identity vendor adapter was built
+    \return a WOLFSPDM_E_* error if the authenticated handshake fails
+
+    \param dev pointer to an empty WOLFTPM2_DEV structure
+    \param ioCb function pointer to an I/O callback
+    \param userCtx pointer to a user context (can be NULL)
+    \param rspPubKey trusted raw P-384 responder key in X||Y format
+    \param rspPubKeySz size of rspPubKey; must be 96 bytes
+
+    \sa wolfTPM2_Init
+    \sa wolfTPM2_SpdmSetResponderPubKey
+    \sa wolfTPM2_SpdmConnect
+    \sa wolfTPM2_SpdmIsConnected
+*/
+WOLFTPM_API int wolfTPM2_InitWithSpdmKey(WOLFTPM2_DEV* dev,
+    TPM2HalIoCb ioCb, void* userCtx, const byte* rspPubKey,
+    word32 rspPubKeySz);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Initialize with a trusted responder key and explicit identity mode.
+    This API requires a Nuvoton or Nations vendor adapter.
+    Use this form when both vendor adapters are compiled and the transport does
+    not expose TPM DID/VID. WOLFSPDM_MODE_AUTO selects from DID/VID and fails
+    closed when it is unavailable instead of guessing a vendor handshake.
+    TPM_RC_UPGRADE leaves an active context for the vendor firmware-recovery
+    flow; call cleanup when that flow is complete. WOLFSPDM_E_NOT_AVAILABLE
+    is returned before the device is modified.
+
+    \return TPM_RC_SUCCESS: successful
+    \return TPM_RC_UPGRADE: TPM firmware recovery is active
+    \return BAD_FUNC_ARG: invalid parameters or unsupported identity mode
+    \return WOLFSPDM_E_BAD_STATE: automatic vendor selection is unavailable
+    \return WOLFSPDM_E_NOT_AVAILABLE: no identity vendor adapter was built
+    \return a WOLFSPDM_E_* error if the authenticated handshake fails
+
+    \param dev pointer to an empty WOLFTPM2_DEV structure
+    \param ioCb function pointer to an I/O callback
+    \param userCtx pointer to a user context (can be NULL)
+    \param rspPubKey trusted raw P-384 responder key in X||Y format
+    \param rspPubKeySz size of rspPubKey; must be 96 bytes
+    \param mode WOLFSPDM_MODE_AUTO, WOLFSPDM_MODE_NUVOTON, or
+    WOLFSPDM_MODE_NATIONS
+
+    \sa wolfTPM2_InitWithSpdmKey
+*/
+WOLFTPM_API int wolfTPM2_InitWithSpdmKey_ex(WOLFTPM2_DEV* dev,
+    TPM2HalIoCb ioCb, void* userCtx, const byte* rspPubKey,
+    word32 rspPubKeySz, WOLFSPDM_MODE mode);
+
+#if defined(WOLFSPDM_NUVOTON) && defined(WOLFSPDM_NATIONS)
+/* Test-visible helper used by automatic dual-vendor selection. */
+WOLFTPM_TEST_API int wolfTPM2_SpdmModeFromDidVid(UINT32 didVid,
+    WOLFSPDM_MODE* mode);
+#endif
+#endif
+
+#if defined(WOLFTPM_SPDM) && defined(WOLFTPM_SPDM_PSK)
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Initialize a TPM and authenticate an SPDM session with a PSK.
+    This entry point also recovers a PSK-configured TPM that is already locked
+    in SPDM-only mode by retrying TPM2_Startup over the secure session.
+    On failure after argument validation, the device is fully torn down,
+    except for TPM_RC_UPGRADE, which leaves an active context for the vendor
+    firmware-recovery flow.
+
+    \return TPM_RC_SUCCESS: successful
+    \return TPM_RC_UPGRADE: TPM firmware recovery is active; call cleanup
+    when the recovery flow is complete
+    \return BAD_FUNC_ARG: invalid parameters
+    \return a WOLFSPDM_E_* error if the authenticated handshake fails
+
+    \param dev pointer to an empty WOLFTPM2_DEV structure
+    \param ioCb function pointer to an I/O callback
+    \param userCtx pointer to a user context (can be NULL)
+    \param psk pre-shared key bytes
+    \param pskSz size of psk; must be nonzero
+    \param hint optional PSK hint
+    \param hintSz size of hint
+
+    \sa wolfTPM2_Init
+    \sa wolfTPM2_SpdmConnectPsk
+*/
+WOLFTPM_API int wolfTPM2_InitWithSpdmPsk(WOLFTPM2_DEV* dev,
+    TPM2HalIoCb ioCb, void* userCtx, const byte* psk, word32 pskSz,
+    const byte* hint, word32 hintSz);
+#endif
 
 /*!
     \ingroup wolfTPM2_Wrappers
@@ -391,6 +512,52 @@ WOLFTPM_API int wolfTPM2_GetCapabilities(WOLFTPM2_DEV* dev, WOLFTPM2_CAPS* caps)
 
 /*!
     \ingroup wolfTPM2_Wrappers
+    \brief Decode a TPM property list into WOLFTPM2_CAPS
+    \note Exposed so the decode can be unit tested against synthetic property
+        lists; callers want wolfTPM2_GetCapabilities
+
+    \return TPM_RC_SUCCESS: successful
+
+    \param caps pointer to a WOLFTPM2_CAPS struct to fill
+    \param props pointer to the tagged property list to decode
+
+    \sa wolfTPM2_GetCapabilities
+*/
+WOLFTPM_TEST_API int wolfTPM2_ParseCapabilities(WOLFTPM2_CAPS* caps,
+    TPML_TAGGED_TPM_PROPERTY* props);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+
+    \brief Report whether the TPM implements a given algorithm
+
+    \note Queries TPM_CAP_ALGS. Useful to skip a hash the TPM does not support
+          (for example SHA2-512 on parts limited to SHA2-256/384) before starting
+          a session with it.
+
+    \note The result is returned through isSupported, not the return value, so a
+          capability-query failure cannot be mistaken for "supported". On any
+          error *isSupported is set to 0, so the call fails closed.
+
+    \note This reports what the TPM implements, not what the local wolfCrypt
+          build supports. A caller that also hashes locally (for example to
+          precompute a policy digest) must check its own build as well.
+
+    \return TPM_RC_SUCCESS: query completed; *isSupported is 1 or 0
+    \return BAD_FUNC_ARG: dev or isSupported is NULL
+    \return a TPM_RC (or other non-zero error) if the capability query fails
+
+    \param dev pointer to a TPM2_DEV struct
+    \param alg the algorithm identifier to test (for example TPM_ALG_SHA512)
+    \param isSupported output, set to 1 if implemented by the TPM, else 0
+
+    \sa wolfTPM2_GetCapabilities
+*/
+WOLFTPM_API int wolfTPM2_IsAlgSupported(WOLFTPM2_DEV* dev, TPM_ALG_ID alg,
+    int* isSupported);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
     \brief Gets a list of handles
 
     \return 0 or greater: successful, count of handles
@@ -440,11 +607,16 @@ WOLFTPM_API int wolfTPM2_SpdmInit(WOLFTPM2_DEV* dev);
     \brief Establish an SPDM secure session (full handshake).
     Uses standard SPDM flow: GET_VERSION -> GET_CAPABILITIES ->
     NEGOTIATE_ALGORITHMS -> KEY_EXCHANGE -> FINISH.
+    Identity-key modes require a responder key pinned with
+    wolfTPM2_SpdmSetResponderPubKey before this call.
 
     \return TPM_RC_SUCCESS: session established
     \return TPM_RC_FAILURE: handshake failed
+    \return WOLFSPDM_E_BAD_STATE: trusted responder key is not pinned
 
     \param dev pointer to a WOLFTPM2_DEV structure
+
+    \sa wolfTPM2_SpdmSetResponderPubKey
 */
 WOLFTPM_API int wolfTPM2_SpdmConnect(WOLFTPM2_DEV* dev);
 
@@ -492,7 +664,29 @@ WOLFTPM_API int wolfTPM2_SpdmCleanup(WOLFTPM2_DEV* dev);
 #ifdef WOLFTPM_SPDM_TCG
 /*!
     \ingroup wolfTPM2_Wrappers
+    \brief Pin the trusted responder key before an identity-key connection.
+
+    \return WOLFSPDM_SUCCESS: successful
+    \return BAD_FUNC_ARG: invalid device context
+    \return WOLFSPDM_E_INVALID_ARG: invalid key pointer or size
+
+    \param dev pointer to an initialized WOLFTPM2_DEV structure
+    \param pubKey trusted raw P-384 responder key in X||Y format
+    \param pubKeySz size of pubKey; must be 96 bytes
+
+    \sa wolfTPM2_InitWithSpdmKey
+    \sa wolfTPM2_SpdmConnect
+*/
+WOLFTPM_API int wolfTPM2_SpdmSetResponderPubKey(WOLFTPM2_DEV* dev,
+    const byte* pubKey, word32 pubKeySz);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
     \brief Get the TPM's SPDM-Identity public key (shared TCG function).
+    \note This command runs in cleartext and its result is not a trust source.
+          Use it only for diagnostics or compare it with a key obtained from a
+          trusted provisioning channel. Do not install the returned key as its
+          own trust anchor.
 
     \return TPM_RC_SUCCESS: successful
     \return BAD_FUNC_ARG: invalid parameters
@@ -500,6 +694,8 @@ WOLFTPM_API int wolfTPM2_SpdmCleanup(WOLFTPM2_DEV* dev);
     \param dev pointer to a WOLFTPM2_DEV structure
     \param pubKey output buffer for the public key
     \param pubKeySz in/out: buffer size / actual key size
+
+    \sa wolfTPM2_SpdmSetResponderPubKey
 */
 WOLFTPM_API int wolfTPM2_SpdmGetPubKey(WOLFTPM2_DEV* dev,
     byte* pubKey, word32* pubKeySz);
@@ -544,15 +740,19 @@ WOLFTPM_API int wolfTPM2_SpdmDisable(WOLFTPM2_DEV* dev);
     \brief Establish Nuvoton SPDM secure session with mutual authentication.
     Uses Nuvoton flow: GET_VERSION -> GET_PUB_KEY -> KEY_EXCHANGE ->
     GIVE_PUB_KEY -> FINISH.
+    Requires a responder key pinned with wolfTPM2_SpdmSetResponderPubKey.
 
     \return TPM_RC_SUCCESS: session established
     \return TPM_RC_FAILURE: handshake failed
+    \return WOLFSPDM_E_BAD_STATE: trusted responder key is not pinned
 
     \param dev pointer to a WOLFTPM2_DEV structure
     \param reqPubKey host's ECDSA P-384 public key (TPMT_PUBLIC format)
     \param reqPubKeySz size of reqPubKey in bytes
     \param reqPrivKey host's ECDSA P-384 private key (raw 48 bytes)
     \param reqPrivKeySz size of reqPrivKey in bytes
+
+    \sa wolfTPM2_SpdmSetResponderPubKey
 */
 WOLFTPM_API int wolfTPM2_SpdmConnectNuvoton(WOLFTPM2_DEV* dev,
     const byte* reqPubKey, word32 reqPubKeySz,
@@ -604,15 +804,19 @@ WOLFTPM_API int wolfTPM2_SpdmSetNationsMode(WOLFTPM2_DEV* dev);
     \brief Establish Nations SPDM secure session (identity key mode).
     Uses TCG flow: GET_VERSION -> GET_PUB_KEY -> KEY_EXCHANGE ->
     GIVE_PUB_KEY -> FINISH.
+    Requires a responder key pinned with wolfTPM2_SpdmSetResponderPubKey.
 
     \return TPM_RC_SUCCESS: session established
     \return TPM_RC_FAILURE: handshake failed
+    \return WOLFSPDM_E_BAD_STATE: trusted responder key is not pinned
 
     \param dev pointer to a WOLFTPM2_DEV structure
     \param reqPubKey host's ECDSA P-384 public key (TPMT_PUBLIC format, or NULL for auto-gen)
     \param reqPubKeySz size of reqPubKey in bytes
     \param reqPrivKey host's ECDSA P-384 private key (raw 48 bytes, or NULL for auto-gen)
     \param reqPrivKeySz size of reqPrivKey in bytes
+
+    \sa wolfTPM2_SpdmSetResponderPubKey
 */
 WOLFTPM_API int wolfTPM2_SpdmConnectNations(WOLFTPM2_DEV* dev,
     const byte* reqPubKey, word32 reqPubKeySz,
@@ -2725,19 +2929,46 @@ WOLFTPM_API int wolfTPM2_ReadPCR(WOLFTPM2_DEV* dev,
 /*!
     \ingroup wolfTPM2_Wrappers
     \brief Reset a PCR register to its default value
-    \note Only PCR registers 0-15 can be reset, and this operation requires platform authorization
+    \note Reset permission depends on the selected PCR's TPM attributes and
+    locality.
 
     \return TPM_RC_SUCCESS: successful
     \return TPM_RC_FAILURE: generic failure (check TPM IO and TPM return code)
     \return BAD_FUNC_ARG: check the provided arguments
 
     \param dev pointer to a TPM2_DEV struct
-    \param pcrIndex integer value, specifying a valid PCR index between 0 and 15
+    \param pcrIndex integer value from PCR_FIRST through PCR_LAST
 
     \sa wolfTPM2_ReadPCR
     \sa wolfTPM2_ExtendPCR
 */
 WOLFTPM_API int wolfTPM2_ResetPCR(WOLFTPM2_DEV* dev, int pcrIndex);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Change the active TPM locality at runtime
+    \note Startup uses WOLFTPM_LOCALITY_DEFAULT (0); this switches so subsequent
+        commands run at the given locality (e.g. loc 2/3 to reset PCRs not
+        resettable at loc 0). For the built-in TIS driver it performs the ACCESS
+        handshake (request, then release-and-request if the TPM does not preempt,
+        restoring the old locality on failure); for the SWTPM/mssim transport it
+        records the locality (sent with each command). The Linux kernel driver and
+        Windows TBS own the locality and return NOT_COMPILED_IN. Return to locality
+        0 when done.
+
+    \return TPM_RC_SUCCESS: locality granted and now active
+    \return other: on the built-in TIS driver any non-success TPM_RC_* code (for
+        example TPM_RC_TIMEOUT) may be returned when the locality could not be
+        granted, so test rc != TPM_RC_SUCCESS rather than a specific code
+    \return NOT_COMPILED_IN: locality switching is not supported for this backend
+    \return BAD_FUNC_ARG: check the provided arguments
+
+    \param dev pointer to a TPM2_DEV struct
+    \param locality integer value, specifying the TPM locality (0 to 4)
+
+    \sa wolfTPM2_ResetPCR
+*/
+WOLFTPM_API int wolfTPM2_SetLocality(WOLFTPM2_DEV* dev, int locality);
 
 /*!
     \ingroup wolfTPM2_Wrappers
@@ -3546,9 +3777,14 @@ WOLFTPM_API int wolfTPM2_SetCommand(WOLFTPM2_DEV* dev, TPM_CC commandCode,
     \note - Both flags set to 1: Performs a full TPM restart (shutdown then startup)
     \note - Only doStartup=1: Just starts up the TPM
     \note - Only doShutdown=1: Just shuts down the TPM
+    \note On the Linux kernel driver (/dev/tpmX) and Windows TBS the OS owns
+        TPM startup state, so no TPM command is sent and NOT_COMPILED_IN is
+        returned. A call requesting neither a shutdown nor a startup still
+        returns TPM_RC_SUCCESS, since nothing was declined. See docs/DEVTPM.md.
 
     \return TPM_RC_SUCCESS: successful
     \return TPM_RC_FAILURE: generic failure (check TPM IO and TPM return code)
+    \return NOT_COMPILED_IN: transport where the OS owns TPM startup state
     \return BAD_FUNC_ARG: check the provided arguments
 
     \param dev pointer to a TPM2_DEV struct
@@ -3564,9 +3800,14 @@ WOLFTPM_API int wolfTPM2_Reset(WOLFTPM2_DEV* dev, int doShutdown, int doStartup)
     \ingroup wolfTPM2_Wrappers
     \brief Helper function to shutdown or reset the TPM
     \note If doStartup is set, then TPM2_Startup is performed right after TPM2_Shutdown
+    \note On the Linux kernel driver (/dev/tpmX) and Windows TBS the OS owns
+        TPM startup state, so no TPM command is sent and NOT_COMPILED_IN is
+        returned. A call requesting neither a shutdown nor a startup still
+        returns TPM_RC_SUCCESS, since nothing was declined. See docs/DEVTPM.md.
 
     \return TPM_RC_SUCCESS: successful
     \return TPM_RC_FAILURE: generic failure (check TPM IO and TPM return code)
+    \return NOT_COMPILED_IN: transport where the OS owns TPM startup state
     \return BAD_FUNC_ARG: check the provided arguments
 
     \param dev pointer to a TPM2_DEV struct
@@ -4303,6 +4544,9 @@ typedef struct TpmCryptoDevCtx {
     unsigned short useSymmetricOnTPM:1; /* if set indicates desire to use symmetric algorithms on TPM */
 #endif
     unsigned short useFIPSMode:1; /* if set requires FIPS mode on TPM and no fallback to software algos */
+#ifdef WOLFTPM_MLDSA_SIGN
+    WOLFTPM2_KEY* mldsaKey; /* ML-DSA identity key; private key stays in TPM */
+#endif
 } TpmCryptoDevCtx;
 
 #endif /* WOLFTPM_CRYPTOCB || HAVE_PK_CALLBACKS */
@@ -4414,10 +4658,17 @@ WOLFTPM_API int wolfTPM_PK_SetCbCtx(WOLFSSL* ssl, void* userCtx);
     \ingroup wolfTPM2_Wrappers
     \brief Allocate and initialize a WOLFTPM2_DEV
 
+    \note This convenience constructor uses uncredentialed wolfTPM2_Init.
+    An SPDM-only TPM requires a caller-allocated WOLFTPM2_DEV initialized with
+    wolfTPM2_InitWithSpdmKey, wolfTPM2_InitWithSpdmKey_ex, or
+    wolfTPM2_InitWithSpdmPsk instead.
+
     \return pointer to new device struct
     \return NULL: on any error
 
     \sa wolfTPM2_Free
+    \sa wolfTPM2_InitWithSpdmKey
+    \sa wolfTPM2_InitWithSpdmPsk
 */
 WOLFTPM_API WOLFTPM2_DEV* wolfTPM2_New(void);
 
@@ -4816,17 +5067,24 @@ WOLFTPM_API int wolfTPM2_PolicyRefMake(TPM_ALG_ID pcrAlg, byte* digest, word32* 
 
     \brief Utility for generating a policy PCR digest.
 
+    \note To start a fresh policy chain, zero the digest buffer and set
+        digestSz to the selected hash size before calling.
+
     \return TPM_RC_SUCCESS: successful
-    \return INPUT_SIZE_E: policyDigestSz is too small to hold the returned digest
+    \return BUFFER_E: digest is too small for the selected hash or the PCR
+        policy input exceeds the internal assembly buffer
     \return BAD_FUNC_ARG: check the provided arguments
 
-    \param pcrAlg the hash algorithm to use with pcr policy
-    \param pcrArray optional array of pcrs to be used when creating the tpm object
-    \param pcrArraySz length of the pcrArray
-    \param pcrDigest digest for the PCR(s) collected (can get using wolfTPM2_PCRGetDigest)
+    \param pcrAlg the supported hash algorithm to use with the PCR policy
+    \param pcrArray non-NULL array of PCRs to include in the policy
+    \param pcrArraySz number of entries in pcrArray; must be greater than zero
+    \param pcrDigest digest for the PCR(s) collected (can get using
+        wolfTPM2_PCRGetDigest); required when pcrDigestSz is nonzero
     \param pcrDigestSz size of the PCR digest
-    \param digest input/out digest
-    \param digestSz input/out digest size
+    \param digest input/output policy digest buffer
+    \param digestSz input/output: current digest size and buffer capacity on
+        input, which must be at least the selected hash size; selected hash
+        size on output
 
     \sa wolfTPM2_PolicyPCRMake
     \sa wolfTPM2_PolicyAuthorizeMake
@@ -4835,6 +5093,36 @@ WOLFTPM_API int wolfTPM2_PolicyRefMake(TPM_ALG_ID pcrAlg, byte* digest, word32* 
 WOLFTPM_API int wolfTPM2_PolicyPCRMake(TPM_ALG_ID pcrAlg,
     byte* pcrArray, word32 pcrArraySz, const byte* pcrDigest, word32 pcrDigestSz,
     byte* digest, word32* digestSz);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+
+    \brief Compute the policy digest for PolicyCommandCode on a fresh session
+
+    \note policyDigest = hash(zeroDigest || TPM_CC_PolicyCommandCode || cc).
+          Mirrors the running digest of a new policy session after
+          wolfTPM2_PolicyCommandCode.
+
+    \note digestSz is in/out. On input it is the capacity of the digest buffer
+          in bytes, which must be at least the hash size or BUFFER_E is returned
+          without writing to digest. On output it is the hash size written.
+
+    \return TPM_RC_SUCCESS: successful
+    \return BAD_FUNC_ARG: NULL digest/digestSz or unsupported hashAlg
+    \return BUFFER_E: *digestSz (the buffer capacity) is smaller than the
+            hash size for hashAlg
+
+    \param hashAlg hash algorithm for the policy digest
+    \param digest output policy digest buffer
+    \param digestSz in/out: input buffer capacity, output digest size
+    \param cc the command code to bind (for example TPM_CC_NV_Read)
+
+    \sa wolfTPM2_PolicyCommandCode
+    \sa wolfTPM2_PolicyHash
+    \sa wolfTPM2_PolicyPCRMake
+*/
+WOLFTPM_API int wolfTPM2_PolicyCommandCodeMake(TPM_ALG_ID hashAlg,
+    byte* digest, word32* digestSz, TPM_CC cc);
 
 /*!
     \ingroup wolfTPM2_Wrappers
@@ -4940,6 +5228,63 @@ WOLFTPM_API int wolfTPM2_PolicyAuthValue(WOLFTPM2_DEV* dev,
 WOLFTPM_API int wolfTPM2_PolicyCommandCode(WOLFTPM2_DEV* dev,
     WOLFTPM2_SESSION* tpmSession, TPM_CC cc);
 
+/*!
+    \ingroup wolfTPM2_Wrappers
+
+    \brief Wrapper for satisfying a policy session with a compound OR of digests
+
+    \note The digest list is hash-agnostic (each branch carries its own size),
+          so it supports SHA2-256 through SHA2-512 policy branches. The number of
+          branches (pHashList->count) must be between 2 and the TPML_DIGEST
+          capacity (the digests[] array length), and each branch's size must not
+          exceed the digest buffer length; branches beyond count are ignored.
+
+    \note A minimum of two branches is required by TPM 2.0 Part 3 Sec.23.6. A
+          one-branch list is rejected here with BAD_FUNC_ARG rather than sent to
+          the TPM, which would answer TPM_RC_VALUE.
+
+    \return TPM_RC_SUCCESS: successful
+    \return BAD_FUNC_ARG: bad pointer, count out of range (< 2 or > capacity),
+            or a branch size that exceeds the digest buffer
+
+    \param dev pointer to a TPM2_DEV struct
+    \param tpmSession pointer to a WOLFTPM2_SESSION struct used with wolfTPM2_StartSession and wolfTPM2_SetAuthSession
+    \param pHashList list of pre-computed policy branch digests to OR together
+
+    \sa wolfTPM2_PolicyPCR
+    \sa wolfTPM2_PolicyAuthorize
+    \sa wolfTPM2_GetPolicyDigest
+*/
+WOLFTPM_API int wolfTPM2_PolicyOR(WOLFTPM2_DEV* dev,
+    WOLFTPM2_SESSION* tpmSession, const TPML_DIGEST* pHashList);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+
+    \brief Set (or clear) the authPolicy of a hierarchy
+
+    \note Wraps TPM2_SetPrimaryPolicy for owner/endorsement/platform/lockout.
+          Pass authPolicy=NULL, authPolicySz=0 and hashAlg=TPM_ALG_NULL to clear
+          an existing policy. The command itself is authorized by the hierarchy's
+          current auth (set it on the device's active session beforehand).
+
+    \return TPM_RC_SUCCESS: successful
+    \return BAD_FUNC_ARG: NULL dev, authPolicySz exceeds the digest buffer, or
+            authPolicy is NULL with a non-zero authPolicySz
+
+    \param dev pointer to a TPM2_DEV struct
+    \param authHandle the hierarchy (for example TPM_RH_PLATFORM)
+    \param hashAlg the policy digest hash algorithm (TPM_ALG_NULL to clear)
+    \param authPolicy the policy digest to set (NULL to clear)
+    \param authPolicySz size of the policy digest (0 to clear)
+
+    \sa wolfTPM2_PolicyOR
+    \sa wolfTPM2_GetPolicyDigest
+*/
+WOLFTPM_API int wolfTPM2_SetPrimaryPolicy(WOLFTPM2_DEV* dev,
+    TPMI_RH_HIERARCHY_AUTH authHandle, TPM_ALG_ID hashAlg,
+    const byte* authPolicy, word32 authPolicySz);
+
 
 /* Pre-provisioned IAK and IDevID key/cert from TPM vendor */
 /* Tested with ST33KTPM devices */
@@ -4967,14 +5312,19 @@ WOLFTPM_API int wolfTPM2_PolicyCommandCode(WOLFTPM2_DEV* dev,
     \ingroup wolfTPM2_Wrappers
     \brief Set authentication for pre-provisioned identity keys
     \note Used with IAK and IDevID keys on ST33KTPM devices
+    \note On ST33 (or autodetect) builds a NULL masterPassword derives auth from
+        the public sample password; other targets require an explicit
+        masterPassword and return BAD_FUNC_ARG when it is NULL/empty
 
     \return TPM_RC_SUCCESS: successful
     \return TPM_RC_FAILURE: generic failure (check TPM IO and TPM return code)
-    \return BAD_FUNC_ARG: check the provided arguments
+    \return BAD_FUNC_ARG: NULL handle, or NULL/empty masterPassword on a
+        non-ST33 build
 
     \param dev pointer to a TPM2_DEV struct
     \param handle pointer to WOLFTPM2_HANDLE for the identity key
-    \param masterPassword pointer to master password data
+    \param masterPassword pointer to master password data (NULL uses the ST33
+        sample password only on ST33-capable builds)
     \param masterPasswordSz size of master password in bytes
 
     \sa wolfTPM2_CreateAndLoadAIK
@@ -5029,6 +5379,9 @@ WOLFTPM_LOCAL int GetKeyTemplateECC(TPMT_PUBLIC* publicTemplate,
     TPM_ALG_ID nameAlg, TPMA_OBJECT objectAttributes, TPM_ECC_CURVE curve,
     TPM_ALG_ID sigScheme, TPM_ALG_ID sigHash);
 
+WOLFTPM_TEST_API int wolfTPM2_EccZToBuffer(byte* out, int* outSz,
+    const TPM2B_ECC_PARAMETER* z);
+
 
 #ifdef WOLFTPM_FIRMWARE_UPGRADE
 typedef int (*wolfTPM2FwDataCb)(
@@ -5064,6 +5417,59 @@ WOLFTPM_API int wolfTPM2_FirmwareUpgradeHash(WOLFTPM2_DEV* dev,
     uint8_t* manifest, uint32_t manifest_sz,
     wolfTPM2FwDataCb cb, void* cb_ctx);
 
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Perform TPM firmware upgrade using a caller-supplied authorization session
+    \note Identical to wolfTPM2_FirmwareUpgradeHash except the caller controls how
+          the firmware-start command is authorized against the platform hierarchy.
+    \note When startSession is NULL this behaves exactly like
+          wolfTPM2_FirmwareUpgradeHash (library-managed platform authorization).
+    \note When startSession is non-NULL the caller is responsible for having
+          satisfied the platform authPolicy on that session (for example via
+          wolfTPM2_PolicyPCR / wolfTPM2_PolicyAuthorize / wolfTPM2_PolicyOR using
+          SHA2-256 or SHA2-512). For Infineon the platform primary policy is left
+          untouched (the caller provisions it); for ST33 the session replaces the
+          default TPM_RS_PW password authorization.
+
+    \note The vendor firmware-start command carries a session handle with an
+          empty nonceCaller, zero session attributes and an empty HMAC, so
+          startSession must be an unsalted, unbound TPM_SE_POLICY session with
+          no auth value and no parameter encryption. Sessions satisfied with
+          wolfTPM2_PolicyAuthValue or wolfTPM2_PolicyPassword are NOT supported,
+          because the required session HMAC is not serialized. Any such session
+          is rejected with BAD_FUNC_ARG before the command is sent.
+
+    \note On a successful firmware start the TPM consumes the session, and this
+          function sets startSession->handle.hndl to TPM_RH_NULL to record that.
+          The caller must not flush it; wolfTPM2_UnloadHandle is a no-op on
+          TPM_RH_NULL, so an unconditional cleanup call remains safe.
+
+    \return TPM_RC_SUCCESS: successful
+    \return TPM_RC_FAILURE: generic failure (check TPM IO and TPM return code)
+    \return BAD_FUNC_ARG: check the provided arguments, or startSession is not
+            an unsalted/unbound policy session with no auth value
+
+    \param dev pointer to a TPM2_DEV struct
+    \param hashAlg hash algorithm to use (TPM_ALG_SHA384 or TPM_ALG_SHA512)
+    \param manifest_hash buffer to store computed manifest hash
+    \param manifest_hash_sz size of manifest hash buffer
+    \param manifest pointer to firmware manifest data
+    \param manifest_sz size of firmware manifest
+    \param cb callback function for firmware data access
+    \param cb_ctx context pointer passed to callback
+    \param startSession optional caller-satisfied session authorizing the
+           firmware-start command (NULL for library-managed authorization)
+
+    \sa wolfTPM2_FirmwareUpgradeHash
+    \sa wolfTPM2_PolicyOR
+    \sa wolfTPM2_StartSession_ex
+*/
+WOLFTPM_API int wolfTPM2_FirmwareUpgradeHash_ex(WOLFTPM2_DEV* dev,
+    TPM_ALG_ID hashAlg, /* Can use SHA2-384 or SHA2-512 for manifest hash */
+    uint8_t* manifest_hash, uint32_t manifest_hash_sz,
+    uint8_t* manifest, uint32_t manifest_sz,
+    wolfTPM2FwDataCb cb, void* cb_ctx, WOLFTPM2_SESSION* startSession);
+
 #ifndef WOLFTPM2_NO_WOLFCRYPT
 /*!
     \ingroup wolfTPM2_Wrappers
@@ -5091,6 +5497,32 @@ WOLFTPM_API int wolfTPM2_FirmwareUpgradeHash(WOLFTPM2_DEV* dev,
 WOLFTPM_API int wolfTPM2_FirmwareUpgrade(WOLFTPM2_DEV* dev,
     uint8_t* manifest, uint32_t manifest_sz,
     wolfTPM2FwDataCb cb, void* cb_ctx);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Perform TPM firmware upgrade using a caller-supplied authorization session
+    \note Same as wolfTPM2_FirmwareUpgrade but the caller controls how the
+          firmware-start command is authorized (see wolfTPM2_FirmwareUpgradeHash_ex).
+          startSession NULL preserves the default library-managed behavior.
+
+    \return TPM_RC_SUCCESS: successful
+    \return NOT_COMPILED_IN: wolfSSL not built with WOLFSSL_SHA384
+
+    \param dev pointer to a TPM2_DEV struct
+    \param manifest pointer to firmware manifest data
+    \param manifest_sz size of firmware manifest
+    \param cb callback function for firmware data access
+    \param cb_ctx context pointer passed to callback
+    \param startSession optional caller-satisfied session (NULL for default).
+           See wolfTPM2_FirmwareUpgradeHash_ex for the supported session
+           contract: unsalted, unbound policy session with no auth value.
+
+    \sa wolfTPM2_FirmwareUpgrade
+    \sa wolfTPM2_FirmwareUpgradeHash_ex
+*/
+WOLFTPM_API int wolfTPM2_FirmwareUpgrade_ex(WOLFTPM2_DEV* dev,
+    uint8_t* manifest, uint32_t manifest_sz,
+    wolfTPM2FwDataCb cb, void* cb_ctx, WOLFTPM2_SESSION* startSession);
 #endif /* !WOLFTPM2_NO_WOLFCRYPT */
 
 /*!
@@ -5117,6 +5549,32 @@ WOLFTPM_API int wolfTPM2_FirmwareUpgradeRecover(WOLFTPM2_DEV* dev,
 
 /*!
     \ingroup wolfTPM2_Wrappers
+    \brief Recover from a failed firmware upgrade using a caller-supplied session
+    \note Same as wolfTPM2_FirmwareUpgradeRecover but with caller-controlled
+          authorization (see wolfTPM2_FirmwareUpgradeHash_ex). startSession NULL
+          preserves the default library-managed behavior.
+
+    \return TPM_RC_SUCCESS: successful
+    \return BAD_FUNC_ARG: check the provided arguments
+
+    \param dev pointer to a TPM2_DEV struct
+    \param manifest pointer to firmware manifest data
+    \param manifest_sz size of firmware manifest
+    \param cb callback function for firmware data access
+    \param cb_ctx context pointer passed to callback
+    \param startSession optional caller-satisfied session (NULL for default).
+           See wolfTPM2_FirmwareUpgradeHash_ex for the supported session
+           contract: unsalted, unbound policy session with no auth value.
+
+    \sa wolfTPM2_FirmwareUpgradeRecover
+    \sa wolfTPM2_FirmwareUpgradeHash_ex
+*/
+WOLFTPM_API int wolfTPM2_FirmwareUpgradeRecover_ex(WOLFTPM2_DEV* dev,
+    uint8_t* manifest, uint32_t manifest_sz,
+    wolfTPM2FwDataCb cb, void* cb_ctx, WOLFTPM2_SESSION* startSession);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
     \brief Cancel ongoing TPM firmware upgrade
     \note Aborts current firmware upgrade process
 
@@ -5130,6 +5588,102 @@ WOLFTPM_API int wolfTPM2_FirmwareUpgradeRecover(WOLFTPM2_DEV* dev,
     \sa wolfTPM2_FirmwareUpgradeRecover
 */
 WOLFTPM_API int wolfTPM2_FirmwareUpgradeCancel(WOLFTPM2_DEV* dev);
+
+#if defined(WOLFTPM_ST33) || defined(WOLFTPM_AUTODETECT)
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Read the firmware version an ST33 firmware image upgrades to
+    \note The manifest (blob0) header opens with a zero byte followed by the
+        target version in the TPM_PT_FIRMWARE_VERSION_1 layout: UINT16 major
+        then UINT16 minor, big endian (00 | 00 02 02 00 is 2.512)
+
+    \return TPM_RC_SUCCESS: successful
+    \return BAD_FUNC_ARG: manifest is NULL or too small to hold the version
+
+    \param manifest pointer to the manifest (blob0) bytes
+    \param manifest_sz size of the manifest in bytes
+    \param major pointer to store the target major version (optional, may be NULL)
+    \param minor pointer to store the target minor version (optional, may be NULL)
+
+    \sa wolfTPM2_ST33_FwUpgradeCommands
+    \sa wolfTPM2_FirmwareUpgrade
+*/
+WOLFTPM_API int wolfTPM2_ST33_ManifestVersion(const uint8_t* manifest,
+    uint32_t manifest_sz, word16* major, word16* minor);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Report whether the TPM implements a command code
+    \note Queries TPM_CAP_COMMANDS, which returns commands at or above the
+        requested code, so a match at index 0 of a single-property query means
+        it is implemented. Used to tell which field upgrade command pair an
+        ST33 part supports
+
+    \return TPM_RC_SUCCESS: query succeeded, isImpl set to 1 or 0
+    \return BAD_FUNC_ARG: isImpl is NULL
+    \return TPM_RC_VALUE: the TPM answered with a different capability
+
+    \param cc command code to look for
+    \param isImpl pointer to store 1 when implemented, 0 when not
+
+    \sa wolfTPM2_ST33_GetFwUpgradeCommands
+*/
+WOLFTPM_API int wolfTPM2_ST33_CmdImplemented(TPM_CC cc, int* isImpl);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Choose the ST33 field upgrade command codes for the attached TPM
+    \note Asks the TPM which pair it implements, since the firmware version
+        rule does not hold on every ST33 firmware line, and falls back to
+        wolfTPM2_ST33_FwUpgradeCommands when the TPM does not settle it. This
+        is what the library sends, so a caller binding a PolicyCommandCode for
+        the upgrade should bind the start code this returns
+
+    \return TPM_RC_SUCCESS: successful
+    \return BAD_FUNC_ARG: ccStart or ccData is NULL
+
+    \param caps capabilities of the attached TPM, or NULL once it has entered
+        firmware upgrade mode, where no capability query may be issued because
+        the TPM accepts only FieldUpgradeData and any other command leaves the
+        mode. With NULL the firmware version rule decides alone
+    \param manifestMajor target major version from wolfTPM2_ST33_ManifestVersion
+    \param ccStart pointer to store the field upgrade start command code
+    \param ccData pointer to store the field upgrade data command code
+    \param fromTpm pointer to store 1 when the TPM decided and 0 when the
+        version rule did (optional, may be NULL)
+
+    \sa wolfTPM2_ST33_CmdImplemented
+    \sa wolfTPM2_ST33_ManifestVersion
+*/
+WOLFTPM_API int wolfTPM2_ST33_GetFwUpgradeCommands(const WOLFTPM2_CAPS* caps,
+    word16 manifestMajor, TPM_CC* ccStart, TPM_CC* ccData, int* fromTpm);
+
+/*!
+    \ingroup wolfTPM2_Wrappers
+    \brief Choose the ST33 field upgrade command codes from the version fields
+    \note ST33 implements the field upgrade with either the standard
+        TPM_CC_FieldUpgradeStart/Data or the ST33KTPM vendor codes, and the
+        wrong pair is answered with TPM_RC_COMMAND_CODE. This applies the rule
+        ST's reference tool uses. Callers want
+        wolfTPM2_ST33_GetFwUpgradeCommands instead, which asks the TPM first
+        and only falls back to this. Pass haveFwVer = 0 when the running
+        version is unknown, as it is once the TPM has entered upgrade mode
+
+    \return TPM_RC_SUCCESS: successful
+    \return BAD_FUNC_ARG: ccStart or ccData is NULL
+
+    \param fwVerMinor running firmware minor version from WOLFTPM2_CAPS
+    \param haveFwVer set to 1 when fwVerMinor is known, 0 when it is not
+    \param manifestMajor target major version from wolfTPM2_ST33_ManifestVersion
+    \param ccStart pointer to store the field upgrade start command code
+    \param ccData pointer to store the field upgrade data command code
+
+    \sa wolfTPM2_ST33_ManifestVersion
+    \sa wolfTPM2_FirmwareUpgrade
+*/
+WOLFTPM_TEST_API int wolfTPM2_ST33_FwUpgradeCommands(word16 fwVerMinor,
+    int haveFwVer, word16 manifestMajor, TPM_CC* ccStart, TPM_CC* ccData);
+#endif /* WOLFTPM_ST33 || WOLFTPM_AUTODETECT */
 
 #endif /* WOLFTPM_FIRMWARE_UPGRADE */
 

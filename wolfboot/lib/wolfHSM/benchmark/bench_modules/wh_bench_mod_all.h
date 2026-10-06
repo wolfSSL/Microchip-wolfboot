@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -178,10 +178,28 @@ int wh_Bench_Mod_Sha512Dma(whClientContext* client, whBenchOpContext* ctx,
 /*
  * SHA3 benchmark module prototypes (wh_bench_mod_sha3.c)
  */
+int wh_Bench_Mod_Sha3224(whClientContext* client, whBenchOpContext* ctx, int id,
+                         void* params);
+
+int wh_Bench_Mod_Sha3224Dma(whClientContext* client, whBenchOpContext* ctx,
+                            int id, void* params);
+
 int wh_Bench_Mod_Sha3256(whClientContext* client, whBenchOpContext* ctx, int id,
                          void* params);
 
 int wh_Bench_Mod_Sha3256Dma(whClientContext* client, whBenchOpContext* ctx,
+                            int id, void* params);
+
+int wh_Bench_Mod_Sha3384(whClientContext* client, whBenchOpContext* ctx, int id,
+                         void* params);
+
+int wh_Bench_Mod_Sha3384Dma(whClientContext* client, whBenchOpContext* ctx,
+                            int id, void* params);
+
+int wh_Bench_Mod_Sha3512(whClientContext* client, whBenchOpContext* ctx, int id,
+                         void* params);
+
+int wh_Bench_Mod_Sha3512Dma(whClientContext* client, whBenchOpContext* ctx,
                             int id, void* params);
 
 /*
@@ -193,10 +211,28 @@ int wh_Bench_Mod_HmacSha256(whClientContext* client, whBenchOpContext* ctx,
 int wh_Bench_Mod_HmacSha256Dma(whClientContext* client, whBenchOpContext* ctx,
                                int id, void* params);
 
+int wh_Bench_Mod_HmacSha3224(whClientContext* client, whBenchOpContext* ctx,
+                             int id, void* params);
+
+int wh_Bench_Mod_HmacSha3224Dma(whClientContext* client, whBenchOpContext* ctx,
+                                int id, void* params);
+
 int wh_Bench_Mod_HmacSha3256(whClientContext* client, whBenchOpContext* ctx,
                              int id, void* params);
 
 int wh_Bench_Mod_HmacSha3256Dma(whClientContext* client, whBenchOpContext* ctx,
+                                int id, void* params);
+
+int wh_Bench_Mod_HmacSha3384(whClientContext* client, whBenchOpContext* ctx,
+                             int id, void* params);
+
+int wh_Bench_Mod_HmacSha3384Dma(whClientContext* client, whBenchOpContext* ctx,
+                                int id, void* params);
+
+int wh_Bench_Mod_HmacSha3512(whClientContext* client, whBenchOpContext* ctx,
+                             int id, void* params);
+
+int wh_Bench_Mod_HmacSha3512Dma(whClientContext* client, whBenchOpContext* ctx,
                                 int id, void* params);
 
 /*
@@ -414,5 +450,31 @@ int wh_Bench_Mod_MlKem1024Decaps(whClientContext* client,
 int wh_Bench_Mod_MlKem1024DecapsDma(whClientContext*  client,
                                     whBenchOpContext* ctx, int id,
                                     void* params);
+
+/*
+ * LMS benchmark module prototypes (wh_bench_mod_lms.c)
+ *
+ * LMS is stateful (hash-based) and DMA-only in wolfHSM, so there is a single
+ * variant per operation (no non-DMA counterpart).
+ */
+int wh_Bench_Mod_LmsKeyGen(whClientContext* client, whBenchOpContext* ctx,
+                           int id, void* params);
+int wh_Bench_Mod_LmsSign(whClientContext* client, whBenchOpContext* ctx, int id,
+                         void* params);
+int wh_Bench_Mod_LmsVerify(whClientContext* client, whBenchOpContext* ctx,
+                           int id, void* params);
+
+/*
+ * XMSS benchmark module prototypes (wh_bench_mod_xmss.c)
+ *
+ * XMSS is stateful (hash-based) and DMA-only in wolfHSM, so there is a single
+ * variant per operation (no non-DMA counterpart).
+ */
+int wh_Bench_Mod_XmssKeyGen(whClientContext* client, whBenchOpContext* ctx,
+                            int id, void* params);
+int wh_Bench_Mod_XmssSign(whClientContext* client, whBenchOpContext* ctx,
+                          int id, void* params);
+int wh_Bench_Mod_XmssVerify(whClientContext* client, whBenchOpContext* ctx,
+                            int id, void* params);
 
 #endif /* WH_BENCH_MOD_ALL_H_ */

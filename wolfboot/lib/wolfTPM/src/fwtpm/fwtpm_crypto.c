@@ -1,8 +1,8 @@
 /* fwtpm_crypto.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -62,7 +62,9 @@
 /* Wrapper to avoid -Werror=bad-function-cast with TPM2_GetHashType */
 enum wc_HashType FwGetWcHashType(UINT16 hashAlg)
 {
-    int ret = TPM2_GetHashType(hashAlg);
+    int ret;
+
+    ret = TPM2_GetHashType(hashAlg);
     return (enum wc_HashType)ret;
 }
 
@@ -170,7 +172,7 @@ TPM_RC FwDeriveSymmetricPrimaryKey(TPMI_ALG_HASH nameAlg,
 
 /** \brief Compute TPM object name: nameAlg(2) || Hash(marshaledPublicArea).
  *  Stores result in obj->name. */
-int FwComputeObjectName(FWTPM_Object* obj)
+int FwComputePublicName(TPMT_PUBLIC* pub, TPM2B_NAME* name)
 {
     int rc = TPM_RC_SUCCESS;
     FWTPM_DECLARE_BUF(pubBuf, FWTPM_MAX_PUB_BUF);
@@ -181,24 +183,26 @@ int FwComputeObjectName(FWTPM_Object* obj)
 
     FWTPM_ALLOC_BUF(pubBuf, FWTPM_MAX_PUB_BUF);
 
-    /* Marshal public area into temp buffer */
-    tmpPkt.buf = pubBuf;
-    tmpPkt.pos = 0;
-    tmpPkt.size = (int)FWTPM_MAX_PUB_BUF;
-    TPM2_Packet_AppendPublicArea(&tmpPkt, &obj->pub);
-    pubSz = tmpPkt.pos;
+    if (rc == 0) {
+        /* Marshal public area into temp buffer */
+        tmpPkt.buf = pubBuf;
+        tmpPkt.pos = 0;
+        tmpPkt.size = (int)FWTPM_MAX_PUB_BUF;
+        TPM2_Packet_AppendPublicArea(&tmpPkt, pub);
+        pubSz = tmpPkt.pos;
 
-    wcHash = FwGetWcHashType(obj->pub.nameAlg);
-    digestSz = TPM2_GetHashDigestSize(obj->pub.nameAlg);
-    if (wcHash == WC_HASH_TYPE_NONE || digestSz == 0) {
-        rc = TPM_RC_HASH;
+        wcHash = FwGetWcHashType(pub->nameAlg);
+        digestSz = TPM2_GetHashDigestSize(pub->nameAlg);
+        if (wcHash == WC_HASH_TYPE_NONE || digestSz == 0) {
+            rc = TPM_RC_HASH;
+        }
     }
 
     if (rc == 0) {
         /* name = nameAlg(2 bytes big-endian) || Hash(publicArea) */
-        obj->name.size = 2 + digestSz;
-        FwStoreU16BE(obj->name.name, obj->pub.nameAlg);
-        rc = wc_Hash(wcHash, pubBuf, pubSz, obj->name.name + 2, digestSz);
+        name->size = 2 + digestSz;
+        FwStoreU16BE(name->name, pub->nameAlg);
+        rc = wc_Hash(wcHash, pubBuf, pubSz, name->name + 2, digestSz);
         if (rc != 0) {
             rc = TPM_RC_FAILURE;
         }
@@ -206,6 +210,11 @@ int FwComputeObjectName(FWTPM_Object* obj)
 
     FWTPM_FREE_BUF(pubBuf);
     return rc;
+}
+
+int FwComputeObjectName(FWTPM_Object* obj)
+{
+    return FwComputePublicName(&obj->pub, &obj->name);
 }
 
 /** \brief Get hierarchy seed pointer for a given hierarchy handle.
@@ -377,15 +386,21 @@ int FwAppendCreationHashAndTicket(FWTPM_CTX* ctx, TPM2_Packet* rsp,
     TPM2_Packet_AppendU16(rsp, (UINT16)chSz);
     if (chSz > 0) {
         TPM2_Packet_AppendBytes(rsp, creationHash, chSz);
-        XMEMCPY(ticketData, creationHash, chSz);
-        ticketDataSz = chSz;
     }
+    /* ticketData = objectName || creationHash per TPM 2.0 Part 2 Sec.10.6.3 */
     if (objNameSz > 0) {
-        if (ticketDataSz + objNameSz > (int)sizeof(ticketData)) {
+        if (objNameSz > (int)sizeof(ticketData)) {
             return TPM_RC_SIZE;
         }
-        XMEMCPY(ticketData + ticketDataSz, objName, objNameSz);
-        ticketDataSz += objNameSz;
+        XMEMCPY(ticketData, objName, objNameSz);
+        ticketDataSz = objNameSz;
+    }
+    if (chSz > 0) {
+        if (ticketDataSz + chSz > (int)sizeof(ticketData)) {
+            return TPM_RC_SIZE;
+        }
+        XMEMCPY(ticketData + ticketDataSz, creationHash, chSz);
+        ticketDataSz += chSz;
     }
     return FwAppendTicket(ctx, rsp, TPM_ST_CREATION, hierarchy,
         nameAlg, ticketData, ticketDataSz, NULL, 0);
@@ -399,36 +414,68 @@ int FwAppendCreationHashAndTicket(FWTPM_CTX* ctx, TPM2_Packet* rsp,
 /* Map TPM ECC curve to wolfCrypt curve ID */
 int FwGetWcCurveId(UINT16 tpmCurve)
 {
+    int curveIdx;
+    int wcCurve;
+
     switch (tpmCurve) {
         case TPM_ECC_NIST_P256:
-            return ECC_SECP256R1;
+        #if ECC_MIN_KEY_SZ > 256
+            return -1;
+        #else
+            wcCurve = ECC_SECP256R1;
+            break;
+        #endif
         case TPM_ECC_NIST_P384:
-            return ECC_SECP384R1;
-    #ifdef HAVE_ECC521
+        #if ECC_MIN_KEY_SZ > 384
+            return -1;
+        #else
+            wcCurve = ECC_SECP384R1;
+            break;
+        #endif
+    #ifdef FWTPM_HAVE_ECC521
         case TPM_ECC_NIST_P521:
-            return ECC_SECP521R1;
+        #if ECC_MIN_KEY_SZ > 521
+            return -1;
+        #else
+            wcCurve = ECC_SECP521R1;
+            break;
+        #endif
     #endif
         default:
             return -1;
     }
+
+    curveIdx = wc_ecc_get_curve_idx(wcCurve);
+    if (curveIdx < 0 || wc_ecc_get_curve_params(curveIdx) == NULL) {
+        return -1;
+    }
+    return wcCurve;
 }
 #endif /* HAVE_ECC */
 
 /* Get ECC key size in bytes from TPM curve */
 int FwGetEccKeySize(UINT16 tpmCurve)
 {
+#ifdef HAVE_ECC
+    if (FwGetWcCurveId(tpmCurve) < 0) {
+        return 0;
+    }
     switch (tpmCurve) {
         case TPM_ECC_NIST_P256:
             return 32;
         case TPM_ECC_NIST_P384:
             return 48;
-    #ifdef HAVE_ECC521
+    #ifdef FWTPM_HAVE_ECC521
         case TPM_ECC_NIST_P521:
             return 66;
     #endif
         default:
             return 0;
     }
+#else
+    (void)tpmCurve;
+    return 0;
+#endif
 }
 
 /* ================================================================== */
@@ -514,7 +561,7 @@ TPM_RC FwGenerateEccKey(WC_RNG* rng,
 
     FWTPM_ALLOC_VAR(eccKey, ecc_key);
 
-    if (wcCurve < 0 || keySz == 0) {
+    if (wcCurve < 0 || keySz == 0 || keySz > MAX_ECC_KEY_BYTES) {
         FWTPM_FREE_VAR(eccKey);
         return TPM_RC_CURVE;
     }
@@ -562,13 +609,60 @@ TPM_RC FwGenerateEccKey(WC_RNG* rng,
 /* ================================================================== */
 
 #ifdef HAVE_ECC
+/* Constant-time compare of two big-endian byte arrays of equal length.
+ * Returns 1 when a < b, otherwise 0. */
+static int FwCtLessBE(const byte* a, const byte* b, int len)
+{
+    int i;
+    unsigned int borrow = 0;
+    for (i = len - 1; i >= 0; i--) {
+        unsigned int diff = (unsigned int)a[i] - (unsigned int)b[i] - borrow;
+        borrow = (diff >> 8) & 1u;
+    }
+    return (int)borrow;
+}
+
+/* Load the curve order into a big-endian, keySz-padded buffer and report its
+ * bit length, used to bound and mask the derived scalar. */
+static TPM_RC FwEccGetCurveOrder(int wcCurve, byte* orderBuf, int keySz,
+    int* orderBits)
+{
+    TPM_RC rc = TPM_RC_SUCCESS;
+    int idx;
+    const ecc_set_type* dp;
+    mp_int order;
+
+    idx = wc_ecc_get_curve_idx(wcCurve);
+    if (idx < 0) {
+        return TPM_RC_CURVE;
+    }
+    dp = wc_ecc_get_curve_params(idx);
+    if (dp == NULL) {
+        return TPM_RC_CURVE;
+    }
+    if (mp_init(&order) != MP_OKAY) {
+        return TPM_RC_FAILURE;
+    }
+    if (mp_read_radix(&order, dp->order, MP_RADIX_HEX) != MP_OKAY) {
+        rc = TPM_RC_FAILURE;
+    }
+    if (rc == 0) {
+        *orderBits = mp_count_bits(&order);
+        if (mp_to_unsigned_bin_len(&order, orderBuf, keySz) != MP_OKAY) {
+            rc = TPM_RC_FAILURE;
+        }
+    }
+    mp_clear(&order);
+    return rc;
+}
+
 /* Derive ECC primary key from hierarchy seed per TPM 2.0 Part 1 Section 26.3.
  *   d = KDFa(nameAlg, seed, "ECC", hashUnique, counter, keySz*8)
  *   Q = d * G
  * The counter in contextV is incremented if d >= order or d == 0. */
 TPM_RC FwDeriveEccPrimaryKey(TPMI_ALG_HASH nameAlg,
     const byte* seed, const byte* hashUnique, int hashUniqueSz,
-    UINT16 curveId,
+    UINT16 curveId, WC_RNG* rng,
     TPMS_ECC_POINT* pubOut,
     byte* privKeyDer, int privKeyDerBufSz, int* privKeyDerSz)
 {
@@ -586,12 +680,20 @@ TPM_RC FwDeriveEccPrimaryKey(TPMI_ALG_HASH nameAlg,
     int i;
     int allZero;
     volatile byte orAccum;
+    byte orderBuf[MAX_ECC_BYTES];
+    int orderBits = 0;
 
     FWTPM_ALLOC_VAR(eccKey, ecc_key);
 
     if (wcCurve < 0 || keySz == 0 || keySz > (int)sizeof(dBuf)) {
         FWTPM_FREE_VAR(eccKey);
         return TPM_RC_CURVE;
+    }
+
+    rc = FwEccGetCurveOrder(wcCurve, orderBuf, keySz, &orderBits);
+    if (rc != 0) {
+        FWTPM_FREE_VAR(eccKey);
+        return rc;
     }
 
     /* Derive private scalar d via KDFa, retry if out of range */
@@ -605,14 +707,18 @@ TPM_RC FwDeriveEccPrimaryKey(TPMI_ALG_HASH nameAlg,
             rc = TPM_RC_FAILURE;
             break;
         }
-        /* Constant-time check d != 0 (all zeros) */
+        /* Mask unused high bits so the candidate matches the order bit length */
+        if ((orderBits & 7) != 0) {
+            dBuf[0] &= (byte)((1u << (orderBits & 7)) - 1u);
+        }
+        /* Constant-time check 0 < d < order */
         orAccum = 0;
         for (i = 0; i < keySz; i++) {
             orAccum |= dBuf[i];
         }
         allZero = (orAccum == 0);
-        if (!allZero) {
-            valid = 1; /* Accept — range check done by import */
+        if (!allZero && FwCtLessBE(dBuf, orderBuf, keySz)) {
+            valid = 1;
         }
         counter++;
     }
@@ -631,8 +737,14 @@ TPM_RC FwDeriveEccPrimaryKey(TPMI_ALG_HASH nameAlg,
     }
     if (rc == 0) {
     #ifdef ECC_TIMING_RESISTANT
-        rc = wc_ecc_make_pub_ex(eccKey, NULL, NULL);
+        if (rng != NULL) {
+            rc = wc_ecc_make_pub_ex(eccKey, NULL, rng);
+        }
+        else {
+            rc = wc_ecc_make_pub(eccKey, NULL);
+        }
     #else
+        (void)rng;
         rc = wc_ecc_make_pub(eccKey, NULL);
     #endif
     }
@@ -1070,7 +1182,7 @@ static int FwDhkemParamsLookup(int wcCurve, TPMI_ALG_HASH kdfHash,
         *hkdfHashOut = WC_HASH_TYPE_SHA384;
         return 0;
     }
-#ifdef HAVE_ECC521
+#ifdef FWTPM_HAVE_ECC521
     if (wcCurve == ECC_SECP521R1 && kdfHash == TPM_ALG_SHA512) {
         *kemIdOut = 0x0012; *nSecretOut = 64; *nPkOut = 133;
         *hkdfHashOut = WC_HASH_TYPE_SHA512;
@@ -1421,7 +1533,7 @@ TPM_RC FwSignMldsaMessage(WC_RNG* rng,
     const byte* msg, int msgSz,
     TPM2B_MLDSA_SIGNATURE* sigOut)
 {
-    TPM_RC rc;
+    TPM_RC rc = TPM_RC_SUCCESS;
     FWTPM_DECLARE_VAR(keyVar, wc_MlDsaKey);
     int keyInit = 0;
     word32 sigSz;
@@ -1434,7 +1546,9 @@ TPM_RC FwSignMldsaMessage(WC_RNG* rng,
 
     FWTPM_ALLOC_VAR(keyVar, wc_MlDsaKey);
 
-    rc = FwLoadMldsaFromSeed(parameterSet, seedXi, keyVar, &keyInit);
+    if (rc == 0) {
+        rc = FwLoadMldsaFromSeed(parameterSet, seedXi, keyVar, &keyInit);
+    }
 
     if (rc == 0) {
         sigSz = (word32)sizeof(sigOut->buffer);
@@ -1524,6 +1638,111 @@ TPM_RC FwVerifyMldsaMessage(TPMI_MLDSA_PARAMETER_SET parameterSet,
     return rc;
 }
 
+/** \brief Sign a pre-computed Pure ML-DSA mu value. */
+TPM_RC FwSignMldsaMu(WC_RNG* rng,
+    TPMI_MLDSA_PARAMETER_SET parameterSet,
+    const byte* seedXi, const byte* mu, int muSz,
+    TPM2B_MLDSA_SIGNATURE* sigOut)
+{
+    TPM_RC rc = TPM_RC_SUCCESS;
+    FWTPM_DECLARE_VAR(keyVar, wc_MlDsaKey);
+    byte rnd[MLDSA_RND_SZ];
+    int keyInit = 0;
+    word32 sigSz;
+    int wcRet;
+
+    if (rng == NULL || seedXi == NULL || mu == NULL ||
+            muSz != MLDSA_MU_SZ || sigOut == NULL) {
+        return TPM_RC_VALUE;
+    }
+
+    FWTPM_ALLOC_VAR(keyVar, wc_MlDsaKey);
+    XMEMSET(rnd, 0, sizeof(rnd));
+
+    if (rc == 0) {
+        rc = FwLoadMldsaFromSeed(parameterSet, seedXi, keyVar, &keyInit);
+    }
+    if (rc == 0 && wc_RNG_GenerateBlock(rng, rnd, sizeof(rnd)) != 0) {
+        rc = TPM_RC_FAILURE;
+    }
+    if (rc == 0) {
+        sigSz = (word32)sizeof(sigOut->buffer);
+        wcRet = wc_MlDsaKey_SignMuWithSeed(keyVar, sigOut->buffer,
+            &sigSz, mu, (word32)muSz, rnd);
+        if (wcRet != 0) {
+            rc = TPM_RC_FAILURE;
+        }
+        else {
+            sigOut->size = (UINT16)sigSz;
+        }
+    }
+
+    if (keyInit) {
+        wc_MlDsaKey_Free(keyVar);
+    }
+    TPM2_ForceZero(rnd, sizeof(rnd));
+    FWTPM_FREE_VAR(keyVar);
+    return rc;
+}
+
+/** \brief Verify a signature against a pre-computed Pure ML-DSA mu value. */
+TPM_RC FwVerifyMldsaMu(TPMI_MLDSA_PARAMETER_SET parameterSet,
+    const TPM2B_PUBLIC_KEY_MLDSA* pubIn,
+    const byte* mu, int muSz, const byte* sig, int sigSz)
+{
+    TPM_RC rc = TPM_RC_SUCCESS;
+    FWTPM_DECLARE_VAR(keyVar, wc_MlDsaKey);
+    int level;
+    int keyInit = 0;
+    int verifyRes = 0;
+    int wcRet;
+
+    if (pubIn == NULL || mu == NULL || muSz != MLDSA_MU_SZ ||
+            sig == NULL || sigSz < 0) {
+        return TPM_RC_VALUE;
+    }
+
+    FWTPM_ALLOC_VAR(keyVar, wc_MlDsaKey);
+
+    level = FwGetWcMldsaLevel(parameterSet);
+    if (level < 0) {
+        rc = TPM_RC_PARMS;
+    }
+    if (rc == 0) {
+        wcRet = wc_MlDsaKey_Init(keyVar, NULL, INVALID_DEVID);
+        if (wcRet != 0) {
+            rc = TPM_RC_FAILURE;
+        }
+    }
+    if (rc == 0) {
+        keyInit = 1;
+        wcRet = wc_MlDsaKey_SetParams(keyVar, (byte)level);
+        if (wcRet != 0) {
+            rc = TPM_RC_FAILURE;
+        }
+    }
+    if (rc == 0) {
+        wcRet = wc_MlDsaKey_ImportPubRaw(keyVar,
+            pubIn->buffer, pubIn->size);
+        if (wcRet != 0) {
+            rc = TPM_RC_KEY;
+        }
+    }
+    if (rc == 0) {
+        wcRet = wc_MlDsaKey_VerifyMu(keyVar, sig, (word32)sigSz,
+            mu, (word32)muSz, &verifyRes);
+        if (wcRet != 0 || verifyRes != 1) {
+            rc = TPM_RC_SIGNATURE;
+        }
+    }
+
+    if (keyInit) {
+        wc_MlDsaKey_Free(keyVar);
+    }
+    FWTPM_FREE_VAR(keyVar);
+    return rc;
+}
+
 /** \brief Hash-ML-DSA sign: pre-hashed variant per FIPS 204 Algorithm 4. */
 TPM_RC FwSignMldsaHash(WC_RNG* rng,
     TPMI_MLDSA_PARAMETER_SET parameterSet,
@@ -1533,7 +1752,7 @@ TPM_RC FwSignMldsaHash(WC_RNG* rng,
     const byte* digest, int digestSz,
     TPM2B_MLDSA_SIGNATURE* sigOut)
 {
-    TPM_RC rc;
+    TPM_RC rc = TPM_RC_SUCCESS;
     FWTPM_DECLARE_VAR(keyVar, wc_MlDsaKey);
     int keyInit = 0;
     word32 sigSz;
@@ -1547,10 +1766,10 @@ TPM_RC FwSignMldsaHash(WC_RNG* rng,
     FWTPM_ALLOC_VAR(keyVar, wc_MlDsaKey);
 
     wcHash = FwGetWcHashType(hashAlg);
-    if (wcHash == WC_HASH_TYPE_NONE) {
+    if (rc == 0 && wcHash == WC_HASH_TYPE_NONE) {
         rc = TPM_RC_HASH;
     }
-    else {
+    else if (rc == 0) {
         rc = FwLoadMldsaFromSeed(parameterSet, seedXi, keyVar, &keyInit);
     }
 
@@ -1823,21 +2042,24 @@ TPM_RC FwDeriveRsaPrimaryKey(TPMI_ALG_HASH nameAlg,
 /* Private key wrapping/unwrapping for Create/Load                     */
 /* ================================================================== */
 
-/* Derive a 32-byte AES key and 16-byte IV from parent's private key.
- * Used to wrap child key sensitive data in TPM2B_PRIVATE. */
-int FwDeriveWrapKey(const FWTPM_Object* parent,
-    byte* aesKey, byte* aesIV)
+/* Derive the 32-byte AES key and 32-byte MAC key from parent's private key
+ * and the child's Name, so a blob only unwraps under the public area it was
+ * created with. Used to wrap child key sensitive data in TPM2B_PRIVATE. */
+int FwDeriveWrapKey(const FWTPM_Object* parent, const TPM2B_NAME* name,
+    byte* aesKey, byte* macKey)
 {
     int rc;
-    byte keyMaterial[WC_SHA256_DIGEST_SIZE];
-    byte ivMaterial[WC_SHA256_DIGEST_SIZE];
     FWTPM_DECLARE_VAR(hmac, Hmac);
+
+    if (name == NULL || name->size == 0 || name->size > sizeof(name->name)) {
+        return TPM_RC_FAILURE;
+    }
 
     FWTPM_ALLOC_VAR(hmac, Hmac);
 
     rc = wc_HmacInit(hmac, NULL, INVALID_DEVID);
 
-    /* AES key = HMAC-SHA256(parentPriv, "fwTPM-wrap-key")
+    /* AES key = HMAC-SHA256(parentPriv, "fwTPM-wrap-key" || name)
      * Use full parent private key as HMAC key — HMAC handles arbitrary-length
      * keys via internal hashing. The previous 32-byte truncation used
      * predictable ASN.1 DER header bytes for RSA keys. */
@@ -1849,35 +2071,31 @@ int FwDeriveWrapKey(const FWTPM_Object* parent,
         rc = wc_HmacUpdate(hmac, (const byte*)"fwTPM-wrap-key", 14);
     }
     if (rc == 0) {
-        rc = wc_HmacFinal(hmac, keyMaterial);
+        rc = wc_HmacUpdate(hmac, name->name, name->size);
     }
     if (rc == 0) {
-        XMEMCPY(aesKey, keyMaterial, 32);
+        rc = wc_HmacFinal(hmac, aesKey);
     }
 
-    /* IV = HMAC-SHA256(parentPriv, "fwTPM-wrap-iv") truncated to 16.
-     * Use full parent private key (same as AES key above) — HMAC handles
-     * arbitrary-length keys via internal hashing. */
+    /* MAC key = HMAC-SHA256(parentPriv, "fwTPM-wrap-mac" || name) */
     if (rc == 0) {
         rc = wc_HmacSetKey(hmac, WC_SHA256, parent->privKey,
             parent->privKeySize);
     }
     if (rc == 0) {
-        rc = wc_HmacUpdate(hmac, (const byte*)"fwTPM-wrap-iv", 13);
+        rc = wc_HmacUpdate(hmac, (const byte*)"fwTPM-wrap-mac", 14);
     }
     if (rc == 0) {
-        rc = wc_HmacFinal(hmac, ivMaterial);
+        rc = wc_HmacUpdate(hmac, name->name, name->size);
     }
     if (rc == 0) {
-        XMEMCPY(aesIV, ivMaterial, AES_BLOCK_SIZE);
+        rc = wc_HmacFinal(hmac, macKey);
     }
 
     if (rc != 0) {
         rc = TPM_RC_FAILURE;
     }
 
-    TPM2_ForceZero(keyMaterial, sizeof(keyMaterial));
-    TPM2_ForceZero(ivMaterial, sizeof(ivMaterial));
     wc_HmacFree(hmac);
     FWTPM_FREE_VAR(hmac);
     return rc;
@@ -2010,22 +2228,27 @@ int FwUnmarshalSensitive(const byte* buf, int bufSz,
     return pos;
 }
 
-/* Wrap sensitive into TPM2B_PRIVATE using parent's key.
- * Format: integritySize(2) + integrity(32) + encSensSize(2) + encSens(N)
+/* Wrap sensitive into TPM2B_PRIVATE using parent's key. A fresh random IV
+ * per blob keeps every child on its own AES-CFB keystream.
+ * Format: integritySize(2) + integrity(32) + iv(16) + encSensSize(2) +
+ *         encSens(N)
  */
-int FwWrapPrivate(FWTPM_Object* parent,
+int FwWrapPrivate(FWTPM_Object* parent, WC_RNG* rng,
+    const TPM2B_NAME* name,
     UINT16 sensitiveType, const TPM2B_AUTH* auth,
     const byte* privKeyDer, int privKeyDerSz,
     TPM2B_PRIVATE* outPriv)
 {
     int rc = TPM_RC_SUCCESS;
     byte aesKey[FWTPM_MAX_SYM_KEY_SIZE], aesIV[AES_BLOCK_SIZE];
+    byte macKey[WC_SHA256_DIGEST_SIZE];
     FWTPM_DECLARE_BUF(sensBuf, FWTPM_MAX_PRIVKEY_DER + 128);
     byte hmacDigest[WC_SHA256_DIGEST_SIZE];
     FWTPM_DECLARE_VAR(aes, Aes);
     FWTPM_DECLARE_VAR(hmac, Hmac);
-    int sensSz;
+    int sensSz = 0;
     int aesInit = 0;
+    int hmacInit = 0;
     int pos = 0;
 
     FWTPM_ALLOC_BUF(sensBuf, FWTPM_MAX_PRIVKEY_DER + 128);
@@ -2033,15 +2256,24 @@ int FwWrapPrivate(FWTPM_Object* parent,
     FWTPM_ALLOC_VAR(hmac, Hmac);
 
     /* Marshal inner sensitive */
-    sensSz = FwMarshalSensitive(sensBuf, (int)(FWTPM_MAX_PRIVKEY_DER + 128),
-        sensitiveType, auth, privKeyDer, privKeyDerSz);
-    if (sensSz < 0) {
-        rc = TPM_RC_FAILURE;
+    if (rc == 0) {
+        sensSz = FwMarshalSensitive(sensBuf,
+            (int)(FWTPM_MAX_PRIVKEY_DER + 128),
+            sensitiveType, auth, privKeyDer, privKeyDerSz);
+        if (sensSz < 0) {
+            rc = TPM_RC_FAILURE;
+        }
     }
 
-    /* Derive wrapping key/IV from parent */
+    /* Derive wrapping keys from parent and child Name, fresh IV per blob */
     if (rc == 0) {
-        rc = FwDeriveWrapKey(parent, aesKey, aesIV);
+        rc = FwDeriveWrapKey(parent, name, aesKey, macKey);
+    }
+    if (rc == 0) {
+        if (rng == NULL ||
+                wc_RNG_GenerateBlock(rng, aesIV, AES_BLOCK_SIZE) != 0) {
+            rc = TPM_RC_FAILURE;
+        }
     }
 
     /* AES-CFB encrypt in place */
@@ -2059,12 +2291,18 @@ int FwWrapPrivate(FWTPM_Object* parent,
         }
     }
 
-    /* HMAC integrity over encrypted data */
+    /* HMAC integrity over IV and encrypted data */
     if (rc == 0) {
         rc = wc_HmacInit(hmac, NULL, INVALID_DEVID);
+        if (rc == 0) {
+            hmacInit = 1;
+        }
     }
     if (rc == 0) {
-        rc = wc_HmacSetKey(hmac, WC_SHA256, aesKey, 32);
+        rc = wc_HmacSetKey(hmac, WC_SHA256, macKey, sizeof(macKey));
+    }
+    if (rc == 0) {
+        rc = wc_HmacUpdate(hmac, aesIV, AES_BLOCK_SIZE);
     }
     if (rc == 0) {
         rc = wc_HmacUpdate(hmac, sensBuf, sensSz);
@@ -2072,21 +2310,24 @@ int FwWrapPrivate(FWTPM_Object* parent,
     if (rc == 0) {
         rc = wc_HmacFinal(hmac, hmacDigest);
     }
-    wc_HmacFree(hmac);
+    if (hmacInit) {
+        wc_HmacFree(hmac);
+    }
 
     /* Pack into TPM2B_PRIVATE */
     if (rc == 0) {
-        int totalSz = 2 + WC_SHA256_DIGEST_SIZE + 2 + sensSz;
+        int totalSz = 2 + WC_SHA256_DIGEST_SIZE + AES_BLOCK_SIZE + 2 + sensSz;
         if (totalSz > (int)sizeof(outPriv->buffer)) {
             rc = TPM_RC_SIZE;
         }
     }
     if (rc == 0) {
-        /* integritySize(2) + integrity(32) + encSensSize(2) + encSens(N) */
         outPriv->buffer[pos++] = 0;
         outPriv->buffer[pos++] = WC_SHA256_DIGEST_SIZE;
         XMEMCPY(outPriv->buffer + pos, hmacDigest, WC_SHA256_DIGEST_SIZE);
         pos += WC_SHA256_DIGEST_SIZE;
+        XMEMCPY(outPriv->buffer + pos, aesIV, AES_BLOCK_SIZE);
+        pos += AES_BLOCK_SIZE;
         FwStoreU16BE(outPriv->buffer + pos, (UINT16)sensSz);
         pos += 2;
         XMEMCPY(outPriv->buffer + pos, sensBuf, sensSz);
@@ -2099,6 +2340,7 @@ int FwWrapPrivate(FWTPM_Object* parent,
     }
 
     TPM2_ForceZero(aesKey, sizeof(aesKey));
+    TPM2_ForceZero(macKey, sizeof(macKey));
     TPM2_ForceZero(aesIV, sizeof(aesIV));
     TPM2_ForceZero(hmacDigest, sizeof(hmacDigest));
     TPM2_ForceZero(sensBuf, FWTPM_MAX_PRIVKEY_DER + 128);
@@ -2109,13 +2351,14 @@ int FwWrapPrivate(FWTPM_Object* parent,
 }
 
 /* Unwrap TPM2B_PRIVATE using parent's key */
-int FwUnwrapPrivate(FWTPM_Object* parent,
+int FwUnwrapPrivate(FWTPM_Object* parent, const TPM2B_NAME* name,
     const TPM2B_PRIVATE* inPriv,
     UINT16* sensitiveType, TPM2B_AUTH* auth,
     byte* privKeyDer, int* privKeyDerSz)
 {
     int rc = TPM_RC_SUCCESS;
     byte aesKey[FWTPM_MAX_SYM_KEY_SIZE], aesIV[AES_BLOCK_SIZE];
+    byte macKey[WC_SHA256_DIGEST_SIZE];
     byte hmacDigest[WC_SHA256_DIGEST_SIZE];
     byte hmacCheck[WC_SHA256_DIGEST_SIZE];
     FWTPM_DECLARE_BUF(decBuf, FWTPM_MAX_PRIVKEY_DER + 128);
@@ -2129,11 +2372,11 @@ int FwUnwrapPrivate(FWTPM_Object* parent,
     FWTPM_ALLOC_VAR(aes, Aes);
     FWTPM_ALLOC_VAR(hmac, Hmac);
 
-    if (inPriv->size < 36) {
-        rc = TPM_RC_FAILURE; /* min: 2+32+2 */
+    if (inPriv->size < 2 + WC_SHA256_DIGEST_SIZE + AES_BLOCK_SIZE + 2) {
+        rc = TPM_RC_FAILURE;
     }
 
-    /* Parse integrity */
+    /* Parse integrity and IV */
     if (rc == 0) {
         integritySize = FwLoadU16BE(inPriv->buffer + pos);
         pos += 2;
@@ -2144,6 +2387,8 @@ int FwUnwrapPrivate(FWTPM_Object* parent,
     if (rc == 0) {
         XMEMCPY(hmacDigest, inPriv->buffer + pos, WC_SHA256_DIGEST_SIZE);
         pos += WC_SHA256_DIGEST_SIZE;
+        XMEMCPY(aesIV, inPriv->buffer + pos, AES_BLOCK_SIZE);
+        pos += AES_BLOCK_SIZE;
     }
 
     /* Parse encrypted sensitive size */
@@ -2161,17 +2406,20 @@ int FwUnwrapPrivate(FWTPM_Object* parent,
         }
     }
 
-    /* Derive wrapping key/IV from parent */
+    /* Derive wrapping keys from parent and the presented public area's Name */
     if (rc == 0) {
-        rc = FwDeriveWrapKey(parent, aesKey, aesIV);
+        rc = FwDeriveWrapKey(parent, name, aesKey, macKey);
     }
 
-    /* Verify HMAC */
+    /* Verify HMAC over IV and encrypted data */
     if (rc == 0) {
         rc = wc_HmacInit(hmac, NULL, INVALID_DEVID);
     }
     if (rc == 0) {
-        rc = wc_HmacSetKey(hmac, WC_SHA256, aesKey, 32);
+        rc = wc_HmacSetKey(hmac, WC_SHA256, macKey, sizeof(macKey));
+    }
+    if (rc == 0) {
+        rc = wc_HmacUpdate(hmac, aesIV, AES_BLOCK_SIZE);
     }
     if (rc == 0) {
         rc = wc_HmacUpdate(hmac, inPriv->buffer + pos, encSensSize);
@@ -2214,6 +2462,7 @@ int FwUnwrapPrivate(FWTPM_Object* parent,
     }
 
     TPM2_ForceZero(aesKey, sizeof(aesKey));
+    TPM2_ForceZero(macKey, sizeof(macKey));
     TPM2_ForceZero(aesIV, sizeof(aesIV));
     TPM2_ForceZero(hmacCheck, sizeof(hmacCheck));
     TPM2_ForceZero(decBuf, FWTPM_MAX_PRIVKEY_DER + 128);
@@ -2227,6 +2476,7 @@ int FwUnwrapPrivate(FWTPM_Object* parent,
 /* Context blob wrap/unwrap (ContextSave/ContextLoad)                  */
 /* ================================================================== */
 
+#ifndef FWTPM_NO_CONTEXT
 /* Fold a 64-bit value into an HMAC as big-endian, used to bind the context
  * sequence counter into the blob MAC for replay protection. */
 static int FwHmacUpdateU64(Hmac* hmac, UINT64 v)
@@ -2242,7 +2492,7 @@ static int FwHmacUpdateU64(Hmac* hmac, UINT64 v)
 /* Encrypt-then-MAC context blob protection using the per-boot key.
  * Layout: iv(16) | ciphertext(plainSz) | hmac(32)
  * Returns 0 on success, sets *outSz. */
-int FwWrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
+int FwWrapContextBlob(FWTPM_CTX* ctx, UINT64 seq, byte ctxType,
     const byte* plain, int plainSz,
     byte* out, int outBufSz, int* outSz)
 {
@@ -2262,7 +2512,9 @@ int FwWrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
     FWTPM_ALLOC_VAR(hmac, Hmac);
 
     /* Generate random IV */
-    rc = wc_RNG_GenerateBlock(&ctx->rng, iv, AES_BLOCK_SIZE);
+    if (rc == 0) {
+        rc = wc_RNG_GenerateBlock(&ctx->rng, iv, AES_BLOCK_SIZE);
+    }
 
     /* AES-CFB encrypt */
     if (rc == 0) {
@@ -2295,6 +2547,9 @@ int FwWrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
         rc = FwHmacUpdateU64(hmac, seq);
     }
     if (rc == 0) {
+        rc = wc_HmacUpdate(hmac, &ctxType, 1);
+    }
+    if (rc == 0) {
         rc = wc_HmacFinal(hmac, out + AES_BLOCK_SIZE + plainSz);
     }
     wc_HmacFree(hmac);
@@ -2314,7 +2569,7 @@ int FwWrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
 }
 
 /* Verify-then-decrypt context blob. Returns 0 on success, sets *outSz. */
-int FwUnwrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
+int FwUnwrapContextBlob(FWTPM_CTX* ctx, UINT64 seq, byte ctxType,
     const byte* in, int inSz,
     byte* out, int outBufSz, int* outSz)
 {
@@ -2353,6 +2608,9 @@ int FwUnwrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
     }
     if (rc == 0) {
         rc = FwHmacUpdateU64(hmac, seq);
+    }
+    if (rc == 0) {
+        rc = wc_HmacUpdate(hmac, &ctxType, 1);
     }
     if (rc == 0) {
         rc = wc_HmacFinal(hmac, computedHmac);
@@ -2397,6 +2655,7 @@ int FwUnwrapContextBlob(FWTPM_CTX* ctx, UINT64 seq,
     FWTPM_FREE_VAR(hmac);
     return rc;
 }
+#endif /* !FWTPM_NO_CONTEXT */
 
 /* ================================================================== */
 /* Seed encrypt/decrypt                                                */
@@ -2582,6 +2841,7 @@ TPM_RC FwDecryptSeed(FWTPM_CTX* ctx,
                 encSeedBuf, encSeedSz, &sharedK);
         }
         if (rc == 0) {
+            /* K is 32-byte ML-KEM secret per FIPS 203 (Part 1 47.4 errata) */
             int kdfRc = TPM2_KDFa_ex(nameAlg,
                 sharedK.buffer, sharedK.size, kdfLabel,
                 encSeedBuf, (UINT32)encSeedSz,
@@ -2835,6 +3095,7 @@ TPM_RC FwEncryptSeed(FWTPM_CTX* ctx,
             rc = TPM_RC_SIZE;
         }
         if (rc == 0) {
+            /* K is 32-byte ML-KEM secret per FIPS 203 (Part 1 47.4 errata) */
             int kdfRc = TPM2_KDFa_ex(nameAlg,
                 sharedK.buffer, sharedK.size, kdfLabel,
                 ciphertext->buffer, (UINT32)ciphertext->size,
@@ -3330,15 +3591,15 @@ int FwImportEccKey(const FWTPM_Object* obj, ecc_key* key)
  * coordinates. wc_ecc_shared_secret only returns x; ZGen_2Phase marshals a
  * full TPM2B_ECC_POINT and TPM_ALG_ECMQV requires y as well.
  * xBuf/yBuf must each hold at least curve byte length. */
-int FwEccSharedPoint(ecc_key* priv, ecc_key* peer,
+int FwEccSharedPoint(ecc_key* priv, ecc_key* peer, WC_RNG* rng,
     byte* xBuf, word32* xSz, byte* yBuf, word32* ySz)
 {
     int rc;
     int curveIdx;
     ecc_point* R = NULL;
-    mp_int prime, a;
+    mp_int prime, a, order;
     const ecc_set_type* dp;
-    int primeInit = 0, aInit = 0;
+    int primeInit = 0, aInit = 0, orderInit = 0;
 
     if (priv == NULL || peer == NULL || xBuf == NULL || xSz == NULL ||
         yBuf == NULL || ySz == NULL) {
@@ -3363,12 +3624,36 @@ int FwEccSharedPoint(ecc_key* priv, ecc_key* peer,
     }
     if (rc == 0) {
         aInit = 1;
+        rc = mp_init(&order);
+    }
+    if (rc == 0) {
+        orderInit = 1;
         rc = mp_read_radix(&prime, dp->prime, MP_RADIX_HEX);
     }
     if (rc == 0)
         rc = mp_read_radix(&a, dp->Af, MP_RADIX_HEX);
     if (rc == 0)
+        rc = mp_read_radix(&order, dp->order, MP_RADIX_HEX);
+    if (rc == 0) {
+    #ifdef WOLFSSL_PUBLIC_ECC_ADD_DBL
+        /* RNG-blinded scalar multiply bound to the curve order. Fall back to
+         * the base multiply if no RNG is available so a NULL rng cannot be
+         * dereferenced. */
+        if (rng != NULL) {
+            rc = wc_ecc_mulmod_ex2(ecc_get_k(priv), &peer->pubkey, R, &a,
+                &prime, &order, rng, 1, NULL);
+        }
+        else {
+            rc = wc_ecc_mulmod(ecc_get_k(priv), &peer->pubkey, R, &a,
+                &prime, 1);
+        }
+    #else
+        /* wc_ecc_mulmod_ex2 is public only with WOLFSSL_PUBLIC_ECC_ADD_DBL;
+         * fall back to the base multiply when it is unavailable */
+        (void)rng;
         rc = wc_ecc_mulmod(ecc_get_k(priv), &peer->pubkey, R, &a, &prime, 1);
+    #endif
+    }
 
     /* Export x and y with fixed-size left-zero padding to the curve byte
      * length. Using mp_unsigned_bin_size/mp_to_unsigned_bin here would drop
@@ -3384,6 +3669,8 @@ int FwEccSharedPoint(ecc_key* priv, ecc_key* peer,
         rc = mp_to_unsigned_bin_len(R->y, yBuf, dp->size);
     }
 
+    if (orderInit)
+        mp_clear(&order);
     if (aInit)
         mp_clear(&a);
     if (primeInit)
@@ -3409,21 +3696,26 @@ int FwGetRsaPadding(UINT16 scheme)
 int FwRsaComputeCRT(RsaKey* rsaKey)
 {
     int rc;
+    int pm1Init = 0, qm1Init = 0, phiInit = 0;
     mp_int pm1, qm1, phi;
 
     rc = mp_init(&pm1);
     if (rc == 0) {
+        pm1Init = 1;
         rc = mp_init(&qm1);
     }
     if (rc == 0) {
+        qm1Init = 1;
         rc = mp_init(&phi);
     }
-    if (rc != 0) {
-        return TPM_RC_FAILURE;
+    if (rc == 0) {
+        phiInit = 1;
     }
 
     /* phi = (p-1)(q-1) */
-    rc = mp_sub_d(&rsaKey->p, 1, &pm1);
+    if (rc == 0) {
+        rc = mp_sub_d(&rsaKey->p, 1, &pm1);
+    }
     if (rc == 0) {
         rc = mp_sub_d(&rsaKey->q, 1, &qm1);
     }
@@ -3445,12 +3737,18 @@ int FwRsaComputeCRT(RsaKey* rsaKey)
         rc = mp_invmod(&rsaKey->q, &rsaKey->p, &rsaKey->u);
     }
 
-    mp_forcezero(&pm1);
-    mp_forcezero(&qm1);
-    mp_forcezero(&phi);
-    mp_clear(&pm1);
-    mp_clear(&qm1);
-    mp_clear(&phi);
+    if (pm1Init) {
+        mp_forcezero(&pm1);
+        mp_clear(&pm1);
+    }
+    if (qm1Init) {
+        mp_forcezero(&qm1);
+        mp_clear(&qm1);
+    }
+    if (phiInit) {
+        mp_forcezero(&phi);
+        mp_clear(&phi);
+    }
 
     if (rc != 0) {
         rc = TPM_RC_FAILURE;
@@ -3889,6 +4187,72 @@ TPM_RC FwBuildAttestResponse(FWTPM_CTX* ctx, TPM2_Packet* rsp,
     return rc;
 }
 
+#ifdef WOLFTPM_MLDSA_SIGN
+/* Sign serialized TPMS_ATTEST bytes with an ML-DSA (or Hash-ML-DSA) key and
+ * append the TPMT_SIGNATURE. Split out of FwSignAttest so the large ML-DSA
+ * signature buffer only occupies the stack when an ML-DSA key is in use. */
+static TPM_RC FwSignAttestMldsa(FWTPM_CTX* ctx, FWTPM_Object* obj,
+    const byte* attestBuf, int attestSz, TPM2_Packet* rsp)
+{
+    TPM_RC rc = TPM_RC_SUCCESS;
+    FWTPM_DECLARE_VAR(sigOut, TPM2B_MLDSA_SIGNATURE);
+    byte digest[TPM_MAX_DIGEST_SIZE];
+
+    /* Reject a public-only object (privKeySize 0): its all-zero seed derives a
+     * universally reproducible key that would forge attestations. Mirrors the
+     * ML-KEM seed guard in FwDecryptSeed. */
+    if (obj->privKeySize != MAX_MLDSA_PRIV_SEED_SIZE) {
+        return TPM_RC_KEY;
+    }
+
+    FWTPM_CALLOC_VAR(sigOut, TPM2B_MLDSA_SIGNATURE);
+
+    if (rc == 0 && obj->pub.type == TPM_ALG_MLDSA) {
+        /* Pure ML-DSA: sign the message with an empty context. */
+        rc = FwSignMldsaMessage(&ctx->rng,
+            obj->pub.parameters.mldsaDetail.parameterSet,
+            obj->privKey, NULL, 0,
+            attestBuf, attestSz, sigOut);
+        if (rc == 0) {
+            TPM2_Packet_AppendU16(rsp, TPM_ALG_MLDSA);
+            TPM2_Packet_AppendU16(rsp, sigOut->size);
+            TPM2_Packet_AppendBytes(rsp, sigOut->buffer, sigOut->size);
+        }
+    }
+    else if (rc == 0) {
+        /* Hash-ML-DSA: pre-hash the message under the key's hashAlg, then
+         * sign the digest (FIPS 204 Algorithm 4). */
+        TPMI_ALG_HASH phAlg = obj->pub.parameters.hash_mldsaDetail.hashAlg;
+        enum wc_HashType phWc = FwGetWcHashType(phAlg);
+        int phSz = TPM2_GetHashDigestSize(phAlg);
+
+        if (phWc == WC_HASH_TYPE_NONE || phSz == 0) {
+            rc = TPM_RC_HASH;
+        }
+        if (rc == 0 &&
+                wc_Hash(phWc, attestBuf, attestSz, digest, phSz) != 0) {
+            rc = TPM_RC_FAILURE;
+        }
+        if (rc == 0) {
+            rc = FwSignMldsaHash(&ctx->rng,
+                obj->pub.parameters.hash_mldsaDetail.parameterSet,
+                obj->privKey, NULL, 0, phAlg,
+                digest, phSz, sigOut);
+        }
+        if (rc == 0) {
+            TPM2_Packet_AppendU16(rsp, TPM_ALG_HASH_MLDSA);
+            TPM2_Packet_AppendU16(rsp, phAlg);
+            TPM2_Packet_AppendU16(rsp, sigOut->size);
+            TPM2_Packet_AppendBytes(rsp, sigOut->buffer, sigOut->size);
+        }
+        TPM2_ForceZero(digest, sizeof(digest));
+    }
+
+    FWTPM_FREE_VAR(sigOut);
+    return rc;
+}
+#endif /* WOLFTPM_MLDSA_SIGN */
+
 /* Helper: sign attestation buffer with signing key.
  * attestBuf/attestSz: serialized TPMS_ATTEST bytes
  * obj: signing key object
@@ -3909,6 +4273,28 @@ TPM_RC FwSignAttest(FWTPM_CTX* ctx, FWTPM_Object* obj,
     if (!(obj->pub.objectAttributes & TPMA_OBJECT_sign)) {
         return TPM_RC_KEY;
     }
+
+#ifdef WOLFTPM_PQC
+    /* An ML-DSA selector on a classical key is invalid (Part 3 Sec.18.1):
+     * reject so an ECDSA/RSA signature is not emitted under an ML-DSA tag. */
+    if ((sigScheme == TPM_ALG_MLDSA || sigScheme == TPM_ALG_HASH_MLDSA) &&
+            sigScheme != obj->pub.type) {
+        return TPM_RC_SCHEME;
+    }
+#endif
+
+#ifdef WOLFTPM_MLDSA_SIGN
+    /* ML-DSA keys sign TPMS_ATTEST bytes directly (FIPS 204); the key type
+     * fixes the scheme, so a non-null requested scheme must match it (Part 3
+     * Sec.18.1) or the sign is rejected with TPM_RC_SCHEME. */
+    if (obj->pub.type == TPM_ALG_MLDSA ||
+            obj->pub.type == TPM_ALG_HASH_MLDSA) {
+        if (sigScheme != TPM_ALG_NULL && sigScheme != obj->pub.type) {
+            return TPM_RC_SCHEME;
+        }
+        return FwSignAttestMldsa(ctx, obj, attestBuf, attestSz, rsp);
+    }
+#endif /* WOLFTPM_MLDSA_SIGN */
 
     /* Resolve scheme/hash from key if NULL */
     FwResolveSignScheme(obj, &sigScheme, &sigHashAlg);
@@ -3970,11 +4356,12 @@ TPM_RC FwCredentialDeriveKeys(
 }
 
 /* Encrypt credential and compute outer HMAC (MakeCredential direction).
- * encCred = AES-128-CFB(symKey, 0-IV, size(2) || credential)
+ * encCred = AES-CFB(symKey, 0-IV, size(2) || credential)
  * outerHmac = HMAC(hmacKey, encCred || name) */
 TPM_RC FwCredentialWrap(
     const byte* symKey, int symKeySz,
     const byte* hmacKey, int hmacKeySz,
+    TPMI_ALG_HASH nameAlg,
     const byte* credential, UINT16 credSz,
     const byte* name, int nameSz,
     byte* encCred, word32* encCredSz,
@@ -4008,7 +4395,8 @@ TPM_RC FwCredentialWrap(
     if (rc == 0) {
         rc = wc_HmacInit(hmac, NULL, INVALID_DEVID);
         if (rc == 0)
-            rc = wc_HmacSetKey(hmac, WC_SHA256, hmacKey, (word32)hmacKeySz);
+            rc = wc_HmacSetKey(hmac, FwGetWcHashType(nameAlg),
+                hmacKey, (word32)hmacKeySz);
         if (rc == 0)
             rc = wc_HmacUpdate(hmac, encCred, *encCredSz);
         if (rc == 0)
@@ -4031,6 +4419,7 @@ TPM_RC FwCredentialWrap(
 TPM_RC FwCredentialUnwrap(
     const byte* symKey, int symKeySz,
     const byte* hmacKey, int hmacKeySz,
+    TPMI_ALG_HASH nameAlg,
     const byte* blobBuf, UINT16 blobSz,
     const byte* name, int nameSz,
     byte* credOut, int credBufSz, UINT16* credSzOut)
@@ -4038,8 +4427,9 @@ TPM_RC FwCredentialUnwrap(
     TPM_RC rc = TPM_RC_SUCCESS;
     TPM2_Packet blobPkt;
     UINT16 integrityHmacSz = 0;
-    byte integrityHmac[TPM_SHA256_DIGEST_SIZE];
-    byte computedHmac[TPM_SHA256_DIGEST_SIZE];
+    int hmacDigestSz = TPM2_GetHashDigestSize(nameAlg);
+    byte integrityHmac[TPM_MAX_DIGEST_SIZE];
+    byte computedHmac[TPM_MAX_DIGEST_SIZE];
     const byte* encIdentity;
     int encIdentitySz;
     byte iv[AES_BLOCK_SIZE];
@@ -4062,7 +4452,10 @@ TPM_RC FwCredentialUnwrap(
         blobPkt.pos = 0;
         blobPkt.size = blobSz;
         TPM2_Packet_ParseU16(&blobPkt, &integrityHmacSz);
-        if (integrityHmacSz > TPM_SHA256_DIGEST_SIZE) {
+        if (hmacDigestSz <= 0 || hmacDigestSz > TPM_MAX_DIGEST_SIZE) {
+            rc = TPM_RC_HASH;
+        }
+        else if (integrityHmacSz > (UINT16)hmacDigestSz) {
             rc = TPM_RC_SIZE;
         }
     }
@@ -4079,7 +4472,8 @@ TPM_RC FwCredentialUnwrap(
     if (rc == 0) {
         rc = wc_HmacInit(hmac, NULL, INVALID_DEVID);
         if (rc == 0)
-            rc = wc_HmacSetKey(hmac, WC_SHA256, hmacKey, (word32)hmacKeySz);
+            rc = wc_HmacSetKey(hmac, FwGetWcHashType(nameAlg),
+                hmacKey, (word32)hmacKeySz);
         if (rc == 0)
             rc = wc_HmacUpdate(hmac, encIdentity, encIdentitySz);
         if (rc == 0)
@@ -4093,9 +4487,9 @@ TPM_RC FwCredentialUnwrap(
     }
     if (rc == 0) {
         /* Always run TPM2_ConstantCompare so timing doesn't leak size match */
-        sizeMismatch = (integrityHmacSz != TPM_SHA256_DIGEST_SIZE);
+        sizeMismatch = (integrityHmacSz != (UINT16)hmacDigestSz);
         hmacDiff = TPM2_ConstantCompare(computedHmac, integrityHmac,
-            TPM_SHA256_DIGEST_SIZE);
+            (word32)hmacDigestSz);
         if (sizeMismatch | hmacDiff) {
             rc = TPM_RC_INTEGRITY;
         }

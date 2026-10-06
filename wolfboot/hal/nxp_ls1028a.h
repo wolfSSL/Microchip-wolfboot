@@ -258,7 +258,12 @@
 #define TZASC_REGION_ATTRIBUTES_0 *((volatile uint32_t*)(TZASC_BASE + 0x110))
 #define TZASC_ACTION_ENABLE_DECERR 0x1                 /* RM 32.4.3 */
 #define TZASC_GATE_KEEPER_REQUEST_OPEN 0x1             /* RM 32.4.3 */
-#define TZASC_REGION_ATTRIBUTES_ALLOW_SECRW 0xC0000001 /* RM 32.4.15 */
+#define TZASC_REGION_ATTRIBUTES_ALLOW_SECRW 0xC0000001 /* RM 32.4.15 (secure R/W only) */
+/* TZC-400 Region 0 ID-access register (non-secure permissions; 0x110 gates
+ * only SECURE). bits[15:0]=per-NSAID read en, bits[31:16]=per-NSAID write en;
+ * 0xFFFFFFFF = NS read+write for all NSAIDs, needed for ENETC bus-master DMA. */
+#define TZASC_REGION_ID_ACCESS_0  *((volatile uint32_t*)(TZASC_BASE + 0x114))
+#define TZASC_REGION_ID_ACCESS_ALL_NS 0xFFFFFFFF
 
 /* TZPC Trust Zone Protection Controller for OCRAM RM 32.6 */
 #define TZPC_OCRAM      (0x2200000)
@@ -284,28 +289,11 @@
 /* LS1028A PC16552D Dual UART */
 
 
-#define UART_BASE(n) (0x21C0500 + (n * 100))
+/* DUART_STRIDE, not decimal 100: the DUARTs are 0x100 apart. Latent only
+ * because UART_SEL is 0. */
+#define UART_BASE(n) (0x21C0500 + ((n) * DUART_STRIDE))
 
-#define UART_RBR(n)  *((volatile uint8_t*)(UART_BASE(n) + 0)) /* receiver buffer register */
-#define UART_THR(n)  *((volatile uint8_t*)(UART_BASE(n) + 0)) /* transmitter holding register */
-#define UART_IER(n)  *((volatile uint8_t*)(UART_BASE(n) + 1)) /* interrupt enable register */
-#define UART_FCR(n)  *((volatile uint8_t*)(UART_BASE(n) + 2)) /* FIFO control register */
-#define UART_IIR(n)  *((volatile uint8_t*)(UART_BASE(n) + 2)) /* interrupt ID register */
-#define UART_LCR(n)  *((volatile uint8_t*)(UART_BASE(n) + 3)) /* line control register */
-#define UART_LSR(n)  *((volatile uint8_t*)(UART_BASE(n) + 5)) /* line status register */
-#define UART_SCR(n)  *((volatile uint8_t*)(UART_BASE(n) + 7)) /* scratch register */
-
-/* enabled when UART_LCR_DLAB set */
-#define UART_DLB(n)  *((volatile uint8_t*)(UART_BASE(n) + 0)) /* divisor least significant byte register */
-#define UART_DMB(n)  *((volatile uint8_t*)(UART_BASE(n) + 1)) /* divisor most significant byte register */
-
-#define UART_FCR_TFR  (0x04) /* Transmitter FIFO reset */
-#define UART_FCR_RFR  (0x02) /* Receiver FIFO reset */
-#define UART_FCR_FEN  (0x01) /* FIFO enable */
-#define UART_LCR_DLAB (0x80) /* Divisor latch access bit */
-#define UART_LCR_WLS  (0x03) /* Word length select: 8-bits */
-#define UART_LSR_TEMT (0x40) /* Transmitter empty */
-#define UART_LSR_THRE (0x20) /* Transmitter holding register empty */
+/* Register layout and bit names live in include/ns16550.h. */
 
 /* LS1028 XSPI Flex SPI Memory map - RM 18.7.2.1 */
 #define XSPI_BASE              (0x20C0000UL)
@@ -448,7 +436,10 @@
 #define FLASH_SECTOR_CNT  (FLASH_BANK_SIZE / FLASH_ERASE_SIZE)
 #define FLASH_ERASE_TOUT  60000 /* Flash Erase Timeout (ms) */
 #define FLASH_WRITE_TOUT  500   /* Flash Write Timeout (ms) */
-#define FLASH_READY_MSK   (0x1 << 0)
+/* RDSR (0x05) bit 0 is WIP: 1 while a program or erase is running,
+ * 0 when the device is ready. The device ignores Write Enable and any
+ * further program/erase while WIP is set. */
+#define FLASH_SR_WIP_MSK  (0x1 << 0)
 #define MASK_32BIT        0xffffffff
 
 /* LUT register helper */

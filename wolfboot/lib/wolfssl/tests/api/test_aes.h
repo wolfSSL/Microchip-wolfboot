@@ -16,6 +16,7 @@
 
 int test_wc_AesSetKey(void);
 int test_wc_AesSetIV(void);
+int test_wc_AesSetIV_RestartsStream(void);
 int test_wc_AesEncryptDecryptDirect(void);
 int test_wc_AesEcbEncryptDecrypt(void);
 int test_wc_AesCbcEncryptDecrypt(void);
@@ -41,10 +42,28 @@ int test_wc_AesGcmEncryptDecrypt_UnalignedBuffers(void);
 int test_wc_AesGcm_CrossCipher(void);
 int test_wc_AesGcmMixedEncDecLongIV(void);
 int test_wc_AesGcmNonStdNonce(void);
+int test_wc_AesGcmEncrypt_ex_NonceUnique(void);
+int test_wc_AesCcmEncrypt_ex_NonceUnique(void);
+int test_wc_AesGcmSivEncryptDecrypt(void);
 int test_wc_AesGcmStream(void);
 int test_wc_AesGcmStream_MidStreamState(void);
 int test_wc_AesGcmStream_ReinitAfterFinal(void);
 int test_wc_AesGcmStream_BadAuthTag(void);
+int test_wc_AesKeyWrapVectors(void);
+int test_wc_AesKeyWrapDecisionCoverage(void);
+int test_wc_AesGcmDecisionCoverage(void);
+int test_wc_AesFeatureCoverage(void);
+int test_wc_AesSetKeyArgMcdc(void);
+int test_wc_AesModesArgMcdc(void);
+int test_wc_AesGcmArgMcdc(void);
+int test_wc_AesGmacArgMcdc(void);
+int test_wc_AesCcmArgMcdc(void);
+int test_wc_AesXtsArgMcdc(void);
+int test_wc_AesCmacArgMcdc(void);
+int test_wc_AesKeyExportArgMcdc(void);
+#if defined(WOLFSSL_AES_SIV) && defined(WOLFSSL_AES_128)
+int test_wc_AesSivArgMcdc(void);
+#endif
 int test_wc_AesCcmSetKey(void);
 int test_wc_AesCcmEncryptDecrypt(void);
 int test_wc_AesCcmEncryptDecrypt_InPlace(void);
@@ -65,9 +84,13 @@ int test_wc_AesEaxVectors(void);
 int test_wc_AesEaxEncryptAuth(void);
 int test_wc_AesEaxDecryptAuth(void);
 int test_wc_AesEaxStream(void);
+int test_wc_AesEaxArgMcdc(void);
 #endif /* WOLFSSL_AES_EAX && WOLFSSL_AES_256*/
 #if defined(WOLFSSL_AES_SIV) && defined(WOLFSSL_AES_128)
 int test_wc_AesSivEncryptDecrypt(void);
+#endif
+#if defined(HAVE_AES_KEYWRAP) && defined(WOLFSSL_AES_KEYWRAP_PADDING)
+int test_wc_AesKeyWrap_Pad(void);
 #endif
 
 int test_wc_AesCbc_MonteCarlo(void);
@@ -84,6 +107,15 @@ int test_wc_GmacUpdate(void);
 int test_wc_CryptoCb_AesSetKey(void);
 int test_wc_CryptoCb_AesGcm_EncryptDecrypt(void);
 #endif
+#if defined(WOLF_CRYPTO_CB) && !defined(NO_AES) && defined(WOLFSSL_AES_CFB) && \
+    !defined(WOLF_CRYPTO_CB_ONLY_AES)
+int test_wc_CryptoCb_AesCfb_EncryptDecrypt(void);
+#endif
+#if defined(WOLF_CRYPTO_CB) && !defined(NO_AES) && defined(WOLFSSL_AES_OFB) && \
+    !defined(WOLF_CRYPTO_CB_ONLY_AES)
+int test_wc_CryptoCb_AesOfb_EncryptDecrypt(void);
+#endif
+int test_wc_AesEcb_RetCodeChecked(void);
 
 /* These test functions always have a (possibly empty) definition in
  * test_aes.c so that callers can reference them unconditionally.  Declare
@@ -111,9 +143,43 @@ int test_wc_CryptoCb_Tls13_Key_No_Zero_Without_Offload(void);
 #define TEST_CRYPTOCB_AES_SETKEY_DECL
 #endif
 
+#if defined(WOLF_CRYPTO_CB) && !defined(NO_AES) && defined(WOLFSSL_AES_CFB) && \
+    !defined(WOLF_CRYPTO_CB_ONLY_AES)
+#define TEST_CRYPTOCB_AESCFB_DECL \
+    , TEST_DECL_GROUP("aes", test_wc_CryptoCb_AesCfb_EncryptDecrypt)
+#else
+#define TEST_CRYPTOCB_AESCFB_DECL
+#endif
+
+#if defined(WOLF_CRYPTO_CB) && !defined(NO_AES) && defined(WOLFSSL_AES_OFB) && \
+    !defined(WOLF_CRYPTO_CB_ONLY_AES)
+#define TEST_CRYPTOCB_AESOFB_DECL \
+    , TEST_DECL_GROUP("aes", test_wc_CryptoCb_AesOfb_EncryptDecrypt)
+#else
+#define TEST_CRYPTOCB_AESOFB_DECL
+#endif
+
+#if defined(WOLF_CRYPTO_CB) && defined(HAVE_AES_KEYWRAP) && \
+    !defined(NO_AES) && defined(WOLFSSL_AES_128)
+int test_wc_CryptoCb_AesKeyWrap(void);
+#if defined(HAVE_AES_ECB) && !defined(WOLF_CRYPTO_CB_ONLY_AES)
+int test_wc_CryptoCb_AesKeyWrapEcbCompose(void);
+#define TEST_CRYPTOCB_AES_KEYWRAP_ECB_DECL \
+    , TEST_DECL_GROUP("aes", test_wc_CryptoCb_AesKeyWrapEcbCompose)
+#else
+#define TEST_CRYPTOCB_AES_KEYWRAP_ECB_DECL
+#endif
+#define TEST_CRYPTOCB_AES_KEYWRAP_DECL \
+    , TEST_DECL_GROUP("aes", test_wc_CryptoCb_AesKeyWrap) \
+    TEST_CRYPTOCB_AES_KEYWRAP_ECB_DECL
+#else
+#define TEST_CRYPTOCB_AES_KEYWRAP_DECL
+#endif
+
 #define TEST_AES_DECLS                                          \
     TEST_DECL_GROUP("aes", test_wc_AesSetKey),                  \
     TEST_DECL_GROUP("aes", test_wc_AesSetIV),                   \
+    TEST_DECL_GROUP("aes", test_wc_AesSetIV_RestartsStream),    \
     TEST_DECL_GROUP("aes", test_wc_AesEncryptDecryptDirect),    \
     TEST_DECL_GROUP("aes", test_wc_AesEcbEncryptDecrypt),       \
     TEST_DECL_GROUP("aes", test_wc_AesCbcEncryptDecrypt),                  \
@@ -139,10 +205,25 @@ int test_wc_CryptoCb_Tls13_Key_No_Zero_Without_Offload(void);
     TEST_DECL_GROUP("aes", test_wc_AesGcm_CrossCipher),                    \
     TEST_DECL_GROUP("aes", test_wc_AesGcmMixedEncDecLongIV),                \
     TEST_DECL_GROUP("aes", test_wc_AesGcmNonStdNonce),          \
+    TEST_DECL_GROUP("aes", test_wc_AesGcmEncrypt_ex_NonceUnique), \
+    TEST_DECL_GROUP("aes", test_wc_AesCcmEncrypt_ex_NonceUnique), \
+    TEST_DECL_GROUP("aes", test_wc_AesGcmSivEncryptDecrypt),    \
     TEST_DECL_GROUP("aes", test_wc_AesGcmStream),               \
     TEST_DECL_GROUP("aes", test_wc_AesGcmStream_MidStreamState),  \
     TEST_DECL_GROUP("aes", test_wc_AesGcmStream_ReinitAfterFinal), \
     TEST_DECL_GROUP("aes", test_wc_AesGcmStream_BadAuthTag),       \
+    TEST_DECL_GROUP("aes", test_wc_AesKeyWrapVectors),          \
+    TEST_DECL_GROUP("aes", test_wc_AesKeyWrapDecisionCoverage), \
+    TEST_DECL_GROUP("aes", test_wc_AesGcmDecisionCoverage),     \
+    TEST_DECL_GROUP("aes", test_wc_AesFeatureCoverage),         \
+    TEST_DECL_GROUP("aes", test_wc_AesSetKeyArgMcdc),           \
+    TEST_DECL_GROUP("aes", test_wc_AesModesArgMcdc),            \
+    TEST_DECL_GROUP("aes", test_wc_AesGcmArgMcdc),              \
+    TEST_DECL_GROUP("aes", test_wc_AesGmacArgMcdc),             \
+    TEST_DECL_GROUP("aes", test_wc_AesCcmArgMcdc),              \
+    TEST_DECL_GROUP("aes", test_wc_AesXtsArgMcdc),              \
+    TEST_DECL_GROUP("aes", test_wc_AesCmacArgMcdc),             \
+    TEST_DECL_GROUP("aes", test_wc_AesKeyExportArgMcdc),        \
     TEST_DECL_GROUP("aes", test_wc_AesCcmSetKey),               \
     TEST_DECL_GROUP("aes", test_wc_AesCcmEncryptDecrypt),        \
     TEST_DECL_GROUP("aes", test_wc_AesCcmEncryptDecrypt_InPlace),            \
@@ -162,9 +243,13 @@ int test_wc_CryptoCb_Tls13_Key_No_Zero_Without_Offload(void);
     TEST_DECL_GROUP("aes", test_wc_AesGcm_MonteCarlo),    \
     TEST_DECL_GROUP("aes", test_wc_AesCcm_MonteCarlo),    \
     TEST_DECL_GROUP("aes", test_wc_AesCfb_MonteCarlo),    \
-    TEST_DECL_GROUP("aes", test_wc_AesOfb_MonteCarlo)     \
+    TEST_DECL_GROUP("aes", test_wc_AesOfb_MonteCarlo),    \
+    TEST_DECL_GROUP("aes", test_wc_AesEcb_RetCodeChecked) \
     TEST_CRYPTOCB_AES_SETKEY_DECL                         \
-    TEST_CRYPTOCB_TLS13_KEY_ZERO_DECL
+    TEST_CRYPTOCB_AES_KEYWRAP_DECL                        \
+    TEST_CRYPTOCB_TLS13_KEY_ZERO_DECL                     \
+    TEST_CRYPTOCB_AESCFB_DECL                             \
+    TEST_CRYPTOCB_AESOFB_DECL
 
 #if defined(WOLFSSL_AES_EAX) && defined(WOLFSSL_AES_256) && \
     (!defined(HAVE_FIPS) || FIPS_VERSION_GE(5, 3)) && !defined(HAVE_SELFTEST)
@@ -172,13 +257,20 @@ int test_wc_CryptoCb_Tls13_Key_No_Zero_Without_Offload(void);
     TEST_DECL_GROUP("aes-eax", test_wc_AesEaxVectors),      \
     TEST_DECL_GROUP("aes-eax", test_wc_AesEaxEncryptAuth),  \
     TEST_DECL_GROUP("aes-eax", test_wc_AesEaxDecryptAuth),  \
-    TEST_DECL_GROUP("aes-eax", test_wc_AesEaxStream)
+    TEST_DECL_GROUP("aes-eax", test_wc_AesEaxStream),       \
+    TEST_DECL_GROUP("aes-eax", test_wc_AesEaxArgMcdc)
 #endif /* WOLFSSL_AES_EAX */
 
 #if defined(WOLFSSL_AES_SIV) && defined(WOLFSSL_AES_128)
 #define TEST_AES_SIV_DECLS \
-    TEST_DECL_GROUP("aes-siv", test_wc_AesSivEncryptDecrypt)
+    TEST_DECL_GROUP("aes-siv", test_wc_AesSivEncryptDecrypt), \
+    TEST_DECL_GROUP("aes-siv", test_wc_AesSivArgMcdc)
 #endif /* WOLFSSL_AES_SIV && WOLFSSL_AES_128 */
+
+#if defined(HAVE_AES_KEYWRAP) && defined(WOLFSSL_AES_KEYWRAP_PADDING)
+#define TEST_AES_KEYWRAP_DECLS \
+    TEST_DECL_GROUP("aes-keywrap", test_wc_AesKeyWrap_Pad)
+#endif /* HAVE_AES_KEYWRAP && WOLFSSL_AES_KEYWRAP_PADDING */
 
 #define TEST_GMAC_DECLS                             \
     TEST_DECL_GROUP("gmac", test_wc_GmacSetKey),    \

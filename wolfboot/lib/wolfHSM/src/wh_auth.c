@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -169,6 +169,25 @@ int wh_Auth_Logout(whAuthContext* context, whUserId user_id)
             }
         }
 
+        (void)WH_AUTH_UNLOCK(context);
+    } /* LOCK() */
+    return rc;
+}
+
+
+/* Clears the local session under the auth lock. Fails without clearing if
+ * the lock can not be acquired, to avoid racing an in-flight login. */
+int wh_Auth_Reset(whAuthContext* context)
+{
+    int rc;
+
+    if (context == NULL) {
+        return WH_ERROR_BADARGS;
+    }
+
+    rc = WH_AUTH_LOCK(context);
+    if (rc == WH_ERROR_OK) {
+        memset(&context->user, 0, sizeof(whAuthUser));
         (void)WH_AUTH_UNLOCK(context);
     } /* LOCK() */
     return rc;
@@ -447,6 +466,13 @@ int wh_Auth_UserSetPermissions(whAuthContext* context, whUserId user_id,
     rc = context->cb->UserSetPermissions(
         context->context, context->user.user_id, user_id, permissions);
 
+    /* Keep the live session cache in sync when a logged-in user changes its
+     * own permissions; authorization reads only this cache. */
+    if ((rc == WH_ERROR_OK) && (user_id == context->user.user_id) &&
+        (context->user.user_id != WH_USER_ID_INVALID)) {
+        context->user.permissions = permissions;
+    }
+
     (void)WH_AUTH_UNLOCK(context);
     return rc;
 }
@@ -463,8 +489,8 @@ int wh_Auth_UserGet(whAuthContext* context, const char* username,
 
     rc = WH_AUTH_LOCK(context);
     if (rc == WH_ERROR_OK) {
-        rc = context->cb->UserGet(context->context, username, out_user_id,
-                                  out_permissions);
+        rc = context->cb->UserGet(context->context, context->user.user_id,
+                                  username, out_user_id, out_permissions);
 
         (void)WH_AUTH_UNLOCK(context);
     } /* LOCK() */

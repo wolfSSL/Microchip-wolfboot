@@ -1,8 +1,8 @@
 /* tpm_io_linux.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -54,13 +54,29 @@
     #include <fcntl.h>
     #include <unistd.h>
     #include <errno.h>
+    #ifdef WOLFTPM_HAL_RESET
+        /* GPIO character-device uAPI for optional nRST control */
+        #include <linux/gpio.h>
+        #include <time.h> /* nanosleep (usleep is undefined for >= 1s) */
+    #endif
 
     #ifdef WOLFTPM_I2C
         /* I2C - (Only tested with SLB9673 and ST33 I2C) */
+        /* Overridable at build time: the bus number is board specific. A
+         * Raspberry Pi 5 using a bit-banged i2c-gpio overlay for the clock
+         * stretching these TPMs need, for example, enumerates it well above
+         * i2c-1. */
+        #ifndef TPM2_I2C_ADDR
         #define TPM2_I2C_ADDR 0x2e
+        #endif
+        #ifndef TPM2_I2C_DEV
         #define TPM2_I2C_DEV  "/dev/i2c-1"
+        #endif
+        #ifndef TPM2_I2C_HZ
         #define TPM2_I2C_HZ   400000 /* 400kHz */
+        #endif
         static int i2cOpenFailed = 0;
+        static int i2cDevFd = -1;
     #else
         /* SPI */
         #ifndef TPM2_SPI_DEV_CS
@@ -75,6 +91,9 @@
                 #define TPM2_SPI_DEV_CS "0"
             #elif defined(WOLFTPM_NATIONS)
                 /* Nations Technology NS350 uses CE0 */
+                #define TPM2_SPI_DEV_CS "0"
+            #elif defined(WOLFTPM_SEALSQ)
+                /* SealSQ QVault TPM uses CE0 */
                 #define TPM2_SPI_DEV_CS "0"
             #else
                 /* OPTIGA SLB9670/SLB9762 and LetsTrust TPM use CE1 */
@@ -97,6 +116,7 @@
             #define TPM2_SPI_DEV TPM2_SPI_DEV_PATH TPM2_SPI_DEV_CS
             static int spiOpenFailed = 0;
         #endif
+        static int spiDevFd = -1;
     #endif
 #endif
 
@@ -170,6 +190,8 @@
                 break;
         } while (--timeout > 0);
 
+        TPM2_ForceZero(buf, sizeof(buf));
+
         return (rc == -1) ? TPM_RC_FAILURE : TPM_RC_SUCCESS;
     }
 
@@ -178,14 +200,19 @@
         word16 size, void* userCtx)
     {
         int ret = TPM_RC_FAILURE;
-        int i2cDev = open(TPM2_I2C_DEV, O_RDWR);
-        if (i2cDev >= 0) {
+        if (i2cDevFd < 0) {
+            i2cDevFd = open(TPM2_I2C_DEV, O_RDWR | O_CLOEXEC);
+        }
+        if (i2cDevFd >= 0) {
             if (isRead)
-                ret = i2c_read(i2cDev, addr, buf, size);
+                ret = i2c_read(i2cDevFd, addr, buf, size);
             else
-                ret = i2c_write(i2cDev, addr, buf, size);
+                ret = i2c_write(i2cDevFd, addr, buf, size);
 
-            close(i2cDev);
+            if (ret != TPM_RC_SUCCESS) {
+                close(i2cDevFd);
+                i2cDevFd = -1;
+            }
         }
         else if (!i2cOpenFailed) {
             i2cOpenFailed = 1;
@@ -247,7 +274,6 @@
         word16 xferSz, void* userCtx)
     {
         int ret;
-        int spiDev;
     #ifdef WOLFTPM_CHECK_WAIT_STATE
         int timeout;
     #endif
@@ -257,7 +283,6 @@
 
         /* Note: PI has issue with 5-10Mhz on packets sized over 130 bytes */
         unsigned int maxSpeed = TPM2_SPI_HZ;
-        int mode = 0; /* Mode 0 (CPOL=0, CPHA=0) */
         int bits_per_word = 8; /* 8-bits */
 
     #ifdef WOLFTPM_AUTODETECT
@@ -273,16 +298,20 @@
     #ifdef WOLFTPM_CHECK_WAIT_STATE
         timeout = TPM_SPI_WAIT_RETRY;
     #endif
-        spiDev = open(TPM2_SPI_DEV, O_RDWR);
-        if (spiDev >= 0) {
+        if (spiDevFd < 0) {
+            spiDevFd = open(TPM2_SPI_DEV, O_RDWR | O_CLOEXEC);
+            if (spiDevFd >= 0) {
+                int mode = 0; /* Mode 0 (CPOL=0, CPHA=0) */
+                ioctl(spiDevFd, SPI_IOC_WR_MODE, &mode);
+            }
+        }
+        if (spiDevFd >= 0) {
             struct spi_ioc_transfer spi;
             size_t size;
 
-            ioctl(spiDev, SPI_IOC_WR_MODE, &mode);
-            ioctl(spiDev, SPI_IOC_WR_MAX_SPEED_HZ, &maxSpeed);
-            ioctl(spiDev, SPI_IOC_WR_BITS_PER_WORD, &bits_per_word);
-
             XMEMSET(&spi, 0, sizeof(spi));
+            spi.speed_hz = maxSpeed;
+            spi.bits_per_word = bits_per_word;
 
     #ifdef WOLFTPM_CHECK_WAIT_STATE
             /* Keep CS asserted for header and flow control transfers */
@@ -292,7 +321,7 @@
             spi.tx_buf   = (unsigned long)txBuf;
             spi.rx_buf   = (unsigned long)rxBuf;
             spi.len      = TPM_TIS_HEADER_SZ;
-            size = ioctl(spiDev, SPI_IOC_MESSAGE(1), &spi);
+            size = ioctl(spiDevFd, SPI_IOC_MESSAGE(1), &spi);
             if (size != TPM_TIS_HEADER_SZ) {
                 ret =  TPM_RC_FAILURE;
             }
@@ -305,7 +334,7 @@
                 spi.len = 1;
                 do {
                     /* Check for SPI ready */
-                    size = ioctl(spiDev, SPI_IOC_MESSAGE(1), &spi);
+                    size = ioctl(spiDevFd, SPI_IOC_MESSAGE(1), &spi);
                 } while (
                     (size == 1) &&
                     ((rxBuf[TPM_TIS_HEADER_SZ-1] & TPM_TIS_READY_MASK) == 0) &&
@@ -325,7 +354,7 @@
                 spi.tx_buf   = (unsigned long)&txBuf[TPM_TIS_HEADER_SZ];
                 spi.rx_buf   = (unsigned long)&rxBuf[TPM_TIS_HEADER_SZ];
                 spi.len      = xferSz - TPM_TIS_HEADER_SZ;
-                size = ioctl(spiDev, SPI_IOC_MESSAGE(1), &spi);
+                size = ioctl(spiDevFd, SPI_IOC_MESSAGE(1), &spi);
                 if (size != (size_t)xferSz - TPM_TIS_HEADER_SZ)
                     ret = TPM_RC_FAILURE;
             }
@@ -334,7 +363,7 @@
             if (spi.cs_change == 1) {
                 spi.cs_change = 0;
                 spi.len = 1;
-                size = ioctl(spiDev, SPI_IOC_MESSAGE(1), &spi);
+                size = ioctl(spiDevFd, SPI_IOC_MESSAGE(1), &spi);
                 (void)size;  /* Ignore result */
             }
     #else
@@ -342,12 +371,15 @@
             spi.tx_buf   = (unsigned long)txBuf;
             spi.rx_buf   = (unsigned long)rxBuf;
             spi.len      = xferSz;
-            size = ioctl(spiDev, SPI_IOC_MESSAGE(1), &spi);
+            size = ioctl(spiDevFd, SPI_IOC_MESSAGE(1), &spi);
             if (size != (size_t)xferSz)
                 ret = TPM_RC_FAILURE;
     #endif /* WOLFTPM_CHECK_WAIT_STATE */
 
-            close(spiDev);
+            if (ret != TPM_RC_SUCCESS) {
+                close(spiDevFd);
+                spiDevFd = -1;
+            }
         }
         else {
             /* Failed to open device */
@@ -381,6 +413,10 @@
                 foundSpiDev = 1;
             }
             else {
+                if (spiDevFd >= 0) {
+                    close(spiDevFd);
+                    spiDevFd = -1;
+                }
                 devLen = (int)XSTRLEN(TPM2_SPI_DEV);
                 /* tries spidev0.[0-4] */
                 if (TPM2_SPI_DEV[devLen-1] < MAX_SPI_DEV_CS) {
@@ -405,6 +441,110 @@
         return ret;
     }
 #endif /* WOLFTPM_I2C */
+
+#ifdef WOLFTPM_HAL_RESET
+    /* Pulse the TPM nRST (active low) via the Linux GPIO char device (raw GPIO
+     * v2 uAPI, no libgpiod). Default line: Raspberry Pi ST33 = GPIO24 (pin 18),
+     * Nuvoton = GPIO4; override with WOLFTPM_RESET_GPIOCHIP / WOLFTPM_RESET_LINE. */
+    #ifndef WOLFTPM_RESET_GPIOCHIP
+        #define WOLFTPM_RESET_GPIOCHIP "/dev/gpiochip0"
+    #endif
+    #ifndef WOLFTPM_RESET_LINE
+        #if defined(WOLFTPM_NUVOTON)
+            #define WOLFTPM_RESET_LINE 4
+        #else
+            #define WOLFTPM_RESET_LINE 24
+        #endif
+    #endif
+    #ifndef WOLFTPM_RESET_HOLD_US
+        #define WOLFTPM_RESET_HOLD_US 300000    /* reset asserted 300ms */
+    #endif
+    #ifndef WOLFTPM_RESET_SETTLE_US
+        #define WOLFTPM_RESET_SETTLE_US 1000000 /* TPM boot settle 1s */
+    #endif
+
+    /* usleep() is undefined for values >= 1000000 (POSIX); nanosleep has no
+     * such limit and handles the 1s settle and any larger override. */
+    static void TPM2_Reset_DelayUs(unsigned long us)
+    {
+        struct timespec ts;
+        ts.tv_sec  = (time_t)(us / 1000000UL);
+        ts.tv_nsec = (long)((us % 1000000UL) * 1000UL);
+        (void)nanosleep(&ts, NULL);
+    }
+
+    /* Note: this reset HAL is only compile-checked in CI (no GPIO hardware or
+     * gpio-sim there); the open/GET_LINE/SET_VALUES flow, the hold/settle
+     * timing, and the fd lifecycle are functionally regression-verified on real
+     * hardware - the ST33 on a Raspberry Pi 5, nRST wired to GPIO24 (pin 18). */
+    int TPM2_IoCb_Linux_Reset(TPM2_CTX* ctx, void* userCtx)
+    {
+        int ret = TPM_RC_FAILURE;
+        int chipFd, reqFd;
+        struct gpio_v2_line_request req;
+        struct gpio_v2_line_values vals;
+
+        (void)ctx;
+        (void)userCtx;
+
+        chipFd = open(WOLFTPM_RESET_GPIOCHIP, O_RDONLY);
+        if (chipFd < 0) {
+        #ifdef DEBUG_WOLFTPM
+            printf("TPM Reset: open %s failed (errno %d)\n",
+                WOLFTPM_RESET_GPIOCHIP, errno);
+        #endif
+            return TPM_RC_FAILURE;
+        }
+
+        /* Acquire the line as an output driven low (assert reset) */
+        XMEMSET(&req, 0, sizeof(req));
+        req.offsets[0] = (unsigned int)WOLFTPM_RESET_LINE;
+        req.num_lines = 1;
+        req.config.flags = GPIO_V2_LINE_FLAG_OUTPUT;
+        req.config.num_attrs = 1;
+        req.config.attrs[0].attr.id = GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES;
+        req.config.attrs[0].attr.values = 0; /* drive low (assert reset) */
+        req.config.attrs[0].mask = 1;        /* applies to line index 0 */
+        XMEMCPY(req.consumer, "wolfTPM-reset", sizeof("wolfTPM-reset"));
+
+        if (ioctl(chipFd, GPIO_V2_GET_LINE_IOCTL, &req) < 0 || req.fd < 0) {
+        #ifdef DEBUG_WOLFTPM
+            printf("TPM Reset: GET_LINE ioctl failed (errno %d)\n", errno);
+        #endif
+            close(chipFd);
+            return TPM_RC_FAILURE;
+        }
+        close(chipFd);
+        reqFd = req.fd;
+
+        /* Hold reset asserted, then release (drive high) and let the TPM boot */
+        TPM2_Reset_DelayUs(WOLFTPM_RESET_HOLD_US);
+
+        XMEMSET(&vals, 0, sizeof(vals));
+        vals.mask = 1;
+        vals.bits = 1; /* drive high = release reset */
+        if (ioctl(reqFd, GPIO_V2_LINE_SET_VALUES_IOCTL, &vals) < 0) {
+        #ifdef DEBUG_WOLFTPM
+            printf("TPM Reset: SET_VALUES ioctl failed (errno %d)\n", errno);
+        #endif
+        }
+        else {
+            ret = TPM_RC_SUCCESS;
+        #ifdef DEBUG_WOLFTPM
+            printf("TPM Reset: pulsed nRST on %s line %d\n",
+                WOLFTPM_RESET_GPIOCHIP, (int)WOLFTPM_RESET_LINE);
+        #endif
+            /* Only wait for the TPM to settle after a successful release; on a
+             * failed release the delay would just stall the error path. */
+            TPM2_Reset_DelayUs(WOLFTPM_RESET_SETTLE_US);
+        }
+
+        close(reqFd);
+
+        return ret;
+    }
+#endif /* WOLFTPM_HAL_RESET */
+
 #endif /* __linux__ */
 #endif /* !(WOLFTPM_LINUX_DEV || WOLFTPM_SWTPM || WOLFTPM_WINAPI) */
 #endif /* WOLFTPM_INCLUDE_IO_FILE */

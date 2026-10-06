@@ -1,8 +1,8 @@
 /* hash.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -136,6 +136,7 @@ int TPM2_Hash_Example(void* userCtx, int argc, char* argv[])
 
 exit:
 
+    wolfTPM2_UnloadHandle(&dev, &hash.handle);
     wolfTPM2_Cleanup(&dev);
 
     return rc;

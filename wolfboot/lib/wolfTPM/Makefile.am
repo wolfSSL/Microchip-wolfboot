@@ -58,6 +58,7 @@ EXTRA_DIST+= .cyignore
 EXTRA_DIST+= README.md
 EXTRA_DIST+= ChangeLog.md
 EXTRA_DIST+= LICENSE
+EXTRA_DIST+= COPYING
 EXTRA_DIST+= autogen.sh
 EXTRA_DIST+= CMakeLists.txt
 
@@ -132,3 +133,26 @@ cppcheck:
 		--suppress=invalidPrintfArgType_sint \
 		--error-exitcode=89 --std=c89 \
 		-I wolftpm src/ hal/ examples
+
+# SBOM generation (CRA compliance).  The recipe is shared across the wolfSSL
+# stack's autotools products in scripts/sbom.am; wolfTPM just declares what it
+# is (a libwolftpm library that links wolfSSL/wolfCrypt) and includes it.
+# WOLFSSL_DIR must point to a wolfssl source tree containing scripts/gen-sbom.
+SBOM_PKGNAME      = wolftpm
+SBOM_LICENSE_FILE = $(srcdir)/COPYING
+SBOM_DEP_WOLFSSL  = yes
+
+# wolfTPM records its feature macros in its own generated options header, so
+# point gen-sbom at that header rather than at the compiler-derived defaults.
+SBOM_OPTIONS_H    = $(abs_builddir)/wolftpm/options.h
+
+# wolfTPM is GPLv3-or-later (per the per-file source headers: "either version 3
+# of the License, or (at your option) any later version") or commercial.  Pin
+# the header-accurate SPDX id here so the SBOM is correct regardless of the
+# gen-sbom version's licence detection; commercial licensees can override it
+# (e.g. LicenseRef-wolfSSL-Commercial).
+SBOM_LICENSE_OVERRIDE ?= GPL-3.0-or-later
+
+EXTRA_DIST += scripts/sbom.am
+
+include scripts/sbom.am

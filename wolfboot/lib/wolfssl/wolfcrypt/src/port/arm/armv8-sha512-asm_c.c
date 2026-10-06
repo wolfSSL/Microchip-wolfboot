@@ -9,20 +9,25 @@
  * https://www.wolfssl.com
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
-#include <wolfssl/wolfcrypt/error-crypt.h>
-
 /* Generated using (from wolfssl):
  *   cd ../scripts
  *   ruby ./sha2/sha512.rb arm64 \
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-sha512-asm.c
  */
+
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_SHA512_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
+
 #ifdef WOLFSSL_ARMASM
 #ifdef __aarch64__
 #ifdef WOLFSSL_ARMASM_INLINE
 #include <wolfssl/wolfcrypt/sha512.h>
 
 #if defined(WOLFSSL_SHA512) || defined(WOLFSSL_SHA384)
+#ifndef WOLFSSL_ARMASM_NO_NEON
 XALIGNED(16) static const word64 L_SHA512_transform_neon_len_k[] = {
     0x428a2f98d728ae22UL, 0x7137449123ef65cdUL,
     0xb5c0fbcfec4d3b2fUL, 0xe9b5dba58189dbbcUL,
@@ -1035,9 +1040,7 @@ void Transform_Sha512_Len_crypto(wc_Sha512* sha512, const byte* data,
 {
     const word64* k = L_SHA512_trans_crypto_len_k;
     __asm__ __volatile__ (
-#ifdef __APPLE__
     ".arch_extension sha3\n\t"
-#endif /* __APPLE__ */
         /* Load K into vector registers */
         "ld1	{v8.2d, v9.2d, v10.2d, v11.2d}, [%[k]], #0x40\n\t"
         "ld1	{v12.2d, v13.2d, v14.2d, v15.2d}, [%[k]], #0x40\n\t"
@@ -1554,6 +1557,7 @@ void Transform_Sha512_Len_crypto(wc_Sha512* sha512, const byte* data,
 }
 
 #endif /* WOLFSSL_ARMASM_CRYPTO_SHA512 */
+#endif /* !WOLFSSL_ARMASM_NO_NEON */
 #endif /* WOLFSSL_SHA512 || WOLFSSL_SHA384 */
 #endif /* __aarch64__ */
 #endif /* WOLFSSL_ARMASM */

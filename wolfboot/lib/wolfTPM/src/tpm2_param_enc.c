@@ -1,8 +1,8 @@
 /* tpm2_param_enc.c
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -46,13 +46,6 @@
 /******************************************************************************/
 /* --- Param Enc/Dec Functions -- */
 /******************************************************************************/
-
-/* Maximum XOR mask size. RSA-2048 inSensitive parameter blobs on Create can
- * exceed MAX_DIGEST_BUFFER (1024), so leave headroom to ~1250 bytes. Keep
- * stack usage bounded by switching to heap under WOLFTPM_SMALL_STACK. */
-#ifndef TPM2_XOR_MASK_MAX
-#define TPM2_XOR_MASK_MAX 1280
-#endif
 
 /* XOR parameter encryption/decryption (shared by client and fwTPM).
  * XOR is symmetric so encrypt and decrypt are the same operation.
@@ -181,15 +174,27 @@ int TPM2_ParamEnc_AESCFB(
 static TPM2B_AUTH* TPM2_ParamEncBindKey(TPM2_AUTH_SESSION* session)
 {
     int digestSz = TPM2_GetHashDigestSize(session->authHash);
-    if (session->bind != NULL && digestSz > 0 &&
-            session->name.size > 0 &&
-            session->name.size == session->bindName.size &&
-            XMEMCMP(session->name.name, session->bindName.name,
-                session->name.size) == 0 &&
-            session->auth.size <= (UINT16)digestSz) {
-        return session->bind;
+    int sizeMismatch;
+    int diff;
+    UINT16 cmpLen;
+
+    if (session->bind == NULL || digestSz <= 0 ||
+            session->name.size == 0 ||
+            session->auth.size > (UINT16)digestSz) {
+        return NULL;
     }
-    return NULL;
+
+    cmpLen = session->name.size;
+    if (cmpLen > (UINT16)sizeof(session->bindName.name)) {
+        cmpLen = (UINT16)sizeof(session->bindName.name);
+    }
+    sizeMismatch = (session->name.size != session->bindName.size);
+    diff = TPM2_ConstantCompare(session->name.name, session->bindName.name,
+        cmpLen);
+    if (sizeMismatch | diff) {
+        return NULL;
+    }
+    return session->bind;
 }
 
 /* Build combined param-enc key from session key + optional bind authValue. */
@@ -379,6 +384,7 @@ int TPM2_CalcCpHash(TPMI_ALG_HASH authHash, TPM_CC cmdCode,
             rc = wc_HashFinal(&hash_ctx, hashType, hash->buffer);
 
         wc_HashFree(&hash_ctx, hashType);
+        TPM2_ForceZero(&hash_ctx, sizeof(hash_ctx));
     }
 
 #ifdef WOLFTPM_DEBUG_VERBOSE
@@ -425,6 +431,7 @@ int TPM2_CalcRpHash(TPMI_ALG_HASH authHash,
             rc = wc_HashFinal(&hash_ctx, hashType, hash->buffer);
 
         wc_HashFree(&hash_ctx, hashType);
+        TPM2_ForceZero(&hash_ctx, sizeof(hash_ctx));
     }
 
 #ifdef WOLFTPM_DEBUG_VERBOSE

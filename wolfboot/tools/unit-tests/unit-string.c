@@ -375,31 +375,31 @@ END_TEST
 START_TEST(test_uart_writenum_basic)
 {
     reset_uart_buf();
-    uart_writenum(0, 10, 0, 0);
+    uart_writenum(0, 10, 0, 0, 1);
     ck_assert_str_eq(uart_buf, "0");
 
     reset_uart_buf();
-    uart_writenum(255, 16, 0, 0);
+    uart_writenum(255, 16, 0, 0, 0);
     ck_assert_str_eq(uart_buf, "FF");
 
     reset_uart_buf();
-    uart_writenum(-5, 10, 0, 0);
+    uart_writenum(-5, 10, 0, 0, 1);
     ck_assert_str_eq(uart_buf, "-5");
 
     reset_uart_buf();
-    uart_writenum(7, 10, 1, 4);
+    uart_writenum(7, 10, 1, 4, 1);
     ck_assert_str_eq(uart_buf, "0007");
 
     reset_uart_buf();
-    uart_writenum(1, 10, 1, 2);
+    uart_writenum(1, 10, 1, 2, 1);
     ck_assert_str_eq(uart_buf, "01");
 
     reset_uart_buf();
-    uart_writenum(0x1234, 16, 1, 6);
+    uart_writenum(0x1234, 16, 1, 6, 0);
     ck_assert_str_eq(uart_buf, "001234");
 
     reset_uart_buf();
-    uart_writenum(1, 10, 1, 64);
+    uart_writenum(1, 10, 1, 64, 1);
     ck_assert_int_eq(uart_buf[0], '0');
 }
 END_TEST
@@ -441,6 +441,73 @@ START_TEST(test_uart_printf_formats)
     reset_uart_buf();
     uart_printf("%i", -1);
     ck_assert_str_eq(uart_buf, "-1");
+
+    /* %u must print the full unsigned range, not the signed interpretation:
+     * values >= 2^31 used to come out negative. */
+    reset_uart_buf();
+    uart_printf("%u", 0x80000000u);
+    ck_assert_str_eq(uart_buf, "2147483648");
+
+    reset_uart_buf();
+    uart_printf("%u", 0xFFFFFFFFu);
+    ck_assert_str_eq(uart_buf, "4294967295");
+
+    reset_uart_buf();
+    uart_printf("%010u", 0xFFFFFFFFu);
+    ck_assert_str_eq(uart_buf, "4294967295");
+}
+END_TEST
+
+/* F-11030: %ld/%lu/%zd/%zu/%lx/%p must consume the full-width
+ * argument, not int (truncation on 64-bit hosts). */
+START_TEST(test_uart_printf_64bit_args)
+{
+    reset_uart_buf();
+    uart_printf("%ld", (long)1234567890123LL);
+    ck_assert_str_eq(uart_buf, "1234567890123");
+
+    reset_uart_buf();
+    uart_printf("%lu", (unsigned long)18446744073709551615ULL);
+    ck_assert_str_eq(uart_buf, "18446744073709551615");
+
+    reset_uart_buf();
+    uart_printf("%zu", (size_t)4294967296ULL);
+    ck_assert_str_eq(uart_buf, "4294967296");
+
+    reset_uart_buf();
+    uart_printf("%p", (void*)(uintptr_t)0x1234567890ULL);
+    ck_assert_str_eq(uart_buf, "0x1234567890");
+
+    reset_uart_buf();
+    uart_printf("%lx", (unsigned long)0xABCDEF0123ULL);
+    ck_assert_str_eq(uart_buf, "ABCDEF0123");
+
+    reset_uart_buf();
+    uart_printf("%ld", (long)-1234567890123LL);
+    ck_assert_str_eq(uart_buf, "-1234567890123");
+
+    reset_uart_buf();
+    uart_printf("%lld", (long long)-1234567890123LL);
+    ck_assert_str_eq(uart_buf, "-1234567890123");
+
+    reset_uart_buf();
+    uart_printf("%d", 42);
+    ck_assert_str_eq(uart_buf, "42");
+}
+END_TEST
+
+/* F-11048: a negative '*' width must not reach the zero-pad memset
+ * as a huge size_t. */
+START_TEST(test_uart_printf_negative_star_width)
+{
+    reset_uart_buf();
+    uart_printf("%0*x", -3, 0x2a);
+    /* clamped to 0 -> default 8-digit zero pad */
+    ck_assert_str_eq(uart_buf, "0000002A");
+
+    reset_uart_buf();
+    uart_printf("%0*llu", -1, 0x123ULL);
+    ck_assert_str_eq(uart_buf, "00000291");
 }
 END_TEST
 
@@ -478,6 +545,8 @@ Suite *string_suite(void)
     tcase_add_test(tcase_misc, test_memcpy_aligned_buffers);
     tcase_add_test(tcase_misc, test_uart_writenum_basic);
     tcase_add_test(tcase_misc, test_uart_printf_formats);
+    tcase_add_test(tcase_misc, test_uart_printf_64bit_args);
+    tcase_add_test(tcase_misc, test_uart_printf_negative_star_width);
 
     suite_add_tcase(s, tcase_strncasecmp);
     suite_add_tcase(s, tcase_misc);

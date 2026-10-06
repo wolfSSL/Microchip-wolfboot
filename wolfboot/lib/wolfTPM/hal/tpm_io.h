@@ -1,8 +1,8 @@
 /* tpm_io.h
  *
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfTPM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -85,6 +85,9 @@ WOLFTPM_LOCAL int TPM2_IoCb_MicrochipHarmony_I2C(TPM2_CTX* ctx, int isRead, word
 #elif defined(WOLFSSL_ZEPHYR)
 WOLFTPM_LOCAL int TPM2_IoCb_Zephyr_I2C(TPM2_CTX* ctx, int isRead, word32 addr,
     byte* buf, word16 size, void* userCtx);
+#elif defined(WOLFTPM_WOLFHAL)
+WOLFTPM_LOCAL int TPM2_IoCb_Wolfhal_I2C(TPM2_CTX* ctx, int isRead, word32 addr,
+    byte* buf, word16 size, void* userCtx);
 #endif /* __linux__ */
 
 #else /* SPI */
@@ -119,6 +122,9 @@ WOLFTPM_LOCAL int TPM2_IoCb_Infineon_TriCore_SPI(TPM2_CTX* ctx, const byte* txBu
 #elif defined(WOLFTPM_MICROCHIP_HARMONY)
 WOLFTPM_LOCAL int TPM2_IoCb_Microchip_SPI(TPM2_CTX* ctx, const byte* txBuf, byte* rxBuf,
     word16 xferSz, void* userCtx);
+#elif defined(WOLFTPM_WOLFHAL)
+WOLFTPM_LOCAL int TPM2_IoCb_Wolfhal_SPI(TPM2_CTX* ctx, const byte* txBuf,
+    byte* rxBuf, word16 xferSz, void* userCtx);
 #endif
 
 #endif /* WOLFTPM_I2C */
@@ -133,6 +139,15 @@ WOLFTPM_LOCAL int TPM2_IoCb_Mmio(TPM2_CTX* ctx, int isRead, word32 addr, byte* b
 /* fwTPM TIS/shared-memory transport (requires WOLFTPM_ADV_IO) */
 WOLFTPM_LOCAL int TPM2_IoCb_FwTPM(TPM2_CTX* ctx, int isRead, word32 addr,
     byte* buf, word16 size, void* userCtx);
+#endif
+
+#ifdef WOLFTPM_HAL_RESET
+/* Optional TPM hardware reset (nRST) control. Pulses the reset line to reset
+ * the TPM. Enable with --enable-hal-reset (-DWOLFTPM_HAL_RESET). */
+WOLFTPM_API int TPM2_IoCb_Reset(TPM2_CTX* ctx, void* userCtx);
+#if defined(__linux__)
+WOLFTPM_LOCAL int TPM2_IoCb_Linux_Reset(TPM2_CTX* ctx, void* userCtx);
+#endif
 #endif
 
 #endif /* WOLFTPM_EXAMPLE_HAL */

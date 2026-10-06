@@ -1,7 +1,7 @@
 /*
- * Copyright (C) 2014-2026 wolfSSL Inc.  All rights reserved.
+ * Copyright (C) 2006-2026 wolfSSL Inc.  All rights reserved.
  *
- * This file is part of wolfBoot.
+ * This file is part of wolfHSM.
  *
  * Contact licensing@wolfssl.com with any questions or comments.
  *
@@ -29,6 +29,8 @@ whMessageCustomCb_Request  whMessageCustomCb_Request_test;
 whMessageCustomCb_Response whMessageCustomCb_Response_test;
 
 #include "wolfhsm/wh_message_nvm.h"
+/* Raw wire struct: the key wrap trailers memcpy it across the boundary */
+whNvmMetadata                      whNvmMetadata_test;
 whMessageNvm_SimpleResponse        whMessageNvm_SimpleResponse_test;
 whMessageNvm_InitRequest           whMessageNvm_InitRequest_test;
 whMessageNvm_InitResponse          whMessageNvm_InitResponse_test;
@@ -96,6 +98,7 @@ whMessageCrypto_EcdhRequest           pkEcdhReq;
 whMessageCrypto_Curve25519Request     pkCurve25519Req;
 whMessageCrypto_EccSignRequest        pkEccSignReq;
 whMessageCrypto_EccVerifyRequest      pkEccVerifyReq;
+whMessageCrypto_EccMakePubRequest     pkEccMakePubReq;
 whMessageCrypto_EccCheckRequest       pkEccCheckReq;
 whMessageCrypto_RngRequest            rngReq;
 whMessageCrypto_CmacAesRequest        cmacReq;
@@ -109,12 +112,18 @@ whMessageCrypto_EcdhResponse          pkEcdhRes;
 whMessageCrypto_Curve25519Response    pkCurve25519Res;
 whMessageCrypto_EccSignResponse       pkEccSignRes;
 whMessageCrypto_EccVerifyResponse     pkEccVerifyRes;
+whMessageCrypto_EccMakePubResponse    pkEccMakePubRes;
 whMessageCrypto_EccCheckResponse      pkEccCheckRes;
 whMessageCrypto_RngResponse           rngRes;
 whMessageCrypto_CmacAesResponse       cmacRes;
 whMessageCrypto_Sha256Request         hashSha256Req;
 whMessageCrypto_Sha512Request         hashSha512Req;
 whMessageCrypto_Sha2Response          hashSha2Res;
+#if defined(WOLFSSL_SHA3)
+whMessageCrypto_Sha3State    hashSha3State;
+whMessageCrypto_Sha3Request  hashSha3Req;
+whMessageCrypto_Sha3Response hashSha3Res;
+#endif
 whMessageCrypto_HkdfRequest           hkdfReq;
 whMessageCrypto_HkdfResponse          hkdfRes;
 whMessageCrypto_MlDsaKeyGenRequest    pkMldsaKeygenReq;
@@ -135,6 +144,10 @@ whMessageCrypto_MlKemDecapsResponse   pkMlkemDecapsRes;
 whMessageCrypto_Sha256DmaRequest       hashSha256DmaReq;
 whMessageCrypto_Sha512DmaRequest       hashSha512DmaReq;
 whMessageCrypto_Sha2DmaResponse        hashSha2DmaRes;
+#if defined(WOLFSSL_SHA3)
+whMessageCrypto_Sha3DmaRequest  hashSha3DmaReq;
+whMessageCrypto_Sha3DmaResponse hashSha3DmaRes;
+#endif
 whMessageCrypto_MlDsaKeyGenDmaRequest  pqMldsaKeygenDmaReq;
 whMessageCrypto_MlDsaKeyGenDmaResponse pqMldsaKeygenDmaRes;
 whMessageCrypto_MlDsaSignDmaRequest    pqMldsaSignDmaReq;
@@ -185,6 +198,8 @@ whMessageShe_GenMacRequest            sheGenMacReq;
 whMessageShe_GenMacResponse           sheGenMacRes;
 whMessageShe_VerifyMacRequest         sheVerifyMacReq;
 whMessageShe_VerifyMacResponse        sheVerifyMacRes;
+whMessageShe_GetIdRequest             sheGetIdReq;
+whMessageShe_GetIdResponse            sheGetIdRes;
 #endif /* WOLFHSM_CFG_SHE_EXTENSION */
 
 #if defined(WOLFHSM_CFG_CERTIFICATE_MANAGER)

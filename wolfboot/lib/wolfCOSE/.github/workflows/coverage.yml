@@ -1,0 +1,86 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Line Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool lcov
+
+    - name: Resolve wolfSSL master commit
+      id: wolfssl-rev
+      run: echo "sha=$(git ls-remote https://github.com/wolfSSL/wolfssl.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+    - name: Cache wolfSSL
+      id: cache-wolfssl
+      uses: actions/cache@v4
+      with:
+        path: ~/wolfssl-install
+        # Coverage needs its own cache: other workflows share the generic
+        # ubuntu-latest key but configure wolfSSL without aeskeywrap, and a
+        # cache hit on such a build silently skips the KEY_WRAP tests. The
+        # -lms suffix distinguishes the LMS-enabled coverage build.
+        key: wolfssl-coverage-fullcfg-lms-v1-${{ steps.wolfssl-rev.outputs.sha }}
+
+    - name: Build wolfSSL
+      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+      run: |
+        cd ~
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+        cd wolfssl
+        ./autogen.sh
+        # Coverage thresholds (99%/100%) require the ML-DSA paths compiled in,
+        # so build against master with the PQC/experimental wc_MlDsaKey API.
+        ./configure --enable-ecc --enable-ed25519 --enable-ed448 \
+                    --enable-curve25519 --enable-aesgcm --enable-aesccm \
+                    --enable-sha384 --enable-sha512 --enable-keygen \
+                    --enable-rsapss --enable-chacha --enable-poly1305 \
+                    --enable-mldsa --enable-lms \
+                    --enable-hkdf --enable-aeskeywrap \
+                    --enable-aescbc \
+                    --prefix=$HOME/wolfssl-install
+        make -j$(nproc)
+        make install
+
+    - name: Run coverage with failure injection
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        COV_CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include"
+        COV_LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+        # Default build first: it covers the generic paths the PSA build
+        # compiles out, such as the verifiers rejecting private PSA/EAT decode
+        # flags. Check it before the PSA build's clean wipes its gcov data.
+        make coverage-force-failure CC=gcc CFLAGS="$COV_CFLAGS" LDFLAGS="$COV_LDFLAGS"
+        sh scripts/check_coverage.sh
+        # PSA/EAT build: adds wolfcose_eat_psa.c and the PSA-enabled branches.
+        make eat-psa-coverage-force-failure CC=gcc CFLAGS="$COV_CFLAGS" LDFLAGS="$COV_LDFLAGS"
+
+    - name: Check coverage thresholds
+      run: sh scripts/check_coverage.sh wolfcose_eat_psa.c
+
+    - name: Run coverage with deprecated RFC 9053 alg IDs enabled
+      run: |
+        export WOLFSSL_DIR=$HOME/wolfssl-install
+        export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
+        make coverage-force-failure CC=gcc \
+          CFLAGS="-std=c99 -DHAVE_ANONYMOUS_INLINE_AGGREGATES=1 -DWOLFCOSE_ENABLE_DEPRECATED_ALGS -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I./include -isystem $WOLFSSL_DIR/include" \
+          LDFLAGS="-L$WOLFSSL_DIR/lib -lwolfssl"
+
+    - name: Check coverage thresholds (deprecated alg IDs)
+      run: sh scripts/check_coverage.sh

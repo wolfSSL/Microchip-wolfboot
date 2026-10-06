@@ -16,6 +16,16 @@
 
 #define WOLFPSA_STORE_KEY            0x00
 
+/* Shared return codes for the wolfPSA_Store_* backend interface below.
+ * Backends (psa_store_posix.c, psa_store_zephyr.c, custom vaults) must use
+ * these so callers in psa_key_storage.c interpret results consistently. */
+#define WOLFPSA_STORE_OK             0
+#define WOLFPSA_STORE_NOT_AVAILABLE  (-4)
+#define WOLFPSA_STORE_IO_ERROR       (-5)
+/* A backend that fails to allocate its own context or buffers returns the
+ * wolfCrypt MEMORY_E instead, which psa_key_storage.c reports as
+ * PSA_ERROR_INSUFFICIENT_MEMORY rather than PSA_ERROR_STORAGE_FAILURE. */
+
 /*
  * Opens access to location to read/write PSA data.
  *
@@ -63,8 +73,11 @@ int wolfPSA_Store_Remove(int type, unsigned long id1, unsigned long id2);
  * Closes access to location being read or written.
  *
  * @param [in]  store  Context for operation.
+ * @return  0 on success.
+ * @return  Other value to indicate failure (e.g. a failed commit of a
+ *          pending write).
  */
-void wolfPSA_Store_Close(void* store);
+int wolfPSA_Store_Close(void* store);
 
 /*
  * Reads a specific number of bytes into buffer.
